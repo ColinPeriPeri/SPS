@@ -1,0 +1,38 @@
+# --- Core runtime (Component B + C) -----------------------------------------
+sentence-transformers==3.0.1     # BAAI/bge-large-en-v1.5 loader
+torch==2.3.1                     # CPU wheel; install via --index-url .../cpu
+
+# torch 2.3.1 wheels are built against the NumPy 1.x C ABI. With NumPy 2.x the
+# import succeeds but torch's array bridge is dead, and any tensor.numpy() call
+# raises "RuntimeError: Numpy is not available". scipy/scikit-learn/pandas must
+# be held to the same era or they break the other way (np.long missing under
+# NumPy 1.x). These move together -- verify with `pip check` after any bump.
+numpy>=1.26,<2
+scipy>=1.11,<1.14
+scikit-learn>=1.3,<1.6
+
+qdrant-client==1.9.1             # Vector DB: embedded (local path) or server
+openai==1.40.0                   # Azure OpenAI (AsyncAzureOpenAI)
+
+# openai 1.40.0 passes `proxies=` to httpx, which httpx 0.28 removed. Left
+# unpinned, the Azure client raises TypeError at construction before any request
+# is made. Lift this pin only together with an openai upgrade.
+httpx>=0.27,<0.28
+
+pydantic==2.8.2                  # LLM response schemas + the 4-key contract
+python-dotenv==1.0.1             # .env loading for the UiPath-invoked CLI
+
+# --- Excel handoff -----------------------------------------------------------
+pandas==2.2.2                    # contract -> DataFrame
+openpyxl==3.1.5                  # .xlsx writer engine
+
+# --- Component A (offline ETL) ----------------------------------------------
+SQLAlchemy==2.0.31
+pyodbc==5.1.0                    # swap for the source RDBMS driver in use
+
+# --- Dev ---------------------------------------------------------------------
+pytest==8.3.2
+pytest-asyncio==0.23.8
+
+# No web framework by design. The pipeline is invoked as a CLI/callable by the
+# UiPath Performer, which owns all SQL reads and writes directly.
