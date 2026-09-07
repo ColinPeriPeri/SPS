@@ -53,10 +53,10 @@ Run the test suite:
 python -m pytest -q
 ```
 
-306 tests with the full stack installed; 149 still run with no third-party
+313 tests with the full stack installed; 149 still run with no third-party
 packages at all. No test needs a running server or an Azure key. The 15
 real-model tests are opt-in (they load 1.3 GB of weights) and bring the total
-to 321:
+to 328:
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -142,6 +142,17 @@ each: duplicate pairs are resolved by `SPS_ID` order instead of recency, and the
 watermark does not advance (so a later SQL run still starts from scratch rather
 than silently skipping rows the file never contained). Include the column if the
 extract has it and both behaviours return to normal.
+
+**Numeric-looking identifiers need care in Excel.** Excel holds every number as
+a double, so a part number or SPS_ID that looks numeric can arrive as
+`1243951.0`; stored verbatim that is an identifier which matches nothing and
+cites nothing. Whole floats are rendered without the fractional part at ingest
+(genuine decimals are left alone), and CSV is read with `dtype=str`.
+
+What cannot be recovered is **leading zeros**: if a sheet stored `0012-43951` as
+a number rather than text, the zeros were gone before this code saw the file.
+Format part-number columns as Text, or supply CSV. A hyphenated value like
+`0012-43951` is text to Excel already and is safe either way.
 
 **Without `Problem_Reason_Code`** the `+0.02` boost cannot fire, so an exact
 text match tops out around 96% rather than 98%. (An exact match scores 0.9389,
@@ -722,7 +733,7 @@ tests/test_cli_output_file.py          24   output file: atomicity, BOM both way
 tests/test_component_b_retrieval.py    40   validation, boosting, ranking, the gate, part filter, payload keys
 tests/test_cli_inference.py            21   stdout purity, exit codes, input modes, lock release
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
-tests/test_flat_file_source.py         24   .csv/.xlsx parity, header mapping, retained ingest logic
+tests/test_flat_file_source.py         31   .csv/.xlsx parity, header mapping, numeric identifiers, ingest logic
 tests/test_qdrant_adapter.py           27   the adapter against a real Qdrant engine, server and embedded
 tests/test_audit_part_numbers.py       18   drift detection, payload-only repair, vectors untouched
 tests/test_structured_outputs.py       17   strict response_format, fallback, schema boundaries

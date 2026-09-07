@@ -330,3 +330,72 @@ def test_watermark_advances_only_when_the_file_carries_dates(tmp_path):
 
     undated_report, _ = _index(write_csv(tmp_path / "plain.csv"), tmp_path / "other")
     assert undated_report.watermark.last_modified_date.year == 1970
+
+
+# --------------------------------------------------------------------------
+# Numeric-looking identifiers from Excel
+# --------------------------------------------------------------------------
+
+
+def _xlsx_with_part(tmp_path, value):
+    """Write a workbook whose Part_Number cell holds `value` at its native type."""
+    from openpyxl import Workbook
+
+    path = tmp_path / "numeric.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.append(HEADERS)
+    sheet.append(["S1", value, "Quality", "a" * 30, "b" * 30])
+    book.save(path)
+    return path
+
+
+def test_a_whole_float_part_number_loses_its_decimal(tmp_path):
+    """Excel holds every number as a double, so a numeric part number can arrive
+    as 1243951.0. Stored verbatim it becomes "1243951.0" -- an identifier that
+    matches nothing."""
+    record = read_all(_xlsx_with_part(tmp_path, 1243951.0))[0]
+    assert record.part_number == "1243951"
+
+
+def test_an_integer_part_number_is_unchanged(tmp_path):
+    assert read_all(_xlsx_with_part(tmp_path, 1243951))[0].part_number == "1243951"
+
+
+def test_a_hyphenated_part_number_survives(tmp_path):
+    """The common house format: text, so leading zeros are safe."""
+    assert read_all(_xlsx_with_part(tmp_path, "0012-43951"))[0].part_number == "0012-43951"
+
+
+def test_leading_zeros_survive_when_the_cell_is_text(tmp_path):
+    assert read_all(_xlsx_with_part(tmp_path, "001243951"))[0].part_number == "001243951"
+
+
+def test_a_genuine_decimal_is_not_truncated(tmp_path):
+    """Only whole floats lose the fractional part; real decimals are data."""
+    assert read_all(_xlsx_with_part(tmp_path, 12439.51))[0].part_number == "12439.51"
+
+
+def test_a_float_sps_id_does_not_corrupt_the_point_id(tmp_path):
+    """SPS_ID has the same exposure: "1001.0" would be a wrong point ID and a
+    wrong citation in SPS_IDs_Referred."""
+    from openpyxl import Workbook
+
+    path = tmp_path / "ids.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.append(HEADERS)
+    sheet.append([1001.0, "PN-1", "Quality", "a" * 30, "b" * 30])
+    book.save(path)
+
+    assert read_all(path)[0].sps_id == "1001"
+
+
+def test_upper_casing_is_a_no_op_for_numeric_part_numbers():
+    """Nothing to normalise in the house format, so casing drift cannot occur;
+    trimming is the part that does real work."""
+    from sps.contracts import normalize_part_number
+
+    for value in ("0012-43951", "001243951", "1243951"):
+        assert normalize_part_number(value) == value
+    assert normalize_part_number("  0012-43951 ") == "0012-43951"

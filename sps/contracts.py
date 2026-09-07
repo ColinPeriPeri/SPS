@@ -89,11 +89,25 @@ def _lookup(data: dict[str, Any], field: str) -> Any:
 
 
 def _clean(value: Any) -> str:
-    """Coerce any source value to a trimmed string; None/NaN become ''."""
+    """Coerce any source value to a trimmed string; None/NaN become ''.
+
+    Whole floats render without the fractional part. Excel holds every number as
+    a double, so a numeric-looking identifier -- a part number like 1243951, an
+    SPS_ID like 1001 -- can arrive as 1243951.0 and would otherwise be stored as
+    "1243951.0": an identifier that matches nothing and cites nothing. Genuine
+    decimals are left alone.
+
+    This cannot recover leading zeros. If a spreadsheet stored "0012-43951" as a
+    number rather than text, the zeros were lost before this code saw the file;
+    format such columns as Text, or supply CSV.
+    """
     if value is None:
         return ""
-    if isinstance(value, float) and math.isnan(value):
-        return ""
+    if isinstance(value, float):
+        if math.isnan(value):
+            return ""
+        if value.is_integer():
+            return str(int(value))
     return str(value).strip()
 
 
