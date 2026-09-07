@@ -53,10 +53,10 @@ Run the test suite:
 python -m pytest -q
 ```
 
-313 tests with the full stack installed; 149 still run with no third-party
+316 tests with the full stack installed; 149 still run with no third-party
 packages at all. No test needs a running server or an Azure key. The 15
 real-model tests are opt-in (they load 1.3 GB of weights) and bring the total
-to 328:
+to 331:
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -284,10 +284,19 @@ exact: `PN-100` does not match `PN-1000`.
 >
 > `part_number` is payload only — the vector encodes the cleansed
 > `Problem_Description` and nothing else — so `set_payload` corrects it in
-> seconds rather than hours of re-encoding. The report also gives the **blank**
-> part-number rate, which is worth knowing because blank history is unreachable
-> to any ticket that supplies a part number. Re-running a `--source-file` load
+> seconds rather than hours of re-encoding. Re-running a `--source-file` load
 > also fixes drift, since a flat load rewrites every payload.
+>
+> The same pass reports two data-quality figures for free: the **blank**
+> part-number rate (blank history is unreachable to any ticket that supplies a
+> part number) and the count of **purely numeric** part numbers (whose leading
+> zeros Excel destroys in the sheet itself).
+>
+> Where the house format is alphanumeric and free of stray spaces — e.g.
+> `0012-43951` — both canonicalisation steps are no-ops and every figure
+> should read zero. That makes this an **assumption check**: a non-zero result
+> means something about the source changed and is worth looking at before an
+> evaluation run.
 
 **A blank part number applies no filter.** A ticket that arrives without one
 searches the whole index rather than being pinned to records whose part number
@@ -735,7 +744,7 @@ tests/test_cli_inference.py            21   stdout purity, exit codes, input mod
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_flat_file_source.py         31   .csv/.xlsx parity, header mapping, numeric identifiers, ingest logic
 tests/test_qdrant_adapter.py           27   the adapter against a real Qdrant engine, server and embedded
-tests/test_audit_part_numbers.py       18   drift detection, payload-only repair, vectors untouched
+tests/test_audit_part_numbers.py       21   drift detection, payload-only repair, assumption checks
 tests/test_structured_outputs.py       17   strict response_format, fallback, schema boundaries
 tests/test_pipeline_contract.py        13   every exit path emits a valid contract
 tests/test_config.py                    9   env loading, spec constants, batch-band validation

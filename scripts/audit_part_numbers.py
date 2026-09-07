@@ -20,9 +20,16 @@ A JSON report goes to stdout; logs go to stderr. Exit 0 on success, 1 on an
 infrastructure fault, 2 on a configuration error -- the same convention as
 `run_indexer`.
 
-The scan also reports the **blank** part-number rate, since the retrieval filter
-makes history without a part number unreachable to any ticket that supplies one,
-and that rate is worth knowing before an evaluation run.
+The same pass reports two data-quality figures that cost nothing extra:
+
+* the **blank** part-number rate, since the retrieval filter makes history
+  without a part number unreachable to any ticket that supplies one;
+* the count of **purely numeric** part numbers, whose leading zeros Excel
+  destroys in the sheet itself, before any reader sees the file.
+
+Where the house format is alphanumeric and free of stray spaces, both
+canonicalisation steps are no-ops and this run is a confirmation rather than a
+repair -- a non-zero figure means an assumption about the source no longer holds.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ import json
 import logging
 import sys
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 
 from sps.config import Settings
 from sps.contracts import normalize_part_number
@@ -71,14 +79,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def scan(client, collection: str):
-    """One paged pass over the payloads. No vectors, no embedding.
+@dataclass
+class ScanResult:
+    """What one pass over the payloads found."""
 
-    Returns (total, blank, drift) where drift maps stored value -> point IDs.
-    """
-    drift: dict[str, list] = defaultdict(list)
-    total = 0
-    blank = 0
+    total: int = 0
+    blank: int = 0
+    # Part numbers that are nothing but digits. These are the ones whose
+    # leading zeros Excel destroys before any of this code sees the file,
+    # so a non-zero count means an assumption about the source data no
+    # longer holds and the extract needs checking.
+    purely_numeric: int = 0
+    drift: dict = field(default_factory=lambda: defaultdict(list))
+
+    @property
+    def affected(self) -> int:
+        return sum(len(ids) for ids in self.drift.values())
+
+
+def scan(client, collection: str) -> ScanResult:
+    """One paged pass over the payloads. No vectors, no embedding."""
+    result = ScanResult()
     offset = None
 
     while True:
@@ -90,17 +111,19 @@ def scan(client, collection: str):
             with_vectors=False,
         )
         for point in points:
-            total += 1
+            result.total += 1
             stored = str((point.payload or {}).get("part_number", ""))
             if not stored.strip():
-                blank += 1
+                # Blank is left alone: it is legitimately "no part number", not
+                # a spelling of one, and rewriting it would invent data.
+                result.blank += 1
                 continue
-            # Blank is left alone: it is legitimately "no part number", not a
-            # spelling of one, and rewriting it would invent data.
+            if stored.isdigit():
+                result.purely_numeric += 1
             if stored != normalize_part_number(stored):
-                drift[stored].append(point.id)
+                result.drift[stored].append(point.id)
         if offset is None:
-            return total, blank, drift
+            return result
 
 
 def repair(client, collection: str, drift: dict[str, list]) -> int:
@@ -157,15 +180,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return EXIT_CONFIG
 
-        total, blank, drift = scan(client, collection)
-        affected = sum(len(ids) for ids in drift.values())
+        found = scan(client, collection)
+        total, drift, affected = found.total, found.drift, found.affected
 
         report = {
             "collection": collection,
             "store": settings.vector_store.describe(),
             "points_scanned": total,
-            "blank_part_number": blank,
-            "blank_pct": round(100 * blank / total, 2) if total else 0.0,
+            "blank_part_number": found.blank,
+            "blank_pct": round(100 * found.blank / total, 2) if total else 0.0,
+            "purely_numeric_part_numbers": found.purely_numeric,
             "non_canonical_points": affected,
             "non_canonical_pct": round(100 * affected / total, 2) if total else 0.0,
             "distinct_drift_values": len(drift),
@@ -189,14 +213,24 @@ def main(argv: list[str] | None = None) -> int:
         elif args.fix and affected:
             report["fixed"] = repair(client, collection, drift)
             # Re-scan rather than assume: cheap, and it proves the repair landed.
-            _, _, remaining_drift = scan(client, collection)
-            report["remaining"] = sum(len(ids) for ids in remaining_drift.values())
+            report["remaining"] = scan(client, collection).affected
             if report["remaining"]:
                 logger.error("%d point(s) still drifted after repair", report["remaining"])
             else:
                 logger.info("All part_number payloads are canonical; vectors untouched.")
         elif not affected:
             logger.info("No drift: every populated part_number is already canonical.")
+
+        if found.purely_numeric:
+            # Excel stores numbers as doubles, so a purely numeric part number
+            # loses its leading zeros in the sheet itself -- before any reader
+            # sees it. Nothing here can recover them.
+            logger.warning(
+                "%d part number(s) are purely numeric. If the source is a "
+                "spreadsheet, any leading zeros were lost before ingest; format "
+                "that column as Text or supply CSV.",
+                found.purely_numeric,
+            )
 
         print(json.dumps(report, indent=2))
         return EXIT_OK

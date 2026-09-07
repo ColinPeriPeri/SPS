@@ -65,11 +65,11 @@ DIRTY = [("pn-1000", 4), ("PN-1000 ", 2), ("Pn-2000", 1), ("PN-1000", 3), ("", 2
 
 def test_scan_finds_every_drift_pattern(tmp_path, embedder):
     store = seed(tmp_path / "q", embedder, DIRTY)
-    total, blank, drift = audit.scan(store.client, COLLECTION)
+    found = audit.scan(store.client, COLLECTION)
 
-    assert total == 12
-    assert blank == 2
-    assert {k: len(v) for k, v in drift.items()} == {
+    assert found.total == 12
+    assert found.blank == 2
+    assert {k: len(v) for k, v in found.drift.items()} == {
         "pn-1000": 4,
         "PN-1000 ": 2,
         "Pn-2000": 1,
@@ -79,9 +79,9 @@ def test_scan_finds_every_drift_pattern(tmp_path, embedder):
 
 def test_already_canonical_values_are_not_flagged(tmp_path, embedder):
     store = seed(tmp_path / "q", embedder, [("PN-1000", 5), ("PN-2000", 3)])
-    total, blank, drift = audit.scan(store.client, COLLECTION)
+    found = audit.scan(store.client, COLLECTION)
 
-    assert (total, blank, drift) == (8, 0, {})
+    assert (found.total, found.blank, found.drift, found.affected) == (8, 0, {}, 0)
     store.close()
 
 
@@ -89,21 +89,21 @@ def test_blank_part_numbers_are_counted_but_never_rewritten(tmp_path, embedder):
     """Blank is legitimately 'no part number', not a misspelling of one --
     rewriting it would invent data."""
     store = seed(tmp_path / "q", embedder, [("", 4), ("   ", 2), ("PN-1000", 1)])
-    total, blank, drift = audit.scan(store.client, COLLECTION)
+    found = audit.scan(store.client, COLLECTION)
 
-    assert total == 7
-    assert blank == 6
-    assert drift == {}
+    assert found.total == 7
+    assert found.blank == 6
+    assert found.drift == {}
     store.close()
 
 
 def test_scan_pages_through_more_than_one_scroll_page(tmp_path, embedder, monkeypatch):
     monkeypatch.setattr(audit, "SCROLL_PAGE", 5)
     store = seed(tmp_path / "q", embedder, [("pn-1", 13)])
-    total, _, drift = audit.scan(store.client, COLLECTION)
+    found = audit.scan(store.client, COLLECTION)
 
-    assert total == 13
-    assert len(drift["pn-1"]) == 13
+    assert found.total == 13
+    assert len(found.drift["pn-1"]) == 13
     store.close()
 
 
@@ -112,21 +112,20 @@ def test_scan_pages_through_more_than_one_scroll_page(tmp_path, embedder, monkey
 
 def test_repair_makes_every_value_canonical(tmp_path, embedder):
     store = seed(tmp_path / "q", embedder, DIRTY)
-    _, _, drift = audit.scan(store.client, COLLECTION)
+    found = audit.scan(store.client, COLLECTION)
 
-    fixed = audit.repair(store.client, COLLECTION, drift)
+    fixed = audit.repair(store.client, COLLECTION, found.drift)
     assert fixed == 7
 
-    total, blank, remaining = audit.scan(store.client, COLLECTION)
-    assert remaining == {}
-    assert (total, blank) == (12, 2)
+    after = audit.scan(store.client, COLLECTION)
+    assert after.drift == {}
+    assert (after.total, after.blank) == (12, 2)
     store.close()
 
 
 def test_repair_leaves_the_rest_of_the_payload_untouched(tmp_path, embedder):
     store = seed(tmp_path / "q", embedder, [("pn-1000", 3)])
-    _, _, drift = audit.scan(store.client, COLLECTION)
-    audit.repair(store.client, COLLECTION, drift)
+    audit.repair(store.client, COLLECTION, audit.scan(store.client, COLLECTION).drift)
 
     hit = store.search(embedder.embed_query("defect 1 on the housing"), limit=1)[0]
     assert hit.payload["part_number"] == "PN-1000"
@@ -145,8 +144,7 @@ def test_repair_does_not_touch_vectors_or_point_count(tmp_path, embedder):
     vector = embedder.embed_query("defect 1 on the housing")
     before = [h.cosine_similarity for h in store.search(vector, limit=10)]
 
-    _, _, drift = audit.scan(store.client, COLLECTION)
-    audit.repair(store.client, COLLECTION, drift)
+    audit.repair(store.client, COLLECTION, audit.scan(store.client, COLLECTION).drift)
 
     after = [h.cosine_similarity for h in store.search(vector, limit=10)]
     assert store.count() == 4
@@ -161,8 +159,7 @@ def test_repair_restores_reachability(tmp_path, embedder):
 
     assert len(store.search(vector, limit=50, part_number="PN-1000")) == 2
 
-    _, _, drift = audit.scan(store.client, COLLECTION)
-    audit.repair(store.client, COLLECTION, drift)
+    audit.repair(store.client, COLLECTION, audit.scan(store.client, COLLECTION).drift)
 
     assert len(store.search(vector, limit=50, part_number="PN-1000")) == 8
     store.close()
@@ -179,8 +176,7 @@ def test_repair_batches_by_target_value(tmp_path, embedder, monkeypatch):
         return real(**kwargs)
 
     monkeypatch.setattr(store.client, "set_payload", counting)
-    _, _, drift = audit.scan(store.client, COLLECTION)
-    audit.repair(store.client, COLLECTION, drift)
+    audit.repair(store.client, COLLECTION, audit.scan(store.client, COLLECTION).drift)
 
     assert sorted(calls) == [2, 7]  # two calls, nine points
     store.close()
@@ -197,8 +193,7 @@ def test_large_groups_are_chunked(tmp_path, embedder, monkeypatch):
         return real(**kwargs)
 
     monkeypatch.setattr(store.client, "set_payload", counting)
-    _, _, drift = audit.scan(store.client, COLLECTION)
-    audit.repair(store.client, COLLECTION, drift)
+    audit.repair(store.client, COLLECTION, audit.scan(store.client, COLLECTION).drift)
 
     assert calls == [3, 3, 1]
     store.close()
@@ -309,3 +304,38 @@ def test_stdout_is_pure_json(tmp_path, embedder, env, capsys):
 
     audit.main(["--verbose"])
     json.loads(capsys.readouterr().out.strip())  # logs go to stderr, so this parses
+
+
+def test_purely_numeric_part_numbers_are_counted(tmp_path, embedder):
+    """A purely numeric part number is where Excel destroys leading zeros in the
+    sheet itself. Nothing downstream can recover them, so the audit surfaces the
+    count rather than pretending the assumption always holds."""
+    store = seed(tmp_path / "q", embedder, [("0012-43951", 3), ("001243951", 2), ("PN-1", 1)])
+    found = audit.scan(store.client, COLLECTION)
+
+    assert found.purely_numeric == 2      # only the digits-only value
+    assert found.affected == 0            # neither is drifted
+    store.close()
+
+
+def test_the_house_format_is_already_canonical(tmp_path, embedder, env, capsys):
+    """Alphanumeric part numbers with no stray spaces: both canonicalisation
+    steps are no-ops, so the audit confirms rather than repairs."""
+    path = tmp_path / "q"
+    seed(path, embedder, [("0012-43951", 5), ("0034-11020", 3)]).close()
+    env(path)
+
+    assert audit.main([]) == audit.EXIT_OK
+    report = report_from(capsys)
+    assert report["non_canonical_points"] == 0
+    assert report["purely_numeric_part_numbers"] == 0
+    assert report["blank_part_number"] == 0
+
+
+def test_report_carries_the_numeric_count(tmp_path, embedder, env, capsys):
+    path = tmp_path / "q"
+    seed(path, embedder, [("001243951", 4), ("0012-43951", 1)]).close()
+    env(path)
+
+    audit.main([])
+    assert report_from(capsys)["purely_numeric_part_numbers"] == 4
