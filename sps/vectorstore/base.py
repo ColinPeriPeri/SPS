@@ -33,8 +33,20 @@ class VectorStore(Protocol):
     def delete(self, sps_ids: Sequence[str]) -> None:
         """Evict points whose records are no longer indexable."""
 
-    def search(self, vector: Sequence[float], limit: int) -> list[SearchHit]:
-        """Cosine-similarity nearest neighbours, best first."""
+    def search(
+        self,
+        vector: Sequence[float],
+        limit: int,
+        part_number: str | None = None,
+    ) -> list[SearchHit]:
+        """Cosine-similarity nearest neighbours, best first.
+
+        `part_number` restricts the search to records carrying exactly that
+        value, so semantic similarity is only ever computed against history for
+        the same part. A blank or None value applies no filter -- a ticket that
+        arrives without a part number must still be searchable, and filtering on
+        "" would match only records whose part number is also empty.
+        """
 
     def find_by_content_hash(self, hashes: Sequence[str]) -> dict[str, str]:
         """Map content_hash -> sps_id for pairs already present in the index.

@@ -10,12 +10,19 @@ from typing import Sequence
 
 from ..contracts import Candidate, IncomingTicket, SearchHit
 
-# Boost weights fixed by the spec.
-PART_NUMBER_BOOST = 0.05
+# Boost weights.
+#
+# The spec's +0.05 part-number boost is deliberately absent. The vector search
+# now hard-filters on part_number, so every surviving candidate matches by
+# construction: the boost fired on all of them uniformly, stopped
+# discriminating, and became a constant that lifted every score by 0.05 --
+# quietly softening a configured 0.82 gate to an effective 0.77. Part
+# equivalence is enforced by the filter; cosine similarity on the problem text
+# governs qualification.
 ISSUE_TYPE_BOOST = 0.03
 REASON_CODE_BOOST = 0.02
 
-MAX_BOOST = PART_NUMBER_BOOST + ISSUE_TYPE_BOOST + REASON_CODE_BOOST
+MAX_BOOST = ISSUE_TYPE_BOOST + REASON_CODE_BOOST
 
 
 def _key(value: str | None) -> str:
@@ -40,15 +47,15 @@ def composite_score(hit: SearchHit, ticket: IncomingTicket) -> tuple[float, tupl
     "unrelated", not "worse than unrelated", and must not let boosts lift an
     irrelevant record. The total is clamped to 1.0 so confidence never reports
     above 100%.
+
+    Part number is not scored here: it is a hard filter on the search itself,
+    so every candidate reaching this point already matches it.
     """
     base = min(max(hit.cosine_similarity, 0.0), 1.0)
     payload = hit.payload
     applied: list[str] = []
     boost = 0.0
 
-    if _matches(payload.get("part_number"), ticket.part_number):
-        boost += PART_NUMBER_BOOST
-        applied.append("part_number")
     if _matches(payload.get("issue_type"), ticket.issue_type):
         boost += ISSUE_TYPE_BOOST
         applied.append("issue_type")

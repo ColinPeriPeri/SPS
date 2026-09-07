@@ -151,7 +151,14 @@ class QdrantVectorStore:
                 wait=True,
             )
 
-    def search(self, vector: Sequence[float], limit: int) -> list[SearchHit]:
+    def search(
+        self,
+        vector: Sequence[float],
+        limit: int,
+        part_number: str | None = None,
+    ) -> list[SearchHit]:
+        query_filter = self._part_number_filter(part_number)
+
         # query_points() was added in qdrant-client 1.10 and search() is
         # deprecated from that release on, so pick whichever the installed
         # client actually has. The pinned 1.9.1 only has search().
@@ -161,6 +168,7 @@ class QdrantVectorStore:
                 query=list(vector),
                 limit=limit,
                 with_payload=True,
+                query_filter=query_filter,
             ).points
         else:
             points = self.client.search(
@@ -168,11 +176,35 @@ class QdrantVectorStore:
                 query_vector=list(vector),
                 limit=limit,
                 with_payload=True,
+                query_filter=query_filter,
             )
         return [
             SearchHit(payload=dict(p.payload or {}), cosine_similarity=float(p.score))
             for p in points
         ]
+
+    @staticmethod
+    def _part_number_filter(part_number: str | None):
+        """Exact-match filter on the part_number payload key, or None.
+
+        Blank is deliberately treated as "no filter" rather than "match blank":
+        a ticket submitted without a part number must still reach the whole
+        index, and MatchValue("") would instead pin it to records whose part
+        number is also empty.
+        """
+        from ..contracts import normalize_part_number
+
+        wanted = normalize_part_number(part_number)
+        if not wanted:
+            return None
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        # Normalised on both sides: payloads are written canonically at ingest,
+        # so matching the canonical query value keeps "pn-1000" from reporting
+        # NO_MATCHES for a part that is genuinely indexed.
+        return Filter(
+            must=[FieldCondition(key="part_number", match=MatchValue(value=wanted))]
+        )
 
     def find_by_content_hash(self, hashes: Sequence[str]) -> dict[str, str]:
         """One filtered scroll per batch, not one lookup per record."""

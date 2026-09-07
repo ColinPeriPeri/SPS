@@ -58,6 +58,36 @@ def content_hash(problem: str, solution: str) -> str:
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
 
+def normalize_part_number(value: Any) -> str:
+    """Canonical form of a part number: trimmed and upper-cased.
+
+    Applied on both sides -- at ingest, so the payload is written canonically,
+    and on the incoming ticket -- so the vector search's exact-match filter
+    cannot miss on casing alone and report NO_MATCHES for a part that is
+    genuinely in the index.
+    """
+    return _clean(value).upper()
+
+
+def _lookup(data: dict[str, Any], field: str) -> Any:
+    """Fetch `field` from a payload, ignoring key casing and separators.
+
+    Every other interface in this system names fields the SQL way
+    (`Problem_Description`, `Part_Number`), so a caller hand-writing a ticket
+    naturally uses that form. Reading only the lower-case spelling silently
+    yields an empty ticket: the description is judged invalid, the part number
+    is dropped so the search filter fails open, and the whole thing exits 0
+    looking like a legitimate refusal.
+    """
+    if field in data:
+        return data[field]
+    wanted = field.replace("_", "")
+    for key, value in data.items():
+        if str(key).strip().casefold().replace("_", "").replace(" ", "") == wanted:
+            return value
+    return None
+
+
 def _clean(value: Any) -> str:
     """Coerce any source value to a trimmed string; None/NaN become ''."""
     if value is None:
@@ -80,6 +110,13 @@ class SourceRecord:
     problem_reason_code: str = ""
     issue_type: str = ""
     last_modified_date: datetime | None = None
+
+    def __post_init__(self) -> None:
+        # Frozen dataclass: normalise in place so every construction path -- SQL,
+        # flat file, cleanse() rebuilds, tests -- writes the same canonical form.
+        canonical = normalize_part_number(self.part_number)
+        if canonical != self.part_number:
+            object.__setattr__(self, "part_number", canonical)
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "SourceRecord":
@@ -133,16 +170,25 @@ class IncomingTicket:
     problem_reason_code: str = ""
     issue_type: str = ""
 
+    def __post_init__(self) -> None:
+        canonical = normalize_part_number(self.part_number)
+        if canonical != self.part_number:
+            object.__setattr__(self, "part_number", canonical)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "IncomingTicket":
+        """Build from a ticket payload, accepting either key spelling.
+
+        `Problem_Description` and `problem_description` both work; see _lookup.
+        """
         return cls(
-            problem_description=_clean(data.get("problem_description")),
-            sps_id=_clean(data.get("sps_id")),
-            part_number=_clean(data.get("part_number")),
-            part_description=_clean(data.get("part_description")),
-            item_status=_clean(data.get("item_status")),
-            problem_reason_code=_clean(data.get("problem_reason_code")),
-            issue_type=_clean(data.get("issue_type")),
+            problem_description=_clean(_lookup(data, "problem_description")),
+            sps_id=_clean(_lookup(data, "sps_id")),
+            part_number=_clean(_lookup(data, "part_number")),
+            part_description=_clean(_lookup(data, "part_description")),
+            item_status=_clean(_lookup(data, "item_status")),
+            problem_reason_code=_clean(_lookup(data, "problem_reason_code")),
+            issue_type=_clean(_lookup(data, "issue_type")),
         )
 
 

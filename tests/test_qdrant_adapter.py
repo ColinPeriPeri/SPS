@@ -301,3 +301,85 @@ def test_indexing_a_file_whose_rows_are_all_rejected(store, embedder, tmp_path):
 
     assert report.indexed == 0
     assert store.count() == 0
+
+
+# --------------------------------------------------------------------------
+# Hard part_number filter, against the real Qdrant filtering engine
+# --------------------------------------------------------------------------
+
+
+def _mixed_parts(store, embedder, tmp_path):
+    problem = "Bracket weld seam cracking observed during incoming inspection"
+    _index(
+        [
+            make_record("SAME", problem=problem, part_number="PN-1000"),
+            make_record("OTHER", problem=problem, part_number="PN-2000",
+                        solution="Scrap the lot and ship replacements from stock"),
+            make_record("BLANK", problem=problem, part_number="",
+                        solution="Return the unit to the supplier for analysis"),
+        ],
+        store, embedder, tmp_path,
+    )
+    return embedder.embed_query(problem)
+
+
+def test_qdrant_filter_returns_only_the_requested_part(store, embedder, tmp_path):
+    vector = _mixed_parts(store, embedder, tmp_path)
+    hits = store.search(vector, limit=15, part_number="PN-1000")
+    assert [h.payload["sps_id"] for h in hits] == ["SAME"]
+
+
+def test_qdrant_unfiltered_search_still_sees_everything(store, embedder, tmp_path):
+    vector = _mixed_parts(store, embedder, tmp_path)
+    assert len(store.search(vector, limit=15)) == 3
+    assert len(store.search(vector, limit=15, part_number=None)) == 3
+    assert len(store.search(vector, limit=15, part_number="   ")) == 3
+
+
+def test_qdrant_filter_is_exact_not_prefix(store, embedder, tmp_path):
+    vector = _mixed_parts(store, embedder, tmp_path)
+    assert store.search(vector, limit=15, part_number="PN-100") == []
+    assert store.search(vector, limit=15, part_number="PN") == []
+
+
+def test_qdrant_filter_is_case_insensitive_via_normalisation(store, embedder, tmp_path):
+    """Payloads are canonicalised at ingest, so the query is canonicalised too:
+    a lower-case part number must not report NO_MATCHES for an indexed part."""
+    vector = _mixed_parts(store, embedder, tmp_path)
+    for spelling in ("PN-1000", "pn-1000", "  Pn-1000  "):
+        hits = store.search(vector, limit=15, part_number=spelling)
+        assert [h.payload["sps_id"] for h in hits] == ["SAME"], spelling
+
+
+def test_qdrant_filter_on_an_unknown_part_returns_nothing(store, embedder, tmp_path):
+    vector = _mixed_parts(store, embedder, tmp_path)
+    assert store.search(vector, limit=15, part_number="PN-DOES-NOT-EXIST") == []
+
+
+def test_qdrant_filter_object_shape():
+    """The filter must be an exact MatchValue on the part_number payload key."""
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    built = QdrantVectorStore._part_number_filter("PN-1000")
+    assert isinstance(built, Filter)
+    condition = built.must[0]
+    assert isinstance(condition, FieldCondition)
+    assert condition.key == "part_number"
+    assert condition.match == MatchValue(value="PN-1000")
+
+    for blank in (None, "", "  "):
+        assert QdrantVectorStore._part_number_filter(blank) is None
+
+
+def test_qdrant_end_to_end_retrieval_is_part_scoped(store, embedder, tmp_path):
+    vector = _mixed_parts(store, embedder, tmp_path)
+    del vector
+
+    retriever = Retriever(embedder, store, RetrievalSettings())
+    outcome = retriever.retrieve(
+        IncomingTicket(
+            problem_description="Bracket weld seam cracking observed during incoming inspection",
+            part_number="PN-2000",
+        )
+    )
+    assert [c.sps_id for c in outcome.candidates] == ["OTHER"]

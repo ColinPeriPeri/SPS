@@ -63,10 +63,21 @@ class Retriever:
             logger.info("Rejecting ticket %r: problem statement too short", ticket.sps_id)
             return RetrievalOutcome(status=RetrievalStatus.INVALID_INPUT, candidates=[])
 
+        # Hard filter: semantic similarity is only ever computed against history
+        # for the same part. A ticket with no part number searches the whole
+        # index rather than being pinned to records with a blank one.
+        part_number = (ticket.part_number or "").strip() or None
+
         vector = self.embedder.embed_query(ticket.problem_description.strip())
-        hits = self.store.search(vector, limit=self.settings.top_k)
+        hits = self.store.search(vector, limit=self.settings.top_k, part_number=part_number)
         if not hits:
-            logger.info("Ticket %r: vector search returned no candidates", ticket.sps_id)
+            # With the filter on, this now also means "no history for this part",
+            # which is a far more common outcome than an empty index.
+            logger.info(
+                "Ticket %r: vector search returned no candidates (part_number=%r)",
+                ticket.sps_id,
+                part_number,
+            )
             return RetrievalOutcome(status=RetrievalStatus.NO_MATCHES, candidates=[])
 
         ranked = rank_candidates(hits, ticket)

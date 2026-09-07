@@ -53,10 +53,10 @@ Run the test suite:
 python -m pytest -q
 ```
 
-262 tests with the full stack installed; 130 still run with no third-party
+288 tests with the full stack installed; 149 still run with no third-party
 packages at all. No test needs a running server or an Azure key. The 15
 real-model tests are opt-in (they load 1.3 GB of weights) and bring the total
-to 277:
+to 303:
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -216,10 +216,14 @@ duplicate are **deleted** from the index, not merely skipped. Point IDs are
 
 1. **Validation** — `Problem_Description` must be ≥ 10 characters. Invalid tickets
    abort before the embedder is touched, so a malformed submission costs nothing.
-2. **Retrieval** — Top 15 by cosine similarity.
+2. **Retrieval** — Top 15 by cosine similarity, **hard-filtered to the
+   incoming `Part_Number`**. Semantic similarity is only ever computed against
+   history for the same part; a ticket with no part number searches the whole
+   index rather than being pinned to records whose part number is also blank.
 3. **Boosting** — composite score = cosine (clamped to `[0,1]`) plus
-   `+0.05` part number, `+0.03` issue type, `+0.02` reason code; re-sorted by the
-   composite.
+   `+0.03` issue type and `+0.02` reason code; re-sorted by the composite.
+   Part number is **not** scored: it is a hard filter on the search, so every
+   candidate reaching this point already matches it.
 4. **Gate** — a top composite below `SPS_CONFIDENCE_THRESHOLD` aborts **before
    any LLM call**. The spec default is 0.75; see *Threshold calibration* below for
    why the shipped `.env.example` sets 0.82 pending eval-set tuning. The
@@ -236,6 +240,53 @@ Two deliberate decisions inside the arithmetic:
 
 Ties break on raw cosine then SPS_ID, so a given query always produces the same
 ordering — required for an auditable recommendation.
+
+### The part-number filter
+
+Semantic similarity is only ever computed against history for the same part.
+Measured on a three-record index (`SPS-1099`/`PN-1000`, `SPS-1002`/`PN-1000`,
+`SPS-1003`/`PN-2000`), same query text throughout:
+
+| incoming part | outcome | confidence |
+| --- | --- | --- |
+| `PN-1000` | ok | 93% (raw cosine 0.9389) |
+| `pn-1000` | ok | 93% — canonicalised, same result |
+| `PN-2000` | below threshold | 46% |
+| `PN-NEW` | **no matches** | 0% |
+| *(none)* | ok | searches the whole index |
+
+**Part numbers are canonicalised** — `.strip().upper()` — at ingest, on the
+incoming ticket, and on the filter value itself. Without that, `pn-1000` would
+report `NO_MATCHES` for a part that is plainly indexed. Matching is otherwise
+exact: `PN-100` does not match `PN-1000`.
+
+> **Re-index required.** An index built before this change holds part numbers
+> exactly as the source wrote them. If the history contains any lower- or
+> mixed-case values, those records are invisible to the filter until the payload
+> is rewritten. Run `python -m scripts.run_indexer --reset-watermark` once (or
+> re-load the flat file) before relying on the filter.
+
+**A blank part number applies no filter.** A ticket that arrives without one
+searches the whole index rather than being pinned to records whose part number
+is also blank.
+
+**Two consequences worth carrying into the evaluation:**
+
+1. **`NO_MATCHES` is now routine.** It used to mean an empty index; it now also
+   means "no history for this part", which any new or low-volume part hits
+   immediately. The contract still returns correctly at `Confidence: 0%`.
+
+2. **History with a blank `Part_Number` is unreachable** to any ticket that
+   supplies one — accepted as intended, but worth measuring the blank rate in
+   the extract before the full run, since that history is otherwise dark.
+
+The spec's `+0.05` part-number boost was **removed** along with this change.
+With the filter in place every candidate matched the part by construction, so
+the boost fired on all of them, stopped discriminating, and became a constant
+that lifted every score — softening a configured 0.82 gate to an effective
+0.77. Confidence is now the cosine on the problem text plus only the boosts that
+still discriminate. The same query that read 98% before reads 93% now; that is
+the floor being removed, not a regression.
 
 ### Threshold calibration — measured, and worth a second look
 
@@ -481,6 +532,22 @@ is present and readable. Both files are cleared before any work begins, status
 first, so there is never an instant where a stale `SUCCESS` points at a deleted
 data file. If the process is killed outright, neither file exists.
 
+### Ticket payload keys
+
+Both spellings are accepted, so a hand-written ticket works either way:
+
+```json
+{ "SPS_ID": "SPS-999", "Problem_Description": "...", "Part_Number": "PN-1000" }
+{ "sps_id": "SPS-999", "problem_description": "...", "part_number": "PN-1000" }
+```
+
+Matching ignores case, underscores and spaces. This matters more than it looks:
+every other interface in the system names fields the SQL way, so a payload
+written as `Problem_Description` is the natural thing to produce. Reading only
+the lower-case spelling yielded an empty ticket — the description judged
+invalid, the part number dropped so the search filter failed open — and the
+process exited **0**, indistinguishable from a legitimate refusal.
+
 ### Credentials
 
 Azure credentials are read **only** from the environment:
@@ -639,11 +706,11 @@ tests/test_excel_output.py             39   schema validation, DataFrame shape, 
 tests/test_component_a_indexing.py     29   sanitization, dedup (in-run + cross-run), watermark, batching, eviction
 tests/test_status_file.py              26   STATUS/EXIT_CODE agreement, reasons, write ordering
 tests/test_cli_output_file.py          24   output file: atomicity, BOM both ways, stale safety, credentials
-tests/test_component_b_retrieval.py    21   validation, boosting, ranking, the confidence gate
+tests/test_component_b_retrieval.py    40   validation, boosting, ranking, the gate, part filter, payload keys
 tests/test_cli_inference.py            21   stdout purity, exit codes, input modes, lock release
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_flat_file_source.py         24   .csv/.xlsx parity, header mapping, retained ingest logic
-tests/test_qdrant_adapter.py           20   the adapter against a real Qdrant engine, server and embedded
+tests/test_qdrant_adapter.py           27   the adapter against a real Qdrant engine, server and embedded
 tests/test_structured_outputs.py       17   strict response_format, fallback, schema boundaries
 tests/test_pipeline_contract.py        13   every exit path emits a valid contract
 tests/test_config.py                    9   env loading, spec constants, batch-band validation

@@ -38,10 +38,21 @@ class InMemoryVectorStore:
         for sps_id in sps_ids:
             self._points.pop(point_id_for(sps_id), None)
 
-    def search(self, vector: Sequence[float], limit: int) -> list[SearchHit]:
+    def search(
+        self,
+        vector: Sequence[float],
+        limit: int,
+        part_number: str | None = None,
+    ) -> list[SearchHit]:
+        from ..contracts import normalize_part_number
+
+        wanted = normalize_part_number(part_number)
         scored = [
             SearchHit(payload=payload, cosine_similarity=cosine_similarity(vector, stored))
             for stored, payload in self._points.values()
+            # Blank means "no filter", matching the Qdrant adapter: filtering on
+            # "" would pin the search to records with an empty part number.
+            if not wanted or normalize_part_number(payload.get("part_number")) == wanted
         ]
         scored.sort(key=lambda hit: hit.cosine_similarity, reverse=True)
         return scored[:limit]
