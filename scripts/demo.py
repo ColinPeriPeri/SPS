@@ -208,18 +208,29 @@ async def main() -> None:
              PASS],
         ),
         (
+            # PN-1000 has history, so the part filter passes and the gate is the
+            # thing actually being demonstrated: an unrelated problem on a part
+            # we do have records for.
             "4. Confidence gate blocks a weak match (no LLM call)",
             {"problem_description": "Hydraulic pump pressure fluctuating during the acceptance run",
+             "part_number": "PN-1000"},
+            [],
+        ),
+        (
+            # Distinct from the gate: retrieval never returns anything because
+            # nothing is indexed for this part at all.
+            "5. Part filter: no history for this part number (no LLM call)",
+            {"problem_description": "Bracket weld seam cracking observed during incoming inspection",
              "part_number": "PN-7777"},
             [],
         ),
         (
-            "5. Invalid input rejected before retrieval",
+            "6. Invalid input rejected before retrieval",
             {"problem_description": "cracked"},
             [],
         ),
         (
-            "6. Circuit breaker trips after 3 failed audits",
+            "7. Circuit breaker trips after 3 failed audits",
             {"problem_description": "Bracket weld seam cracking observed during incoming inspection",
              "part_number": "PN-1000"},
             [actor("1. Preheat to 150 C.", "x"), FAIL_HALLUCINATION,

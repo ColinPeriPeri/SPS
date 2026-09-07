@@ -143,10 +143,11 @@ watermark does not advance (so a later SQL run still starts from scratch rather
 than silently skipping rows the file never contained). Include the column if the
 extract has it and both behaviours return to normal.
 
-**Without `Problem_Reason_Code`** the `+0.02` boost cannot fire, so composite
-scores top out at 0.98 rather than 1.00 for otherwise perfect matches. That is
-worth knowing before tuning `SPS_CONFIDENCE_THRESHOLD` against an index built
-from a partial extract.
+**Without `Problem_Reason_Code`** the `+0.02` boost cannot fire, so an exact
+text match tops out around 96% rather than 98%. (An exact match scores 0.9389,
+not 1.0, because the query carries the BGE instruction prefix and the passage
+does not.) Worth knowing before tuning `SPS_CONFIDENCE_THRESHOLD` against an
+index built from a partial extract.
 
 **Delta tracking.** The high-water mark is a composite `(Last_Modified_Date, SPS_ID)`,
 not a bare timestamp — a bare timestamp silently skips records that share the
@@ -231,7 +232,7 @@ duplicate are **deleted** from the index, not merely skipped. Point IDs are
 
 Two deliberate decisions inside the arithmetic:
 
-- **Blank ≠ match.** Two records both missing a `Part_Number` do not earn the part
+- **Blank ≠ match.** Two records both missing an `Issue_Type` do not earn that
   boost. Only a shared, populated value does. Otherwise sparse metadata would
   inflate every score uniformly and push weak matches through the gate.
 - **Clamping.** Negative cosine is floored at 0 (unrelated is not *worse* than
@@ -314,8 +315,9 @@ operationally:
 2. **0.75 is a loose gate in this embedding space.** Clearly unrelated text is
    rejected decisively (0.44). But *weld porosity* — a genuinely different defect
    that would need a different fix — scores 0.7831 against *weld seam cracking*
-   and clears the gate. On the same part number and issue type it also collects
-   the full `+0.10` metadata boost, reaching ~0.88 and reading as high confidence.
+   and clears the gate. The part filter does not help here: both are the same
+   part, which is exactly when the confusion arises. With a matching issue type
+   and reason code it collects the remaining `+0.05`, reaching ~0.83.
 
 So the gate reliably separates "unrelated" from "same subject area", not
 "same problem" from "different problem". The Judge is the real defence against a

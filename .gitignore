@@ -8,3 +8,10 @@ state/
 qdrant_data/
 models/
 env/
+
+# Local smoke-test artifacts and backups (not source)
+SPS code.zip
+*.zip
+status.txt
+test_input.txt
+test_output.xlsx
