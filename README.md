@@ -53,10 +53,10 @@ Run the test suite:
 python -m pytest -q
 ```
 
-288 tests with the full stack installed; 149 still run with no third-party
+306 tests with the full stack installed; 149 still run with no third-party
 packages at all. No test needs a running server or an Azure key. The 15
 real-model tests are opt-in (they load 1.3 GB of weights) and bring the total
-to 303:
+to 321:
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -85,7 +85,7 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `service/excel_output.py` | Contract — DataFrame — atomic .xlsx |
 | `service/status_file.py` | STATUS / EXIT_CODE / REASON side-channel |
 | `scripts/run_inference.cmd` | Reference Windows batch wrapper for the Performer |
-| `scripts/` | `run_indexer`, `demo`, `verify_embedder` |
+| `scripts/` | `run_indexer`, `audit_part_numbers`, `demo`, `verify_embedder` |
 
 **Components A and B depend on nothing but the standard library.** Sanitization,
 dedup, the boosting arithmetic and the confidence gate import cleanly without
@@ -261,11 +261,22 @@ incoming ticket, and on the filter value itself. Without that, `pn-1000` would
 report `NO_MATCHES` for a part that is plainly indexed. Matching is otherwise
 exact: `PN-100` does not match `PN-1000`.
 
-> **Re-index required.** An index built before this change holds part numbers
-> exactly as the source wrote them. If the history contains any lower- or
-> mixed-case values, those records are invisible to the filter until the payload
-> is rewritten. Run `python -m scripts.run_indexer --reset-watermark` once (or
-> re-load the flat file) before relying on the filter.
+> **Check for drift before relying on the filter.** An index built before this
+> change holds part numbers exactly as the source wrote them, so any lower- or
+> mixed-case value is unreachable. Audit it first — the fix is a payload
+> rewrite, not a re-embed:
+>
+> ```bash
+> python -m scripts.audit_part_numbers          # read-only report
+> python -m scripts.audit_part_numbers --fix    # rewrite, then re-verify
+> ```
+>
+> `part_number` is payload only — the vector encodes the cleansed
+> `Problem_Description` and nothing else — so `set_payload` corrects it in
+> seconds rather than hours of re-encoding. The report also gives the **blank**
+> part-number rate, which is worth knowing because blank history is unreachable
+> to any ticket that supplies a part number. Re-running a `--source-file` load
+> also fixes drift, since a flat load rewrites every payload.
 
 **A blank part number applies no filter.** A ticket that arrives without one
 searches the whole index rather than being pinned to records whose part number
@@ -713,6 +724,7 @@ tests/test_cli_inference.py            21   stdout purity, exit codes, input mod
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_flat_file_source.py         24   .csv/.xlsx parity, header mapping, retained ingest logic
 tests/test_qdrant_adapter.py           27   the adapter against a real Qdrant engine, server and embedded
+tests/test_audit_part_numbers.py       18   drift detection, payload-only repair, vectors untouched
 tests/test_structured_outputs.py       17   strict response_format, fallback, schema boundaries
 tests/test_pipeline_contract.py        13   every exit path emits a valid contract
 tests/test_config.py                    9   env loading, spec constants, batch-band validation
