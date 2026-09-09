@@ -1,4 +1,12 @@
-"""Component A.1 -- high-water mark persistence.
+"""LEGACY PATH -- not on the resolver flow.
+
+The primary entry point is now `scripts/run_resolver.py`, which filters a
+history file by part number and embeds the survivors per ticket, so there is
+no persistent index to build or maintain. This module is retained for
+`service/run_inference.py` and for a future return to a persistent index;
+nothing on the resolver path imports it.
+
+Component A.1 -- high-water mark persistence.
 
 The mark is a composite (Last_Modified_Date, SPS_ID). A plain timestamp would
 skip records that share the boundary second; the tuple makes resumption exact.

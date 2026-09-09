@@ -82,3 +82,44 @@ def write_excel(path: Path | str, contracts: Sequence[dict[str, Any]]) -> None:
     except BaseException:
         Path(tmp_path).unlink(missing_ok=True)
         raise
+
+
+# --------------------------------------------------------------------------
+# Resolver workbooks: a status sheet written on every run, and a result sheet
+# written only on success.
+# --------------------------------------------------------------------------
+
+STATUS_COLUMNS = ("Execution_Timestamp", "Status", "Status_Code", "Reason")
+RESULT_COLUMNS = (
+    "Part_Number",
+    "AI_Recommendation",
+    "Justification",
+    "Confidence_Score",
+    "Referenced_SPS_IDs",
+)
+
+
+def write_rows(path: Path | str, columns: Sequence[str], rows: Sequence[dict[str, Any]]) -> None:
+    """Write a sheet atomically, every cell as text.
+
+    Text throughout for the same reason as the contract workbook: pandas would
+    otherwise infer dtypes and a Confidence_Score of "84%" or a part number of
+    "0012-43951" could reach Excel as a number or a date.
+    """
+    import pandas as pd
+
+    path = Path(path)
+    frame = pd.DataFrame(
+        [{c: row.get(c, "") for c in columns} for row in rows], columns=list(columns)
+    )
+    frame = frame.astype(str).map(_fit_cell)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".xlsx")
+    os.close(handle)
+    try:
+        frame.to_excel(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise

@@ -53,10 +53,10 @@ Run the test suite:
 python -m pytest -q
 ```
 
-316 tests with the full stack installed; 149 still run with no third-party
+346 tests with the full stack installed; 149 still run with no third-party
 packages at all. No test needs a running server or an Azure key. The 15
 real-model tests are opt-in (they load 1.3 GB of weights) and bring the total
-to 331:
+to 361:
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -75,7 +75,9 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/vectorstore/` | `VectorStore` protocol + Qdrant and in-memory adapters |
 | `sps/indexing/` | **A** — watermark, delta reader, micro-batching indexer |
 | `sps/indexing/flat_file.py` | **A** — .csv / .xlsx source, streaming, SQL override |
-| `sps/retrieval/scoring.py` | **B.3** — metadata boosting arithmetic |
+| `sps/validators.py` | Part-number canonicalisation + ticket gatekeeping |
+| `sps/retrieval/in_memory.py` | **Primary retrieval** — filter, embed, rank per ticket |
+| `sps/retrieval/scoring.py` | **B.3** — metadata boosting (legacy Qdrant path) |
 | `sps/retrieval/retriever.py` | **B** — validation, retrieval, the 75% gate |
 | `sps/schemas.py` | Pydantic: LLM response schemas + the 4-key contract |
 | `sps/generation/prompts.py` | **C** — Actor and Judge system prompts |
@@ -85,7 +87,8 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `service/excel_output.py` | Contract — DataFrame — atomic .xlsx |
 | `service/status_file.py` | STATUS / EXIT_CODE / REASON side-channel |
 | `scripts/run_inference.cmd` | Reference Windows batch wrapper for the Performer |
-| `scripts/` | `run_indexer`, `audit_part_numbers`, `demo`, `verify_embedder` |
+| `scripts/run_resolver.py` | **Primary entry point** — ticket in, two workbooks out |
+| `scripts/` | `run_indexer` (legacy), `audit_part_numbers`, `demo`, `verify_embedder` |
 
 **Components A and B depend on nothing but the standard library.** Sanitization,
 dedup, the boosting arithmetic and the confidence gate import cleanly without
@@ -432,6 +435,104 @@ produced from those records.
 
 ---
 
+## The resolver (primary path)
+
+`scripts/run_resolver.py` resolves one ticket against a history file with **no
+vector database**. Because the part-number filter means semantic search only ever
+runs against one part's history, that history is small enough to embed on demand
+-- so the index, the indexer schedule, the embedded-storage lock and payload
+drift all stop existing.
+
+```bash
+python -m scripts.run_resolver --ticket-file ticket.xlsx \
+    --history-file history.csv --output-dir .\out
+```
+
+| Output | When | Columns |
+| --- | --- | --- |
+| `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason` |
+| `output.xlsx` | Only when `Status` is PASS | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_SPS_IDs` |
+
+Status codes: `SUCCESS`, `INVALID_INPUT`, `NO_MATCHES`,
+`BELOW_CONFIDENCE_THRESHOLD`, `LLM_AUDIT_REJECTED`, `INFRASTRUCTURE_ERROR`.
+
+Exit codes are kept alongside the sheet so a caller can branch without opening a
+workbook: **0** the run completed (PASS, or a legitimate FAIL such as a gated
+ticket), **1** an infrastructure fault worth retrying, **2** the inputs could not
+be read. Both workbooks are written atomically and cleared before any work
+starts, so a process killed outright leaves no stale result.
+
+Work is ordered cheapest-first, so nothing expensive runs for a ticket that
+cannot succeed:
+
+```
+validate -> filter history by part -> cap to newest 300 -> embed -> rank -> gate -> LLM
+```
+
+A malformed part number is rejected before the model is even loaded.
+
+### Measured latency, 300k-row history
+
+| step | cost |
+| --- | --- |
+| history scan, CSV | 1.45 s |
+| embed 242 candidates + query | 1.39 s |
+| **per ticket, warm process** | **2.84 s** |
+| model load, once per process | ~8 s |
+| **per ticket, cold CLI** | **~11 s** |
+
+Two things follow, and both matter operationally:
+
+1. **Use CSV for a large history.** The same 300k rows take **~40 s** as `.xlsx`
+   against ~1.5 s as `.csv`, because openpyxl inflates and parses XML per row
+   while a CSV is a linear read. The engine reads both; the format is the
+   difference between meeting the 3 s budget and missing it by 13x.
+2. **The 3 s budget only holds for a warm process.** Model load dominates a cold
+   CLI invocation. One ticket per process costs ~11 s regardless of how fast the
+   retrieval is; keep a resident process, or batch tickets, to amortise it.
+
+### Part-number gatekeeping
+
+`sps/validators.py` canonicalises with `.strip().upper()` plus removal of
+invisible characters -- zero-width space, zero-width joiner, BOM, word joiner,
+soft hyphen -- and interior whitespace. Non-breaking spaces from web forms and
+zero-width characters from copy-paste are invisible to whoever pasted them but
+turn an exact-match filter into a total miss.
+
+Structural delimiters are preserved: `0012-43951`, `0012/43951`, `0012_43951`
+and `0012.43951` remain four distinct identifiers.
+
+A ticket whose part number is missing, blank, or nothing but delimiters is
+rejected as `INVALID_INPUT` **before** any embedding or LLM call.
+
+### Threshold: recalibrate for bge-small
+
+The resolver uses `bge-small-en-v1.5` (384d), which is about ten times faster
+than `bge-large` on CPU -- 1.0 s versus 11 s to encode 300 candidates -- and is
+what makes per-ticket embedding viable at all.
+
+**It also scores systematically higher, so the 0.82 threshold does not carry
+over.** Same probe texts, same query:
+
+| candidate | bge-small | bge-large |
+| --- | --- | --- |
+| identical text | 0.9641 | 0.9389 |
+| paraphrase | 0.8736 | 0.7926 |
+| **different defect** (weld porosity vs seam cracking) | **0.8442** | 0.7831 |
+| unrelated | 0.5111 | 0.4395 |
+
+At 0.82, bge-large admits only the identical text; bge-small admits the
+paraphrase **and a materially different defect**. Carrying 0.82 across the model
+change silently loosens the gate. A starting point of **0.88-0.90** is closer to
+equivalent strictness, but the eval set should settle it -- this is four probe
+sentences, not a measurement.
+
+Metadata boosting is gone from this path entirely: part number is an exact
+filter, and the other boosts existed to discriminate within a mixed-part result
+set that no longer occurs. `Confidence_Score` is the cosine alone.
+
+---
+
 ## UiPath integration
 
 Deployed under a UiPath Dispatcher-Performer on Windows Server. **No web
@@ -745,6 +846,7 @@ tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-cl
 tests/test_flat_file_source.py         31   .csv/.xlsx parity, header mapping, numeric identifiers, ingest logic
 tests/test_qdrant_adapter.py           27   the adapter against a real Qdrant engine, server and embedded
 tests/test_audit_part_numbers.py       21   drift detection, payload-only repair, assumption checks
+tests/test_resolver.py                 30   validation, part filtering, capping, dual workbooks
 tests/test_structured_outputs.py       17   strict response_format, fallback, schema boundaries
 tests/test_pipeline_contract.py        13   every exit path emits a valid contract
 tests/test_config.py                    9   env loading, spec constants, batch-band validation

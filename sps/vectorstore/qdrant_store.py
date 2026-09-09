@@ -1,4 +1,13 @@
-"""Qdrant-backed VectorStore (cosine distance + metadata payloads)."""
+"""Qdrant-backed VectorStore (cosine distance + metadata payloads).
+
+LEGACY PATH -- not on the resolver flow.
+
+The primary entry point is now `scripts/run_resolver.py`, which filters a
+history file by part number and embeds the survivors per ticket, so there is
+no persistent index to build or maintain. This module is retained for
+`service/run_inference.py` and for a future return to a persistent index;
+nothing on the resolver path imports it.
+"""
 
 from __future__ import annotations
 
