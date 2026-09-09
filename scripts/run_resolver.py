@@ -33,6 +33,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# The threshold is a property of the embedding model, so it is defined beside
+# the engine that applies it rather than repeated here.
+from sps.retrieval.in_memory import DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_THRESHOLD
+
 logger = logging.getLogger("sps.resolver")
 
 EXIT_OK = 0
@@ -56,7 +60,6 @@ OUTPUT_FILE = "output.xlsx"
 # which is what makes embedding at query time viable.
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_DIMENSION = 384
-DEFAULT_THRESHOLD = 0.82
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

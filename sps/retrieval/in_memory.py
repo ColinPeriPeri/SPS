@@ -6,7 +6,7 @@ index, the indexer schedule, the embedded-storage lock and payload drift all
 stop existing.
 
 The cost moves to load time: the history file is scanned once per ticket.
-Measured on this hardware at 300k rows, that is about 0.8 s for CSV and about
+Measured on this hardware at 300k rows, that is about 1.5 s for CSV and about
 40 s for XLSX, because openpyxl must inflate and parse XML per row while a CSV
 is a linear read. Prefer CSV for a large history; the engine reads both.
 
@@ -51,6 +51,15 @@ EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 # short texts with bge-small on CPU, this keeps the embedding step near a
 # second even for a part with thousands of records.
 MAX_CANDIDATES = 300
+
+# Calibrated for bge-small-en-v1.5, which scores systematically higher than
+# bge-large: on the same probe texts a materially different defect reaches
+# 0.8442 here against 0.7831 there. Carrying bge-large's 0.82 across the model
+# change would silently loosen the gate, so this path gates at 0.89.
+#
+# This value is coupled to the model. It is NOT right for the legacy bge-large
+# path, where it would reject even a close paraphrase (0.7926).
+DEFAULT_CONFIDENCE_THRESHOLD = 0.89
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -286,7 +295,7 @@ class InMemoryRetriever:
 
     embedder: Any
     history_path: Path | str
-    confidence_threshold: float = 0.82
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
     max_candidates: int = MAX_CANDIDATES
     max_context_records: int = 15
     min_text_length: int = 15

@@ -53,10 +53,10 @@ Run the test suite:
 python -m pytest -q
 ```
 
-346 tests with the full stack installed; 149 still run with no third-party
+349 tests with the full stack installed; 149 still run with no third-party
 packages at all. No test needs a running server or an Azure key. The 15
 real-model tests are opt-in (they load 1.3 GB of weights) and bring the total
-to 361:
+to 364:
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -523,9 +523,18 @@ over.** Same probe texts, same query:
 
 At 0.82, bge-large admits only the identical text; bge-small admits the
 paraphrase **and a materially different defect**. Carrying 0.82 across the model
-change silently loosens the gate. A starting point of **0.88-0.90** is closer to
-equivalent strictness, but the eval set should settle it -- this is four probe
-sentences, not a measurement.
+change would silently loosen the gate, so **the resolver default is 0.89**
+(`DEFAULT_CONFIDENCE_THRESHOLD` in `sps/retrieval/in_memory.py`, which the CLI
+imports rather than repeating).
+
+That figure comes from four probe sentences, not a measurement -- the eval set
+should confirm or move it.
+
+> **The threshold is coupled to the model.** 0.89 belongs to bge-small. The
+> legacy `service/run_inference.py` path runs bge-large, where 0.89 would reject
+> even a close paraphrase (0.7926); its default stays at the spec's 0.75.
+> `SPS_CONFIDENCE_THRESHOLD` is read by both entry points, so set it per
+> invocation, or pass `--threshold`, if you run the legacy path.
 
 Metadata boosting is gone from this path entirely: part number is an exact
 filter, and the other boosts existed to discriminate within a mixed-part result
@@ -846,7 +855,7 @@ tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-cl
 tests/test_flat_file_source.py         31   .csv/.xlsx parity, header mapping, numeric identifiers, ingest logic
 tests/test_qdrant_adapter.py           27   the adapter against a real Qdrant engine, server and embedded
 tests/test_audit_part_numbers.py       21   drift detection, payload-only repair, assumption checks
-tests/test_resolver.py                 30   validation, part filtering, capping, dual workbooks
+tests/test_resolver.py                 33   validation, part filtering, capping, dual workbooks, threshold
 tests/test_structured_outputs.py       17   strict response_format, fallback, schema boundaries
 tests/test_pipeline_contract.py        13   every exit path emits a valid contract
 tests/test_config.py                    9   env loading, spec constants, batch-band validation

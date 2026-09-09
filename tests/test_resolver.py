@@ -363,3 +363,49 @@ def test_reason_is_a_single_line(tmp_path, passing_llm):
     """Newlines would break a one-row-per-run sheet for anyone reading it back."""
     _, out = run_cli(tmp_path, part="0099-99999")
     assert "\n" not in read_sheet(out / "status.xlsx").iloc[0]["Reason"]
+
+
+# ------------------------------------------------------------------ threshold
+
+
+def test_default_threshold_is_calibrated_for_bge_small():
+    """0.89, not the spec's 0.75 or bge-large's 0.82. bge-small scores higher on
+    the same texts, so carrying a lower number over would loosen the gate."""
+    from sps.retrieval.in_memory import DEFAULT_CONFIDENCE_THRESHOLD, InMemoryRetriever
+
+    assert DEFAULT_CONFIDENCE_THRESHOLD == 0.89
+    assert resolver.DEFAULT_THRESHOLD == 0.89
+    assert InMemoryRetriever.__dataclass_fields__["confidence_threshold"].default == 0.89
+
+
+def test_the_legacy_path_keeps_its_own_threshold():
+    """The resolver's 0.89 is coupled to bge-small. Applying it to the bge-large
+    path would reject even a close paraphrase, so that default is left alone."""
+    from sps.config import CONFIDENCE_THRESHOLD
+
+    assert CONFIDENCE_THRESHOLD == 0.75
+    assert CONFIDENCE_THRESHOLD != resolver.DEFAULT_THRESHOLD
+
+
+def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):
+    """--threshold beats the environment, which beats the built-in default."""
+    # The history problem only partly overlaps the ticket's, so the score lands
+    # between the two thresholds under test rather than at a perfect 1.0.
+    write_history(tmp_path / "h.xlsx",
+                  [row("SPS-1001", problem="Weld seam cracking found on the bracket")])
+    write_ticket(tmp_path / "t.xlsx")
+    common = ["--ticket-file", str(tmp_path / "t.xlsx"),
+              "--history-file", str(tmp_path / "h.xlsx")]
+
+    monkeypatch.delenv("SPS_CONFIDENCE_THRESHOLD", raising=False)
+    args = resolver.parse_args(common)
+    assert args.threshold is None          # falls through to the default
+
+    monkeypatch.setenv("SPS_CONFIDENCE_THRESHOLD", "0.95")
+    out = tmp_path / "env"
+    resolver.main(common + ["--output-dir", str(out)])
+    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
+
+    out2 = tmp_path / "flag"
+    resolver.main(common + ["--output-dir", str(out2), "--threshold", "0.1"])
+    assert read_sheet(out2 / "status.xlsx").iloc[0]["Status_Code"] == "SUCCESS"
