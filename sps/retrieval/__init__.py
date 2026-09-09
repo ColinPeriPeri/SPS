@@ -1,11 +1,21 @@
-from .retriever import RetrievalOutcome, RetrievalStatus, Retriever
-from .scoring import composite_score, rank_candidates, to_candidate
+from .in_memory import (
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    MAX_CANDIDATES,
+    HistoryError,
+    HistoryRow,
+    InMemoryRetriever,
+    RetrievalStats,
+    cap_to_newest,
+    load_matching_history,
+)
 
 __all__ = [
-    "RetrievalOutcome",
-    "RetrievalStatus",
-    "Retriever",
-    "composite_score",
-    "rank_candidates",
-    "to_candidate",
+    "DEFAULT_CONFIDENCE_THRESHOLD",
+    "MAX_CANDIDATES",
+    "HistoryError",
+    "HistoryRow",
+    "InMemoryRetriever",
+    "RetrievalStats",
+    "cap_to_newest",
+    "load_matching_history",
 ]

@@ -1,105 +1,27 @@
-"""Data contracts shared across the SPS pipeline.
+"""Data contracts shared across the resolver.
 
-Pure stdlib: importable without torch / qdrant / openai installed so the
-scoring, gating and loop-control logic stays unit-testable on any machine.
+Pure stdlib apart from `validators`, so the ticket and result shapes stay
+importable without the ML stack.
 """
 
 from __future__ import annotations
 
-import hashlib
 import math
-import re
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Sequence
+from typing import Any
 
-# Sentinel string the contract requires for every non-success path.
+from .validators import normalize_part_number
+
+# Sentinel string used whenever no recommendation is produced.
 SOLUTION_NOT_FOUND = "Solution not found."
-
-# Metadata payload keys, in the order fixed by the spec.
-PAYLOAD_FIELDS: tuple[str, ...] = (
-    "sps_id",
-    "content_hash",
-    "actual_solution",
-    "part_number",
-    "part_description",
-    "item_status",
-    "problem_reason_code",
-    "issue_type",
-)
-
-
-PAIR_SEPARATOR = chr(31)  # ASCII unit separator
-
-_WHITESPACE = re.compile(r"\s+")
-
-
-def normalize_text(text: str) -> str:
-    """Collapse runs of whitespace and trim.
-
-    Applied before length checks so a field of spaces or newlines cannot pass
-    the minimum-length gate, and before hashing so cosmetic reformatting does
-    not read as a distinct record.
-    """
-    return _WHITESPACE.sub(" ", (text or "")).strip()
-
-
-def content_hash(problem: str, solution: str) -> str:
-    """Stable SHA-256 identity of a problem-solution *pair*.
-
-    Case- and whitespace-insensitive. Persisted in the vector payload so
-    duplicates can be detected across indexing runs, not just within one.
-    """
-    # Joined on the ASCII unit separator, which cannot occur in SPS free text,
-    # so ("ab", "c") and ("a", "bc") cannot hash alike.
-    problem_key = normalize_text(problem).casefold()
-    solution_key = normalize_text(solution).casefold()
-    basis = problem_key + PAIR_SEPARATOR + solution_key
-    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
-
-
-def normalize_part_number(value: Any) -> str:
-    """Canonical form of a part number: trimmed and upper-cased.
-
-    Applied on both sides -- at ingest, so the payload is written canonically,
-    and on the incoming ticket -- so the vector search's exact-match filter
-    cannot miss on casing alone and report NO_MATCHES for a part that is
-    genuinely in the index.
-    """
-    return _clean(value).upper()
-
-
-def _lookup(data: dict[str, Any], field: str) -> Any:
-    """Fetch `field` from a payload, ignoring key casing and separators.
-
-    Every other interface in this system names fields the SQL way
-    (`Problem_Description`, `Part_Number`), so a caller hand-writing a ticket
-    naturally uses that form. Reading only the lower-case spelling silently
-    yields an empty ticket: the description is judged invalid, the part number
-    is dropped so the search filter fails open, and the whole thing exits 0
-    looking like a legitimate refusal.
-    """
-    if field in data:
-        return data[field]
-    wanted = field.replace("_", "")
-    for key, value in data.items():
-        if str(key).strip().casefold().replace("_", "").replace(" ", "") == wanted:
-            return value
-    return None
 
 
 def _clean(value: Any) -> str:
     """Coerce any source value to a trimmed string; None/NaN become ''.
 
     Whole floats render without the fractional part. Excel holds every number as
-    a double, so a numeric-looking identifier -- a part number like 1243951, an
-    SPS_ID like 1001 -- can arrive as 1243951.0 and would otherwise be stored as
-    "1243951.0": an identifier that matches nothing and cites nothing. Genuine
-    decimals are left alone.
-
-    This cannot recover leading zeros. If a spreadsheet stored "0012-43951" as a
-    number rather than text, the zeros were lost before this code saw the file;
-    format such columns as Text, or supply CSV.
+    a double, so a numeric-looking identifier can arrive as 1001.0 and would
+    otherwise become "1001.0": an id that matches nothing and cites nothing.
     """
     if value is None:
         return ""
@@ -111,70 +33,27 @@ def _clean(value: Any) -> str:
     return str(value).strip()
 
 
-@dataclass(frozen=True, slots=True)
-class SourceRecord:
-    """One row read from the source relational database (Component A input)."""
+def _lookup(data: dict[str, Any], field_name: str) -> Any:
+    """Fetch a field from a ticket payload, ignoring key casing and separators.
 
-    sps_id: str
-    problem_description: str
-    actual_solution: str
-    part_number: str = ""
-    part_description: str = ""
-    item_status: str = ""
-    problem_reason_code: str = ""
-    issue_type: str = ""
-    last_modified_date: datetime | None = None
-
-    def __post_init__(self) -> None:
-        # Frozen dataclass: normalise in place so every construction path -- SQL,
-        # flat file, cleanse() rebuilds, tests -- writes the same canonical form.
-        canonical = normalize_part_number(self.part_number)
-        if canonical != self.part_number:
-            object.__setattr__(self, "part_number", canonical)
-
-    @classmethod
-    def from_row(cls, row: dict[str, Any]) -> "SourceRecord":
-        """Build from a DB row mapping, tolerating NULLs and stray whitespace."""
-        lmd = row.get("last_modified_date")
-        if isinstance(lmd, str):
-            lmd = datetime.fromisoformat(lmd)
-        return cls(
-            sps_id=_clean(row.get("sps_id")),
-            problem_description=_clean(row.get("problem_description")),
-            actual_solution=_clean(row.get("actual_solution")),
-            part_number=_clean(row.get("part_number")),
-            part_description=_clean(row.get("part_description")),
-            item_status=_clean(row.get("item_status")),
-            problem_reason_code=_clean(row.get("problem_reason_code")),
-            issue_type=_clean(row.get("issue_type")),
-            last_modified_date=lmd,
-        )
-
-    def content_digest(self) -> str:
-        """SHA-256 of this record's sanitized problem-solution pair."""
-        return content_hash(self.problem_description, self.actual_solution)
-
-    def payload(self) -> dict[str, str]:
-        """Metadata payload upserted alongside the vector."""
-        return {
-            "sps_id": self.sps_id,
-            "content_hash": self.content_digest(),
-            "actual_solution": self.actual_solution,
-            "part_number": self.part_number,
-            "part_description": self.part_description,
-            "item_status": self.item_status,
-            "problem_reason_code": self.problem_reason_code,
-            "issue_type": self.issue_type,
-        }
-
-    def sort_key(self) -> tuple[datetime, str]:
-        """Recency ordering used to pick the survivor among duplicate pairs."""
-        return (self.last_modified_date or datetime.min, self.sps_id)
+    Every other interface names fields the SQL way (`Problem_Description`,
+    `Part_Number`), so a caller writing a ticket by hand naturally uses that
+    form. Reading only the lower-case spelling yields an empty ticket: the
+    description is judged invalid and the part number is dropped, while the run
+    still completes and looks like a legitimate refusal.
+    """
+    if field_name in data:
+        return data[field_name]
+    wanted = field_name.replace("_", "")
+    for key, value in data.items():
+        if str(key).strip().casefold().replace("_", "").replace(" ", "") == wanted:
+            return value
+    return None
 
 
 @dataclass(frozen=True, slots=True)
 class IncomingTicket:
-    """A supplier-submitted problem sheet awaiting an AI recommendation."""
+    """A supplier-submitted problem sheet awaiting a recommendation."""
 
     problem_description: str
     sps_id: str = ""
@@ -185,16 +64,15 @@ class IncomingTicket:
     issue_type: str = ""
 
     def __post_init__(self) -> None:
+        # Frozen dataclass: canonicalise in place so every construction path
+        # yields the same part-number form the history filter matches on.
         canonical = normalize_part_number(self.part_number)
         if canonical != self.part_number:
             object.__setattr__(self, "part_number", canonical)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "IncomingTicket":
-        """Build from a ticket payload, accepting either key spelling.
-
-        `Problem_Description` and `problem_description` both work; see _lookup.
-        """
+        """Build from a ticket payload, accepting either key spelling."""
         return cls(
             problem_description=_clean(_lookup(data, "problem_description")),
             sps_id=_clean(_lookup(data, "sps_id")),
@@ -207,16 +85,8 @@ class IncomingTicket:
 
 
 @dataclass(frozen=True, slots=True)
-class SearchHit:
-    """Raw vector-DB result: payload plus cosine similarity."""
-
-    payload: dict[str, str]
-    cosine_similarity: float
-
-
-@dataclass(frozen=True, slots=True)
 class Candidate:
-    """A retrieved historical record after metadata boosting (Component B.3)."""
+    """A historical record retrieved for the incoming ticket."""
 
     sps_id: str
     actual_solution: str
@@ -234,52 +104,29 @@ class Candidate:
         return score_to_percent(self.composite_score)
 
 
-@dataclass(frozen=True, slots=True)
-class VectorPoint:
-    """A vector plus its metadata payload, ready to upsert."""
-
-    sps_id: str
-    vector: Sequence[float]
-    payload: dict[str, str]
-
-
 def score_to_percent(score: float) -> int:
     """Format a 0..1 score as an integer percent.
 
-    Truncates rather than rounds: a system that gates at 75% must never report
-    "75%" for a candidate it rejected at 0.7499, and understating confidence is
+    Truncates rather than rounds: a system that gates at 89% must never report
+    "89%" for a candidate it rejected at 0.8899, and understating confidence is
     the safe direction for a compliance-reviewed recommendation.
     """
-    bounded = min(max(score, 0.0), 1.0)
-    return int(bounded * 100)
+    return int(min(max(score, 0.0), 1.0) * 100)
 
 
 @dataclass(frozen=True, slots=True)
 class PipelineResult:
-    """The final, admin-facing output (Section 4 contract)."""
+    """The recommendation handed to the output writer."""
 
     ai_recommendation: str
     justification: str
     confidence: str
     sps_ids_referred: list[str] = field(default_factory=list)
-    # Operational signals only -- deliberately NOT part of to_contract(), which
-    # must stay exactly the four keys of the Section 4 schema.
-    #
-    # infrastructure_failure lets a caller set a process exit code / raise a
-    # system exception on a dependency outage. diagnostic carries the specific
-    # cause for the ops status file, which may say "Missing Azure credentials"
-    # where the supplier-facing Justification must stay generic.
+    # Operational signals only, never written to output.xlsx. They let the
+    # caller separate a dependency outage, which is worth retrying, from a
+    # legitimate refusal, which is not.
     infrastructure_failure: bool = False
     diagnostic: str = ""
-
-    def to_contract(self) -> dict[str, Any]:
-        """Serialise to the exact JSON schema the service must emit."""
-        return {
-            "AI_Recommendation": self.ai_recommendation,
-            "Justification": self.justification,
-            "Confidence": self.confidence,
-            "SPS_IDs_Referred": list(self.sps_ids_referred),
-        }
 
     @property
     def succeeded(self) -> bool:

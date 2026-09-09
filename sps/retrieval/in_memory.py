@@ -25,7 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-from ..contracts import Candidate, IncomingTicket, SearchHit
+from ..contracts import Candidate, IncomingTicket
+from ..embedding import Embedder
 from ..validators import normalize_part_number
 
 logger = logging.getLogger(__name__)
@@ -293,7 +294,7 @@ def cap_to_newest(rows: list[HistoryRow], limit: int = MAX_CANDIDATES) -> list[H
 class InMemoryRetriever:
     """Filter, embed and rank one part's history per ticket."""
 
-    embedder: Any
+    embedder: Embedder
     history_path: Path | str
     confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
     max_candidates: int = MAX_CANDIDATES
@@ -375,11 +376,3 @@ def _to_candidate(row: HistoryRow, similarity: float) -> Candidate:
         cosine_similarity=bounded,
         composite_score=bounded,
     )
-
-
-def to_search_hits(rows: Sequence[HistoryRow], similarities: Sequence[float]) -> list[SearchHit]:
-    """Adapter for anything still expecting the vector-store shape."""
-    return [
-        SearchHit(payload=row.payload(), cosine_similarity=float(sim))
-        for row, sim in zip(rows, similarities)
-    ]

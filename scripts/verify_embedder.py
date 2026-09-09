@@ -1,18 +1,18 @@
-"""Acceptance checks for the real BAAI/bge-large-en-v1.5 embedder.
+"""Acceptance checks for the real BAAI/bge-small-en-v1.5 embedder.
 
 Everything else in the suite runs against a deterministic stand-in. This script
 exercises the actual model to confirm the three properties the pipeline's maths
 depends on:
 
-  1. 1024 dimensions exactly.
-  2. L2-normalized output -- the vector DB's cosine distance is only a plain dot
-     product if this holds, and the 0.75 gate is calibrated on cosine.
+  1. 384 dimensions exactly.
+  2. L2-normalized output -- ranking is a dot product of normalised vectors,
+     which is the cosine the 0.89 gate is calibrated on.
   3. The BGE query-instruction prefix is applied to queries and NOT to passages.
 
 It also reports real cosine numbers for related vs unrelated SPS text, so the
-75% threshold can be sanity-checked against the actual embedding space.
+0.89 threshold can be sanity-checked against the actual embedding space.
 
-    python -m scripts.verify_embedder            # downloads ~1.3 GB on first run
+    python -m scripts.verify_embedder            # downloads ~130 MB on first run
     python -m scripts.verify_embedder --quiet
 """
 
@@ -78,16 +78,16 @@ def main(argv: list[str] | None = None) -> int:
     # ---------------------------------------------------------------- 1. dims
     print("1. Dimensions")
     reported = embedder.model.get_sentence_embedding_dimension()
-    checks.check("model reports 1024 dimensions", reported == 1024, f"got {reported}")
+    checks.check("model reports 384 dimensions", reported == 384, f"got {reported}")
 
     passages = embedder.embed_passages([PROBLEM, PARAPHRASE, UNRELATED])
     checks.check(
-        "embed_passages returns 1024-dim vectors",
-        all(len(v) == 1024 for v in passages),
+        "embed_passages returns 384-dim vectors",
+        all(len(v) == 384 for v in passages),
         f"lengths {[len(v) for v in passages]}",
     )
     query_vec = embedder.embed_query(PROBLEM)
-    checks.check("embed_query returns a 1024-dim vector", len(query_vec) == 1024,
+    checks.check("embed_query returns a 384-dim vector", len(query_vec) == 384,
                  f"got {len(query_vec)}")
     checks.check("configured dimension matches the model", embedder.dimension == reported)
 
@@ -104,8 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         abs(l2(query_vec) - 1.0) < TOLERANCE,
         f"norm {l2(query_vec):.8f}",
     )
-    # If vectors are normalized, dot product == cosine. This is the assumption
-    # the Qdrant COSINE distance and the 0.75 gate both rest on.
+    # If vectors are normalized, dot product == cosine -- the assumption the
+    # NumPy matmul ranking and the 0.89 gate both rest on.
     d, c = dot(passages[0], passages[1]), cosine(passages[0], passages[1])
     checks.check(
         "dot product equals cosine similarity",
@@ -165,13 +165,13 @@ def main(argv: list[str] | None = None) -> int:
         f"{scored_prefixed['paraphrase']:.4f} > {scored_prefixed['unrelated']:.4f}",
     )
     checks.check(
-        "exact match clears the 0.75 gate",
-        scored_prefixed["exact"] >= 0.75,
+        "exact match clears the 0.89 gate",
+        scored_prefixed["exact"] >= 0.89,
         f"{scored_prefixed['exact']:.4f}",
     )
     checks.check(
-        "unrelated record is blocked by the 0.75 gate",
-        scored_prefixed["unrelated"] < 0.75,
+        "unrelated record is blocked by the 0.89 gate",
+        scored_prefixed["unrelated"] < 0.89,
         f"{scored_prefixed['unrelated']:.4f}",
     )
     checks.check(

@@ -369,22 +369,16 @@ def test_reason_is_a_single_line(tmp_path, passing_llm):
 
 
 def test_default_threshold_is_calibrated_for_bge_small():
-    """0.89, not the spec's 0.75 or bge-large's 0.82. bge-small scores higher on
-    the same texts, so carrying a lower number over would loosen the gate."""
+    """0.89, not the spec's 0.75 or bge-large's 0.82: bge-small scores higher on
+    the same texts, so carrying a lower number over would loosen the gate.
+
+    Now that the bge-large path is gone there is only one threshold in the
+    codebase, and it lives beside the engine that applies it."""
     from sps.retrieval.in_memory import DEFAULT_CONFIDENCE_THRESHOLD, InMemoryRetriever
 
     assert DEFAULT_CONFIDENCE_THRESHOLD == 0.89
     assert resolver.DEFAULT_THRESHOLD == 0.89
     assert InMemoryRetriever.__dataclass_fields__["confidence_threshold"].default == 0.89
-
-
-def test_the_legacy_path_keeps_its_own_threshold():
-    """The resolver's 0.89 is coupled to bge-small. Applying it to the bge-large
-    path would reject even a close paraphrase, so that default is left alone."""
-    from sps.config import CONFIDENCE_THRESHOLD
-
-    assert CONFIDENCE_THRESHOLD == 0.75
-    assert CONFIDENCE_THRESHOLD != resolver.DEFAULT_THRESHOLD
 
 
 def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):

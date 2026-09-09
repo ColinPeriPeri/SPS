@@ -250,24 +250,34 @@ def test_judge_prompt_carries_both_mandated_checks():
     assert "Rework the weld seam." in user  # the source of truth it audits against
 
 
-def test_new_payload_fields_cannot_reach_the_actor_or_judge():
-    """content_hash is an ETL bookkeeping field. Candidate has no slot for it and
-    the prompt builders read named attributes only, so an added payload key can
-    never reach the model."""
-    from sps.contracts import PAYLOAD_FIELDS
-    from sps.retrieval.scoring import to_candidate
-    from sps.contracts import SearchHit
+def test_history_metadata_cannot_reach_the_actor_or_judge():
+    """The Actor is shown the incoming problem and the historical solution text,
+    nothing else. Candidate carries metadata, but the prompt builders read named
+    attributes only, so a field added to history can never reach the model."""
+    from sps.retrieval.in_memory import HistoryRow, _to_candidate
 
-    digest = "d" * 64
-    payload = {name: f"value-{name}" for name in PAYLOAD_FIELDS}
-    payload["content_hash"] = digest
-    candidate = to_candidate(SearchHit(payload=payload, cosine_similarity=0.9), TICKET)
+    secret = "INTERNAL-MES-REF-9931"
+    candidate = _to_candidate(
+        HistoryRow(
+            sps_id="SPS-100",
+            part_number="0012-43951",
+            problem_description="Weld seam cracking on the bracket",
+            actual_solution="Rework the weld seam and re-inspect.",
+            issue_type=secret,
+            problem_reason_code=secret,
+            part_description=secret,
+            item_status=secret,
+        ),
+        0.93,
+    )
 
-    assert not hasattr(candidate, "content_hash")
     for messages in (
         build_actor_messages(TICKET, [candidate]),
         build_judge_messages(TICKET, [candidate], "draft"),
     ):
         blob = "".join(m["content"] for m in messages)
-        assert digest not in blob
-        assert "content_hash" not in blob
+        assert secret not in blob
+    # What the model *is* shown: the SPS ID and the solution text.
+    user = build_actor_messages(TICKET, [candidate])[1]["content"]
+    assert "SPS-100" in user
+    assert "Rework the weld seam" in user

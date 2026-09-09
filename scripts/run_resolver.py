@@ -33,8 +33,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# The threshold is a property of the embedding model, so it is defined beside
-# the engine that applies it rather than repeated here.
+# The model, its dimension and the threshold are all properties of the
+# embedding space, defined once beside the code that owns them.
+from sps.config import DEFAULT_DIMENSION, DEFAULT_MODEL_NAME as DEFAULT_MODEL
 from sps.retrieval.in_memory import DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_THRESHOLD
 
 logger = logging.getLogger("sps.resolver")
@@ -55,11 +56,6 @@ CODE_INFRASTRUCTURE = "INFRASTRUCTURE_ERROR"
 
 STATUS_FILE = "status.xlsx"
 OUTPUT_FILE = "output.xlsx"
-
-# bge-small: 384 dimensions, and about ten times faster than bge-large on CPU,
-# which is what makes embedding at query time viable.
-DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
-DEFAULT_DIMENSION = 384
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -111,6 +107,23 @@ def read_ticket(path: Path) -> dict[str, Any]:
             if str(h or "").strip()
         }
     raise ValueError(f"Ticket file has a header but no data row: {path}")
+
+
+def _load_dotenv() -> None:
+    """Best-effort .env load.
+
+    A process launched by a UiPath robot does not necessarily inherit an
+    interactive shell's environment, so the deployment's .env is read here.
+    Real environment variables always win (`override=False`).
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"):
+        if candidate.exists():
+            load_dotenv(candidate, override=False)
+            return
 
 
 def _now() -> str:
@@ -261,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
+
+    _load_dotenv()
 
     output_dir = Path(args.output_dir)
     try:

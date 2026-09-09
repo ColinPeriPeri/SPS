@@ -1,6 +1,6 @@
 """Test doubles for the embedder and the chat client.
 
-Neither the ML stack nor Azure is required to exercise the full pipeline.
+Neither the ML stack nor Azure is required to exercise the resolver.
 """
 
 from __future__ import annotations
@@ -8,12 +8,10 @@ from __future__ import annotations
 import math
 import re
 import zlib
-from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 import pytest
 
-from sps.contracts import SourceRecord
 
 DIM = 128
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -76,33 +74,6 @@ class ScriptedChatClient:
     @property
     def call_count(self) -> int:
         return len(self.calls)
-
-
-BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-
-def make_record(
-    sps_id: str,
-    problem: str = "Bracket weld seam cracking observed during incoming inspection",
-    solution: str = "Rework the weld seam and re-inspect before shipment",
-    minutes: int = 0,
-    **overrides,
-) -> SourceRecord:
-    fields = {
-        "part_number": "PN-1000",
-        "part_description": "Mounting bracket",
-        "item_status": "Active",
-        "problem_reason_code": "RC-WELD",
-        "issue_type": "Quality",
-    }
-    fields.update(overrides)
-    return SourceRecord(
-        sps_id=sps_id,
-        problem_description=problem,
-        actual_solution=solution,
-        last_modified_date=BASE_TIME + timedelta(minutes=minutes),
-        **fields,
-    )
 
 
 @pytest.fixture

@@ -12,7 +12,7 @@ pytest.importorskip("pydantic")
 
 from sps.config import LLMSettings  # noqa: E402
 from sps.generation.llm import AzureOpenAIChatClient, LLMError, validate_json  # noqa: E402
-from sps.schemas import ActorDraft, JudgeVerdict, SPSContract  # noqa: E402
+from sps.schemas import ActorDraft, JudgeVerdict  # noqa: E402
 
 
 class _Message:
@@ -173,34 +173,3 @@ def test_actor_schema_forbids_extra_fields():
 def test_validate_json_turns_a_schema_violation_into_llm_error():
     with pytest.raises(LLMError):
         validate_json('{"recommendation": "x"}', ActorDraft)
-
-
-def test_contract_schema_keys_match_the_delivered_contract():
-    assert list(SPSContract.model_fields) == [
-        "AI_Recommendation",
-        "Justification",
-        "Confidence",
-        "SPS_IDs_Referred",
-    ]
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "connection reset by peer",
-        "Request timed out",
-        "503 Service Unavailable",
-        "rate limit exceeded",
-    ],
-)
-async def test_transient_faults_never_disable_structured_outputs(message):
-    """A capability gap names the feature; an outage does not. Misreading an
-    outage as a gap would silently downgrade every later call."""
-    fake = FakeAzure(parse_error=RuntimeError(message))
-    engine = client(fake)
-
-    with pytest.raises(LLMError, match="request failed"):
-        await engine.complete_model(MESSAGES, ActorDraft)
-
-    assert engine._structured_outputs_supported is True
-    assert fake.create_calls == []
