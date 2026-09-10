@@ -94,26 +94,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def read_ticket(path: Path) -> dict[str, Any]:
     """Read the first data row of a single-ticket file.
 
-    Header keys are returned verbatim; the caller resolves spelling via
-    IncomingTicket.from_dict, which already matches keys case-insensitively.
+    Format-agnostic: .csv and .xlsx both arrive here as a header row plus data
+    rows, and the keys are returned verbatim. IncomingTicket.from_dict resolves
+    spelling, matching keys case-insensitively.
     """
-    from sps.retrieval.in_memory import _iter_rows
+    from sps.file_reader import FileReadError, is_blank, read_header_and_rows
 
-    rows = _iter_rows(path)
-    try:
-        headers = next(rows)
-    except StopIteration:
-        raise ValueError(f"Ticket file is empty: {path}") from None
-
+    headers, rows = read_header_and_rows(path, "Ticket file")
     for row in rows:
-        if row is None or all(c in (None, "") for c in row):
+        if is_blank(row):
             continue
         return {
             str(h).strip(): (row[i] if i < len(row) else "")
             for i, h in enumerate(headers)
             if str(h or "").strip()
         }
-    raise ValueError(f"Ticket file has a header but no data row: {path}")
+    raise FileReadError(f"Ticket file {path.name!r} has a header but no data row.")
 
 
 def _load_dotenv() -> None:
@@ -131,6 +127,15 @@ def _load_dotenv() -> None:
         if candidate.exists():
             load_dotenv(candidate, override=False)
             return
+
+
+def _reason_with_marker(reason: str, embedding_model: str) -> str:
+    """Append [Azure] or [Local] so the encoder is visible in Reason itself."""
+    flat = " ".join(str(reason).split())
+    if not embedding_model:
+        return flat
+    marker = "[Azure]" if embedding_model.startswith("azure") else "[Local]"
+    return f"{flat} {marker}"
 
 
 def _describe_backend(stats) -> str:
@@ -161,7 +166,11 @@ def write_status(output_dir: Path, code: str, reason: str, embedding_model: str 
                 "Execution_Timestamp": _now(),
                 "Status": status,
                 "Status_Code": code,
-                "Reason": " ".join(str(reason).split()),
+                # The marker is appended to Reason as well as carried in its
+                # own column: a support engineer skimming the sheet, or a
+                # caller reading only the first four columns, still sees which
+                # encoder ran without having to know the column exists.
+                "Reason": _reason_with_marker(reason, embedding_model),
                 # Blank when the run aborted before embedding, which is itself
                 # information: nothing was encoded.
                 "Embedding_Model": embedding_model,
@@ -206,15 +215,31 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, 
     from sps.retrieval.in_memory import HistoryError, InMemoryRetriever
     from sps.validators import normalize_part_number, validate_ticket
 
+    from sps.file_reader import FileReadError, UnsupportedFileType, validate_file_type
+
     ticket_path = Path(args.ticket_file)
     history_path = Path(args.history_file)
-    for label, path in (("Ticket", ticket_path), ("History", history_path)):
+
+    # Extension check first, on both files, before anything is opened, any model
+    # is loaded or any history is scanned. The wrong attachment is a business
+    # problem for whoever assembled the ticket, not an I/O fault: it reports
+    # INVALID_INPUT and exits 0, so the caller faults the item without retrying.
+    for label, path in (("Ticket file", ticket_path), ("History file", history_path)):
+        try:
+            validate_file_type(path, label)
+        except UnsupportedFileType as exc:
+            return CODE_INVALID_INPUT, str(exc), EXIT_OK, ""
+
+    # A file that is the right type but absent or unreadable is genuine I/O
+    # trouble, and keeps exit 2 so a human is alerted rather than the item
+    # being quietly faulted.
+    for label, path in (("Ticket file", ticket_path), ("History file", history_path)):
         if not path.exists():
-            return CODE_INVALID_INPUT, f"{label} file not found: {path}", EXIT_BAD_INPUT, ""
+            return CODE_INVALID_INPUT, f"{label} not found: {path}", EXIT_BAD_INPUT, ""
 
     try:
         raw = read_ticket(ticket_path)
-    except (ValueError, OSError) as exc:
+    except (FileReadError, ValueError, OSError) as exc:
         return CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT, ""
 
     ticket = IncomingTicket.from_dict(raw)

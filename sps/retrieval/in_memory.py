@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterator, Sequence
 
 from ..contracts import Candidate, IncomingTicket
 from ..embedding import Embedder
+from ..file_reader import FileReadError, is_blank, iter_rows
 from ..validators import normalize_part_number
 
 logger = logging.getLogger(__name__)
@@ -44,9 +45,6 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "last_modified_date": ("Last_Modified_Date", "Last Modified Date", "Modified"),
 }
 REQUIRED = ("sps_id", "part_number", "problem_description", "actual_solution")
-
-CSV_SUFFIXES = {".csv", ".tsv", ".txt"}
-EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 
 # Latency cap. Encoding is roughly linear in candidate count; at ~1 s per 300
 # short texts with bge-small on CPU, this keeps the embedding step near a
@@ -79,7 +77,12 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class HistoryError(ValueError):
-    """The history file cannot be used."""
+    """The history file cannot be used.
+
+    Raised for a structural problem -- a missing column, an empty sheet. An
+    unsupported *file type* raises UnsupportedFileType instead, because the
+    caller reports that differently.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,30 +207,6 @@ def _parse_date(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _iter_rows(path: Path) -> Iterator[Sequence[Any]]:
-    """Stream raw rows, header first, without materialising the file."""
-    suffix = path.suffix.lower()
-    if suffix in CSV_SUFFIXES:
-        import csv
-
-        delimiter = "\t" if suffix == ".tsv" else ","
-        with open(path, newline="", encoding="utf-8-sig") as handle:
-            yield from csv.reader(handle, delimiter=delimiter)
-    elif suffix in EXCEL_SUFFIXES:
-        from openpyxl import load_workbook
-
-        book = load_workbook(path, read_only=True, data_only=True)
-        try:
-            yield from book.active.iter_rows(values_only=True)
-        finally:
-            book.close()
-    else:
-        raise HistoryError(
-            f"Unsupported history file type {suffix!r}; expected one of "
-            f"{', '.join(sorted(CSV_SUFFIXES | EXCEL_SUFFIXES))}"
-        )
-
-
 def load_matching_history(
     path: Path | str,
     part_number: str,
@@ -240,20 +219,50 @@ def load_matching_history(
     regardless of how large the file is: only the matching rows are retained.
     """
     path = Path(path)
-    if not path.exists():
-        raise HistoryError(f"History file not found: {path}")
-
     stats = stats or RetrievalStats()
     wanted = normalize_part_number(part_number)
     started = time.time()
+
+    # The reader's own failures are re-raised as HistoryError so callers of this
+    # module have one exception to catch for "the history is unusable".
+    # UnsupportedFileType is deliberately not caught: the caller reports a wrong
+    # file type differently, and the resolver rejects it before reaching here.
+    try:
+        saw_header, kept = _scan(path, wanted, min_text_length, stats)
+    except FileReadError as exc:
+        raise HistoryError(str(exc)) from exc
+    if not saw_header:
+        raise HistoryError(f"History file is empty: {path}")
+
+    stats.usable = len(kept)
+    stats.load_seconds = time.time() - started
+    logger.info(
+        "Scanned %d row(s) in %.2fs; %d matched part %r, %d usable",
+        stats.rows_scanned,
+        stats.load_seconds,
+        stats.part_matches,
+        wanted,
+        stats.usable,
+    )
+    return kept
+
+
+def _scan(
+    path: Path, wanted: str, min_text_length: int, stats: RetrievalStats
+) -> tuple[bool, list[HistoryRow]]:
+    """Return (a header was seen, the usable rows for this part).
+
+    Split out so the read can be wrapped in one try without also catching the
+    caller's own error handling.
+    """
     mapping: dict[str, int] | None = None
     kept: list[HistoryRow] = []
 
-    for row in _iter_rows(path):
+    for row in iter_rows(path, "History file"):
         if mapping is None:
             mapping = build_header_map(list(row))
             continue
-        if row is None or all(c in (None, "") for c in row):
+        if is_blank(row):
             continue
         stats.rows_scanned += 1
 
@@ -283,20 +292,7 @@ def load_matching_history(
             )
         )
 
-    if mapping is None:
-        raise HistoryError(f"History file is empty: {path}")
-
-    stats.usable = len(kept)
-    stats.load_seconds = time.time() - started
-    logger.info(
-        "Scanned %d row(s) in %.2fs; %d matched part %r, %d usable",
-        stats.rows_scanned,
-        stats.load_seconds,
-        stats.part_matches,
-        wanted,
-        stats.usable,
-    )
-    return kept
+    return (mapping is not None), kept
 
 
 def cap_to_newest(rows: list[HistoryRow], limit: int = MAX_CANDIDATES) -> list[HistoryRow]:

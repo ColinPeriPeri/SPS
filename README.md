@@ -48,7 +48,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-91 tests, none of which needs a server, an Azure key or a model download. The
+122 tests, none of which needs a server, an Azure key or a model download. The
 real-model checks are opt-in (~130 MB of weights):
 
 ```bash
@@ -70,6 +70,7 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/schemas.py` | Pydantic response schemas for the LLM |
 | `sps/contracts.py` | Ticket and result shapes |
 | `sps/output.py` | Builds the resolved recommendation |
+| `sps/file_reader.py` | .csv / .xlsx dispatch + strict type gate |
 | `service/excel_output.py` | Atomic workbook writer |
 | `scripts/verify_embedder.py` | Acceptance checks against the real model |
 
@@ -151,6 +152,40 @@ and `0012.43951` remain four distinct identifiers.
 A ticket whose part number is missing, blank, or nothing but delimiters is
 rejected as `INVALID_INPUT` **before** any embedding or LLM call.
 
+### File formats
+
+Both `--ticket-file` and `--history-file` accept `.csv` and `.xlsx`, dispatched
+on the extension. `.xlsm` is accepted too: it is the same format as far as
+openpyxl is concerned, a workbook that happens to carry macros, and business
+users hand those over routinely.
+
+`sps/file_reader.py` is the only place that knows the difference. Everything
+past it works on a header row plus data rows, so column mapping, part
+canonicalisation and filtering are format-blind. The same history in both
+formats produces byte-identical results, down to the similarity score:
+
+```
+xlsx  exit=0  BELOW_CONFIDENCE_THRESHOLD  Best match 0.5658 ... [Local]
+csv   exit=0  BELOW_CONFIDENCE_THRESHOLD  Best match 0.5658 ... [Local]
+```
+
+**Anything else hard-fails immediately**, on the extension alone, before a file
+is opened, a model is loaded or a history is scanned:
+
+```
+exit=0  FAIL / INVALID_INPUT
+reason: History file 'history.pdf' has an unsupported type (.pdf).
+        Expected one of: .csv, .xlsm, .xlsx.
+```
+
+**Exit 0, not 2**, and that distinction is deliberate: the wrong attachment is a
+business problem for whoever assembled the ticket, so the item is faulted and
+not retried. A file of the *right* type that is missing or unreadable keeps
+exit 2 — that is genuine I/O trouble and a human should look at it.
+
+Prefer CSV for a large history: at 300k rows the same data takes about 1.5 s as
+`.csv` against about 40 s as `.xlsx`, because openpyxl parses XML per row.
+
 ### Embedding: Azure primary, local fallback
 
 Azure embeddings are the primary encoder; local `bge-small-en-v1.5` is the
@@ -224,6 +259,10 @@ local:BAAI/bge-small-en-v1.5     fallback fired
 (blank)                          aborted before anything was encoded
 ```
 
+`Reason` also ends with `[Azure]` or `[Local]`, so a support engineer skimming
+the sheet — or a caller reading only the first four columns — sees which
+encoder ran without needing to know the column exists.
+
 Every fallback also logs `AZURE_EMBEDDING_FAILED_FALLING_BACK` on stderr with
 the cause, at WARNING, with a fixed marker so it can be counted from the job
 logs. A deployment where Azure is quietly misconfigured still works — it just
@@ -292,6 +331,7 @@ Stated explicitly rather than buried:
 ```
 tests/test_resolver.py                 32   validation, part filtering, capping, dual workbooks, threshold
 tests/test_embedding_fallback.py       19   Azure primary, all-or-nothing fallback, dual threshold
+tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                    9   env loading, model/threshold single-sourcing
