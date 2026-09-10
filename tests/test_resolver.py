@@ -126,13 +126,15 @@ def test_validation_runs_before_anything_expensive(tmp_path, monkeypatch):
         "--history-file", str(tmp_path / "h.xlsx"),
         "--output-dir", str(tmp_path / "out"),
     ])
-    code, _, exit_code, model = resolver.resolve(args, tmp_path / "out")
+    outcome = resolver.resolve(args, tmp_path / "out")
 
-    assert code == resolver.CODE_INVALID_INPUT
-    assert exit_code == resolver.EXIT_OK
+    assert outcome.code == resolver.CODE_INVALID_INPUT
+    assert outcome.exit_code == resolver.EXIT_OK
     assert called == []
-    # Nothing was encoded, so no model is named -- itself information.
-    assert model == ""
+    # Nothing was encoded, so no model is named and no score exists -- both are
+    # themselves information.
+    assert outcome.embedding_model == ""
+    assert outcome.top_score == 0.0
 
 
 # ------------------------------------------------------------ history loading

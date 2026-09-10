@@ -29,10 +29,14 @@ REM ===========================================================================
 
 setlocal
 
-REM --- Adjust these two for the deployment -------------------------------
 set "PROJECT_DIR=%~dp0.."
-set "PYTHON_EXE=%PROJECT_DIR%\env\Scripts\python.exe"
-REM -----------------------------------------------------------------------
+
+REM Accept either virtual-environment name. MIGRATION_GUIDE.md creates "venv";
+REM older deployments use "env". Set SPS_PYTHON to override both.
+set "PYTHON_EXE=%SPS_PYTHON%"
+if "%PYTHON_EXE%"=="" if exist "%PROJECT_DIR%\venv\Scripts\python.exe" set "PYTHON_EXE=%PROJECT_DIR%\venv\Scripts\python.exe"
+if "%PYTHON_EXE%"=="" if exist "%PROJECT_DIR%\env\Scripts\python.exe" set "PYTHON_EXE=%PROJECT_DIR%\env\Scripts\python.exe"
+if "%PYTHON_EXE%"=="" set "PYTHON_EXE=%PROJECT_DIR%\venv\Scripts\python.exe"
 
 if "%~3"=="" (
     echo Usage: %~nx0 ^<ticket-file^> ^<history-file^> ^<output-dir^> 1>&2
@@ -41,6 +45,7 @@ if "%~3"=="" (
 
 if not exist "%PYTHON_EXE%" (
     echo Python interpreter not found: "%PYTHON_EXE%" 1>&2
+    echo Create it with: python -m venv venv 1>&2
     endlocal & exit /b 1
 )
 

@@ -32,6 +32,7 @@ import argparse
 import logging
 import sys
 import traceback
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,27 @@ def _load_dotenv() -> None:
             return
 
 
+@dataclass(frozen=True, slots=True)
+class ResolveOutcome:
+    """What one run produced.
+
+    A dataclass rather than a tuple because the batch evaluator needs the raw
+    similarity alongside the outcome: calibrating a threshold means seeing the
+    score distribution, including for the cases the threshold rejected.
+    """
+
+    code: str
+    reason: str
+    exit_code: int
+    embedding_model: str = ""
+    # The best cosine found, whether or not it cleared the gate. Zero means
+    # nothing was scored -- no history for the part, or an abort before
+    # embedding.
+    top_score: float = 0.0
+    threshold_used: float = 0.0
+    candidates_considered: int = 0
+
+
 def _reason_with_marker(reason: str, embedding_model: str) -> str:
     """Append [Azure] or [Local] so the encoder is visible in Reason itself."""
     flat = " ".join(str(reason).split())
@@ -198,12 +220,8 @@ def write_output(output_dir: Path, part_number: str, result, sps_ids) -> None:
     )
 
 
-def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, str]:
-    """Run the pipeline.
-
-    Returns (status_code, reason, exit_code, embedding_model). The last is blank
-    when the run aborted before anything was encoded.
-    """
+def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
+    """Run the pipeline once and report what happened."""
     import asyncio
     import os
 
@@ -228,19 +246,21 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, 
         try:
             validate_file_type(path, label)
         except UnsupportedFileType as exc:
-            return CODE_INVALID_INPUT, str(exc), EXIT_OK, ""
+            return ResolveOutcome(CODE_INVALID_INPUT, str(exc), EXIT_OK)
 
     # A file that is the right type but absent or unreadable is genuine I/O
     # trouble, and keeps exit 2 so a human is alerted rather than the item
     # being quietly faulted.
     for label, path in (("Ticket file", ticket_path), ("History file", history_path)):
         if not path.exists():
-            return CODE_INVALID_INPUT, f"{label} not found: {path}", EXIT_BAD_INPUT, ""
+            return ResolveOutcome(
+                CODE_INVALID_INPUT, f"{label} not found: {path}", EXIT_BAD_INPUT
+            )
 
     try:
         raw = read_ticket(ticket_path)
     except (FileReadError, ValueError, OSError) as exc:
-        return CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT, ""
+        return ResolveOutcome(CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT)
 
     ticket = IncomingTicket.from_dict(raw)
     part_number = normalize_part_number(ticket.part_number)
@@ -248,7 +268,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, 
     # Gate before anything expensive: no file scan, no model load, no LLM.
     invalid = validate_ticket(ticket.part_number, ticket.problem_description)
     if invalid:
-        return invalid.code, invalid.reason, EXIT_OK, ""
+        return ResolveOutcome(invalid.code, invalid.reason, EXIT_OK)
 
     # An explicit --threshold (or SPS_CONFIDENCE_THRESHOLD) overrides both
     # per-model defaults; otherwise the engine picks the one belonging to
@@ -286,28 +306,35 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, 
     try:
         candidates = retriever.retrieve(ticket)
     except HistoryError as exc:
-        return CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT, ""
+        return ResolveOutcome(CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT)
 
     stats = retriever.stats
     logger.info("retrieval stats: %s", stats.as_dict())
     model = _describe_backend(stats)
 
+    measured = dict(
+        embedding_model=model,
+        top_score=stats.top_score,
+        threshold_used=stats.threshold_used,
+        candidates_considered=stats.capped_to,
+    )
+
     if stats.usable == 0:
-        return (
+        return ResolveOutcome(
             CODE_NO_MATCHES,
             f"No usable history for part {part_number}: "
             f"{stats.part_matches} row(s) matched the part out of {stats.rows_scanned} scanned.",
             EXIT_OK,
-            model,
+            **measured,
         )
     if not candidates:
-        return (
+        return ResolveOutcome(
             CODE_BELOW_THRESHOLD,
             f"Best match {stats.top_score:.4f} is below the "
             f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s) "
             f"for part {part_number}.",
             EXIT_OK,
-            model,
+            **measured,
         )
 
     loop = ActorCriticLoop(AzureOpenAIChatClient(LLMSettings.from_env()), LLMSettings.from_env())
@@ -318,8 +345,12 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, 
             # A dependency outage is not a content rejection: it must not look
             # like a legitimate refusal, or a caller retries nothing.
             logger.error("dependency failure: %s", outcome.failure_reason)
-            return CODE_INFRASTRUCTURE, outcome.failure_reason, EXIT_INFRASTRUCTURE, model
-        return CODE_AUDIT_REJECTED, outcome.failure_reason, EXIT_OK, model
+            return ResolveOutcome(
+                CODE_INFRASTRUCTURE, outcome.failure_reason, EXIT_INFRASTRUCTURE, **measured
+            )
+        return ResolveOutcome(
+            CODE_AUDIT_REJECTED, outcome.failure_reason, EXIT_OK, **measured
+        )
 
     from sps.output import success
 
@@ -331,11 +362,11 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, 
         candidates=candidates,
     )
     write_output(output_dir, part_number, result, result.sps_ids_referred)
-    return (
+    return ResolveOutcome(
         CODE_SUCCESS,
         f"Resolved from {len(candidates)} record(s) at {result.confidence} confidence.",
         EXIT_OK,
-        model,
+        **measured,
     )
 
 
@@ -361,24 +392,23 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_INFRASTRUCTURE
 
     try:
-        code, reason, exit_code, model = resolve(args, output_dir)
+        outcome = resolve(args, output_dir)
     except Exception:
         # status.xlsx is written even here: an unhandled fault must still leave
         # the caller a row explaining why, not an empty directory.
         logger.error("Unhandled error:\n%s", traceback.format_exc())
-        code, reason, exit_code, model = (
+        outcome = ResolveOutcome(
             CODE_INFRASTRUCTURE,
             "Unhandled error; see stderr for the traceback.",
             EXIT_INFRASTRUCTURE,
-            "",
         )
 
     try:
-        write_status(output_dir, code, reason, model)
+        write_status(output_dir, outcome.code, outcome.reason, outcome.embedding_model)
     except Exception:
         logger.error("Could not write %s:\n%s", STATUS_FILE, traceback.format_exc())
         return EXIT_INFRASTRUCTURE
-    return exit_code
+    return outcome.exit_code
 
 
 if __name__ == "__main__":

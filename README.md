@@ -14,6 +14,10 @@ part number and embedded per ticket.
 
 ## Quick start
 
+Setting this up on a fresh Windows machine? **[`MIGRATION_GUIDE.md`](MIGRATION_GUIDE.md)**
+is the copy-paste version of this section, with the checks, the `.env` values and
+a smoke test that proves the install before any real data touches it.
+
 Install PyTorch **first**, from PyTorch's own index. The CPU wheel is only
 published there: on Windows, plain PyPI `torch==2.3.1` resolves to the
 CUDA-bundled build, which is a far larger download and roughly 2.4 GB unpacked
@@ -48,7 +52,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-122 tests, none of which needs a server, an Azure key or a model download. The
+154 tests, none of which needs a server, an Azure key or a model download. The
 real-model checks are opt-in (~130 MB of weights):
 
 ```bash
@@ -63,6 +67,8 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | --- | --- |
 | `scripts/run_resolver.py` | **Entry point** — ticket in, two workbooks out |
 | `scripts/run_resolver.cmd` | UiPath wrapper; propagates the exit code |
+| `scripts/run_eval_batch.py` | Batch evaluator — many tickets, one results workbook |
+| `scripts/run_eval.cmd` | Wrapper for the above |
 | `sps/validators.py` | Part-number canonicalisation + ticket gatekeeping |
 | `sps/retrieval/in_memory.py` | Filter by part, embed (Azure or local), rank, gate |
 | `sps/embedding.py` | Azure + local BGE encoders |
@@ -73,6 +79,7 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/file_reader.py` | .csv / .xlsx dispatch + strict type gate |
 | `service/excel_output.py` | Atomic workbook writer |
 | `scripts/verify_embedder.py` | Acceptance checks against the real model |
+| `samples/` | A ticket + history for smoke tests, and six eval cases |
 
 
 **Gatekeeping depends on nothing but the standard library.** `sps/validators.py`
@@ -275,6 +282,67 @@ set that no longer occurs. `Confidence_Score` is the cosine alone.
 
 ---
 
+## The batch evaluator
+
+`scripts/run_eval_batch.py` runs a directory of test tickets and writes one
+`eval_results.xlsx`. It exists to calibrate a threshold, which shapes both of
+its design decisions.
+
+```bash
+python -m scripts.run_eval_batch --test-dir cases --history-file master.csv \
+    --output-dir eval_out
+scripts\run_eval.cmd cases eval_out master.csv
+```
+
+**Every row carries the raw top cosine, including the cases the gate rejected.**
+A run that reported only its successes would show you the scores above the
+threshold and hide exactly the ones you need in order to judge whether the
+threshold belongs where it is.
+
+**The whole batch runs in one process**, so the local model's ~7 s cold start is
+paid once rather than once per case. Fifty cases that would take some minutes as
+fifty subprocesses take roughly as long as fifty embeddings. One failing case
+never ends the run: it becomes a row saying what went wrong, and the batch
+carries on.
+
+| Column | |
+| --- | --- |
+| `Test_ID`, `Status`, `Status_Code`, `Reason` | as `status.xlsx` |
+| `Embedding_Model` | `azure:<deployment>` or `local:<model>` |
+| `Confidence_Score` | the top cosine, **populated even when the gate rejected it** |
+| `Threshold_Applied`, `Cleared_Threshold` | what it was measured against, and the verdict |
+| `Candidates_Considered`, `Duration_Seconds` | |
+| `Ticket_File`, `History_File` | which inputs produced this row |
+
+Blank score cells mean nothing was ever encoded — an unknown part, a bad file
+type — which is different from a score of zero, and kept distinct so those cases
+do not drag the distribution down.
+
+Cases are discovered as `<id>_ticket.csv|xlsx` optionally paired with
+`<id>_history.csv|xlsx`; a case with no history of its own uses `--history-file`.
+`--run-list` takes a `Test_ID` / `Ticket_File` / `History_File` sheet instead,
+with paths resolved relative to the list, so a test set stays portable between
+machines.
+
+The console digest prints the score distribution — min, p25, median, p75, p90,
+max — so the shape is visible without opening Excel. It also **warns if more
+than one encoder ran in the batch**: a threshold belongs to one embedding space,
+so a distribution pooled across Azure and the local fallback describes neither.
+Nothing else would report that, because falling back is normal behaviour rather
+than an error.
+
+Exit code 0 means the batch ran, whatever the individual cases did; 1 means at
+least one case hit an infrastructure error; 2 means the case list could not be
+built.
+
+`samples/` holds a worked example: `sample_ticket.csv` with `sample_history.csv`
+for the smoke test in [`MIGRATION_GUIDE.md`](MIGRATION_GUIDE.md), and
+`samples/eval_cases/` with six cases covering a clean match, a near-duplicate, a
+case with its own history, a materially different defect, an unknown part and a
+blank part number.
+
+---
+
 ## Configuration
 
 Copy `.env.example` to `.env`; the resolver loads it if present, and real
@@ -330,8 +398,9 @@ Stated explicitly rather than buried:
 
 ```
 tests/test_resolver.py                 32   validation, part filtering, capping, dual workbooks, threshold
-tests/test_embedding_fallback.py       19   Azure primary, all-or-nothing fallback, dual threshold
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
+tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
+tests/test_embedding_fallback.py       19   Azure primary, all-or-nothing fallback, dual threshold
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                    9   env loading, model/threshold single-sourcing

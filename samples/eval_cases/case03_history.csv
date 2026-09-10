@@ -1,0 +1,3 @@
+SPS_ID,Part_Number,Issue_Type,Problem_Description,Solution_Text,Last_Modified_Date
+SPS-2001,0034-11020,Packaging,Outer carton label misprinted on the shipment packaging,Reprint the carton labels and re-apply them before dispatch.,2026-01-20T09:00:00+00:00
+SPS-2002,0034-11020,Packaging,Carton labels unreadable on arrival at the dock,Reprint and re-apply the labels; verify print quality before release.,2026-02-28T09:00:00+00:00
