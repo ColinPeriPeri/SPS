@@ -35,7 +35,15 @@ def _fit_cell(value: str) -> str:
 # written only on success.
 # --------------------------------------------------------------------------
 
-STATUS_COLUMNS = ("Execution_Timestamp", "Status", "Status_Code", "Reason")
+# Embedding_Model is appended LAST on purpose: a caller reading the first four
+# columns positionally is unaffected by its arrival.
+STATUS_COLUMNS = (
+    "Execution_Timestamp",
+    "Status",
+    "Status_Code",
+    "Reason",
+    "Embedding_Model",
+)
 RESULT_COLUMNS = (
     "Part_Number",
     "AI_Recommendation",

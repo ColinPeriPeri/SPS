@@ -6,7 +6,10 @@
 Writes two workbooks into --output-dir:
 
   status.xlsx   ALWAYS, including an early abort or an unhandled exception.
-                Execution_Timestamp, Status (PASS/FAIL), Status_Code, Reason.
+                Execution_Timestamp, Status (PASS/FAIL), Status_Code, Reason,
+                Embedding_Model. The last names the encoder that actually ran,
+                so support can see how often the Azure fallback fires; it is
+                blank when the run aborted before anything was encoded.
   output.xlsx   Only when Status is PASS.
                 Part_Number, AI_Recommendation, Justification,
                 Confidence_Score, Referenced_SPS_IDs.
@@ -36,7 +39,11 @@ from typing import Any
 # The model, its dimension and the threshold are all properties of the
 # embedding space, defined once beside the code that owns them.
 from sps.config import DEFAULT_DIMENSION, DEFAULT_MODEL_NAME as DEFAULT_MODEL
-from sps.retrieval.in_memory import DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_THRESHOLD
+from sps.retrieval.in_memory import (
+    AZURE_EMBEDDING_THRESHOLD,
+    LOCAL_EMBEDDING_THRESHOLD,
+    DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_THRESHOLD,
+)
 
 logger = logging.getLogger("sps.resolver")
 
@@ -126,11 +133,23 @@ def _load_dotenv() -> None:
             return
 
 
+def _describe_backend(stats) -> str:
+    """One short token naming the encoder, for the status sheet.
+
+    Support reads this to see how often the fallback is firing, so it names the
+    model rather than just "azure" or "local".
+    """
+    if not stats.backend:
+        return ""
+    detail = stats.backend_detail or stats.backend
+    return f"{stats.backend}:{detail}"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def write_status(output_dir: Path, code: str, reason: str) -> None:
+def write_status(output_dir: Path, code: str, reason: str, embedding_model: str = "") -> None:
     from service.excel_output import STATUS_COLUMNS, write_rows
 
     status = STATUS_PASS if code == CODE_SUCCESS else STATUS_FAIL
@@ -143,10 +162,13 @@ def write_status(output_dir: Path, code: str, reason: str) -> None:
                 "Status": status,
                 "Status_Code": code,
                 "Reason": " ".join(str(reason).split()),
+                # Blank when the run aborted before embedding, which is itself
+                # information: nothing was encoded.
+                "Embedding_Model": embedding_model,
             }
         ],
     )
-    logger.info("status: %s / %s -- %s", status, code, reason)
+    logger.info("status: %s / %s [%s] -- %s", status, code, embedding_model or "none", reason)
 
 
 def write_output(output_dir: Path, part_number: str, result, sps_ids) -> None:
@@ -167,8 +189,12 @@ def write_output(output_dir: Path, part_number: str, result, sps_ids) -> None:
     )
 
 
-def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int]:
-    """Run the pipeline. Returns (status_code, reason, exit_code)."""
+def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int, str]:
+    """Run the pipeline.
+
+    Returns (status_code, reason, exit_code, embedding_model). The last is blank
+    when the run aborted before anything was encoded.
+    """
     import asyncio
     import os
 
@@ -184,12 +210,12 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int]:
     history_path = Path(args.history_file)
     for label, path in (("Ticket", ticket_path), ("History", history_path)):
         if not path.exists():
-            return CODE_INVALID_INPUT, f"{label} file not found: {path}", EXIT_BAD_INPUT
+            return CODE_INVALID_INPUT, f"{label} file not found: {path}", EXIT_BAD_INPUT, ""
 
     try:
         raw = read_ticket(ticket_path)
     except (ValueError, OSError) as exc:
-        return CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT
+        return CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT, ""
 
     ticket = IncomingTicket.from_dict(raw)
     part_number = normalize_part_number(ticket.part_number)
@@ -197,32 +223,49 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int]:
     # Gate before anything expensive: no file scan, no model load, no LLM.
     invalid = validate_ticket(ticket.part_number, ticket.problem_description)
     if invalid:
-        return invalid.code, invalid.reason, EXIT_OK
+        return invalid.code, invalid.reason, EXIT_OK, ""
 
-    threshold = args.threshold
-    if threshold is None:
+    # An explicit --threshold (or SPS_CONFIDENCE_THRESHOLD) overrides both
+    # per-model defaults; otherwise the engine picks the one belonging to
+    # whichever encoder answered.
+    threshold_override = args.threshold
+    if threshold_override is None:
         raw_threshold = os.environ.get("SPS_CONFIDENCE_THRESHOLD", "").strip()
-        threshold = float(raw_threshold) if raw_threshold else DEFAULT_THRESHOLD
+        threshold_override = float(raw_threshold) if raw_threshold else None
 
-    embedder = BGEEmbedder(
-        EmbeddingSettings(
-            model_name=os.environ.get("SPS_EMBEDDING_MODEL", "").strip() or DEFAULT_MODEL,
-            dimension=int(os.environ.get("SPS_EMBEDDING_DIM", "").strip() or DEFAULT_DIMENSION),
+    def local_embedder() -> BGEEmbedder:
+        """Built only if the Azure path fails. Constructing it is free; the
+        ~15 s of torch import and weight loading happens on first encode, which
+        is why nothing calls this on a successful primary run."""
+        return BGEEmbedder(
+            EmbeddingSettings(
+                model_name=os.environ.get("SPS_EMBEDDING_MODEL", "").strip() or DEFAULT_MODEL,
+                dimension=int(
+                    os.environ.get("SPS_EMBEDDING_DIM", "").strip() or DEFAULT_DIMENSION
+                ),
+            )
         )
-    )
+
+    def _threshold(name: str, fallback: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else fallback
+
     retriever = InMemoryRetriever(
-        embedder=embedder,
         history_path=history_path,
-        confidence_threshold=threshold,
+        local_embedder_factory=local_embedder,
+        confidence_threshold=threshold_override,
+        azure_threshold=_threshold("AZURE_EMBEDDING_THRESHOLD", AZURE_EMBEDDING_THRESHOLD),
+        local_threshold=_threshold("LOCAL_EMBEDDING_THRESHOLD", LOCAL_EMBEDDING_THRESHOLD),
     )
 
     try:
         candidates = retriever.retrieve(ticket)
     except HistoryError as exc:
-        return CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT
+        return CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT, ""
 
     stats = retriever.stats
     logger.info("retrieval stats: %s", stats.as_dict())
+    model = _describe_backend(stats)
 
     if stats.usable == 0:
         return (
@@ -230,13 +273,16 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int]:
             f"No usable history for part {part_number}: "
             f"{stats.part_matches} row(s) matched the part out of {stats.rows_scanned} scanned.",
             EXIT_OK,
+            model,
         )
     if not candidates:
         return (
             CODE_BELOW_THRESHOLD,
-            f"Best match {stats.top_score:.4f} is below the {threshold:.2f} threshold "
-            f"across {stats.capped_to} candidate(s) for part {part_number}.",
+            f"Best match {stats.top_score:.4f} is below the "
+            f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s) "
+            f"for part {part_number}.",
             EXIT_OK,
+            model,
         )
 
     loop = ActorCriticLoop(AzureOpenAIChatClient(LLMSettings.from_env()), LLMSettings.from_env())
@@ -247,8 +293,8 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int]:
             # A dependency outage is not a content rejection: it must not look
             # like a legitimate refusal, or a caller retries nothing.
             logger.error("dependency failure: %s", outcome.failure_reason)
-            return CODE_INFRASTRUCTURE, outcome.failure_reason, EXIT_INFRASTRUCTURE
-        return CODE_AUDIT_REJECTED, outcome.failure_reason, EXIT_OK
+            return CODE_INFRASTRUCTURE, outcome.failure_reason, EXIT_INFRASTRUCTURE, model
+        return CODE_AUDIT_REJECTED, outcome.failure_reason, EXIT_OK, model
 
     from sps.output import success
 
@@ -264,6 +310,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> tuple[str, str, int]:
         CODE_SUCCESS,
         f"Resolved from {len(candidates)} record(s) at {result.confidence} confidence.",
         EXIT_OK,
+        model,
     )
 
 
@@ -289,19 +336,20 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_INFRASTRUCTURE
 
     try:
-        code, reason, exit_code = resolve(args, output_dir)
+        code, reason, exit_code, model = resolve(args, output_dir)
     except Exception:
         # status.xlsx is written even here: an unhandled fault must still leave
         # the caller a row explaining why, not an empty directory.
         logger.error("Unhandled error:\n%s", traceback.format_exc())
-        code, reason, exit_code = (
+        code, reason, exit_code, model = (
             CODE_INFRASTRUCTURE,
             "Unhandled error; see stderr for the traceback.",
             EXIT_INFRASTRUCTURE,
+            "",
         )
 
     try:
-        write_status(output_dir, code, reason)
+        write_status(output_dir, code, reason, model)
     except Exception:
         logger.error("Could not write %s:\n%s", STATUS_FILE, traceback.format_exc())
         return EXIT_INFRASTRUCTURE

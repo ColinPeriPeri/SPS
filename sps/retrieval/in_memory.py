@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from ..contracts import Candidate, IncomingTicket
 from ..embedding import Embedder
@@ -53,14 +53,27 @@ EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 # second even for a part with thousands of records.
 MAX_CANDIDATES = 300
 
-# Calibrated for bge-small-en-v1.5, which scores systematically higher than
-# bge-large: on the same probe texts a materially different defect reaches
-# 0.8442 here against 0.7831 there. Carrying bge-large's 0.82 across the model
-# change would silently loosen the gate, so this path gates at 0.89.
+# A threshold is a property of one embedding space and does not survive a change
+# of model. Two encoders means two thresholds, and the gate must apply whichever
+# one actually produced the vectors.
 #
-# This value is coupled to the model. It is NOT right for the legacy bge-large
-# path, where it would reject even a close paraphrase (0.7926).
-DEFAULT_CONFIDENCE_THRESHOLD = 0.89
+# Local: calibrated for bge-small-en-v1.5, which scores systematically higher
+# than bge-large -- a materially different defect reaches 0.8442 here against
+# 0.7831 there, so carrying bge-large's 0.82 across would loosen the gate.
+LOCAL_EMBEDDING_THRESHOLD = 0.89
+
+# Azure: PROVISIONAL. This has not been measured against a real deployment, and
+# the right value depends heavily on which model backs it -- text-embedding-3-*
+# put unrelated text near 0.1-0.3, while ada-002 is notorious for keeping even
+# unrelated pairs above 0.7, where 0.50 would admit essentially everything.
+# Measure before trusting it: `python -m scripts.verify_embedder --azure`.
+AZURE_EMBEDDING_THRESHOLD = 0.50
+
+# Retained under the old name so existing callers keep working.
+DEFAULT_CONFIDENCE_THRESHOLD = LOCAL_EMBEDDING_THRESHOLD
+
+AZURE_BACKEND = "azure"
+LOCAL_BACKEND = "local"
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -109,6 +122,12 @@ class RetrievalStats:
     embed_seconds: float = 0.0
     qualified: int = 0
     top_score: float = 0.0
+    # Which encoder produced the vectors, and why if it was not the primary.
+    # Support needs this to see how often the fallback is firing.
+    backend: str = ""
+    backend_detail: str = ""
+    fallback_reason: str = ""
+    threshold_used: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +139,10 @@ class RetrievalStats:
             "embed_seconds": round(self.embed_seconds, 3),
             "qualified": self.qualified,
             "top_score": round(self.top_score, 4),
+            "backend": self.backend,
+            "backend_detail": self.backend_detail,
+            "fallback_reason": self.fallback_reason,
+            "threshold_used": self.threshold_used,
         }
 
 
@@ -292,22 +315,43 @@ def cap_to_newest(rows: list[HistoryRow], limit: int = MAX_CANDIDATES) -> list[H
 
 @dataclass
 class InMemoryRetriever:
-    """Filter, embed and rank one part's history per ticket."""
+    """Filter, embed and rank one part's history per ticket.
 
-    embedder: Embedder
+    Azure embeddings are the primary encoder; the local bge-small model is the
+    fallback. The choice is all-or-nothing per run: the query and every
+    candidate are always encoded by the same model, because a cosine between
+    vectors from two different embedding spaces is not a similarity, it is
+    noise that happens to be a number between -1 and 1.
+    """
+
     history_path: Path | str
-    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
+    # A factory, not an instance. Building the local embedder is free, but the
+    # first encode pays ~15 s of torch import and weight loading, so it must not
+    # happen on a run where Azure succeeds. Nothing here touches it until the
+    # fallback fires.
+    local_embedder_factory: Callable[[], Embedder] | None = None
+    azure_settings: Any = None
+    azure_threshold: float = AZURE_EMBEDDING_THRESHOLD
+    local_threshold: float = LOCAL_EMBEDDING_THRESHOLD
+    # An explicit override wins over both. Used by --threshold, which is a
+    # deliberate operator instruction and should not be second-guessed by the
+    # backend that happened to answer.
+    confidence_threshold: float | None = None
     max_candidates: int = MAX_CANDIDATES
     max_context_records: int = 15
     min_text_length: int = 15
     stats: RetrievalStats = field(default_factory=RetrievalStats)
+    # Escape hatch for tests and for a deployment that wants one specific
+    # encoder: set it and no fallback logic runs at all.
+    embedder: Embedder | None = None
 
     def retrieve(self, ticket: IncomingTicket) -> list[Candidate]:
         """Return qualified candidates, best first. Empty if none qualify.
 
-        Raises HistoryError if the file is unusable; the caller distinguishes
-        NO_MATCHES (nothing for this part) from BELOW_CONFIDENCE_THRESHOLD
-        (matches found, none similar enough) by inspecting `stats`.
+        Raises HistoryError if the file is unusable. The caller separates
+        NO_MATCHES (nothing indexed for this part) from
+        BELOW_CONFIDENCE_THRESHOLD (matches found, none similar enough) by
+        reading `stats`.
         """
         rows = load_matching_history(
             self.history_path,
@@ -321,40 +365,122 @@ class InMemoryRetriever:
         rows = cap_to_newest(rows, self.max_candidates)
         self.stats.capped_to = len(rows)
 
+        query_text = ticket.problem_description.strip()
+        passages = [r.problem_description for r in rows]
+
         started = time.time()
-        # One batch for the candidates, one call for the query: the query needs
-        # the BGE instruction prefix and the passages must not have it, so they
-        # cannot share a single encode call.
-        matrix = self.embedder.embed_passages([r.problem_description for r in rows])
-        query = self.embedder.embed_query(ticket.problem_description.strip())
+        candidates_matrix, query_vector = self._embed(query_text, passages)
         self.stats.embed_seconds = time.time() - started
 
-        import numpy as np
+        # The gate must use the threshold belonging to whichever model actually
+        # produced these vectors.
+        threshold = self.confidence_threshold
+        if threshold is None:
+            threshold = (
+                self.azure_threshold
+                if self.stats.backend == AZURE_BACKEND
+                else self.local_threshold
+            )
+        self.stats.threshold_used = threshold
 
-        candidates_matrix = np.asarray(matrix, dtype=np.float32)
-        query_vector = np.asarray(query, dtype=np.float32)
-        # Vectors are L2-normalised at encode time, so the dot product is the
-        # cosine similarity and the whole ranking is one matrix multiply.
+        # Both sides are L2-normalised, so the dot product is the cosine and the
+        # whole ranking is one matrix multiply.
         similarities = candidates_matrix @ query_vector
 
-        scored = [
-            _to_candidate(row, float(sim)) for row, sim in zip(rows, similarities)
-        ]
+        scored = [_to_candidate(row, float(sim)) for row, sim in zip(rows, similarities)]
         scored.sort(key=lambda c: (c.composite_score, c.cosine_similarity, c.sps_id), reverse=True)
 
         self.stats.top_score = scored[0].composite_score if scored else 0.0
-        qualified = [c for c in scored if c.composite_score >= self.confidence_threshold]
+        qualified = [c for c in scored if c.composite_score >= threshold]
         self.stats.qualified = len(qualified)
 
         logger.info(
-            "Embedded %d candidate(s) in %.2fs; top %.4f, %d at or above %.2f",
+            "Embedded %d candidate(s) via %s in %.2fs; top %.4f, %d at or above %.2f",
             len(rows),
+            self.stats.backend,
             self.stats.embed_seconds,
             self.stats.top_score,
             len(qualified),
-            self.confidence_threshold,
+            threshold,
         )
         return qualified[: self.max_context_records]
+
+    # -- encoding ----------------------------------------------------------
+
+    def _embed(self, query_text: str, passages: list[str]):
+        """Encode query and candidates with one model. Never a mixture.
+
+        Returns (candidate_matrix, query_vector) as NumPy arrays.
+        """
+        import numpy as np
+
+        if self.embedder is not None:
+            # Explicitly supplied encoder: no fallback, no ambiguity.
+            self.stats.backend = LOCAL_BACKEND
+            self.stats.backend_detail = type(self.embedder).__name__
+            matrix, query = self._encode_local(self.embedder, query_text, passages)
+            return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
+
+        azure = self._try_azure(query_text, passages)
+        if azure is not None:
+            matrix, query = azure
+            return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
+
+        # Fallback. Everything Azure may have produced is discarded: the batch
+        # is re-encoded from scratch so query and candidates share one space.
+        embedder = self._build_local()
+        self.stats.backend = LOCAL_BACKEND
+        self.stats.backend_detail = getattr(
+            getattr(embedder, "settings", None), "model_name", type(embedder).__name__
+        )
+        matrix, query = self._encode_local(embedder, query_text, passages)
+        return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
+
+    def _try_azure(self, query_text: str, passages: list[str]):
+        """Attempt the primary path. Returns None to mean "fall back"."""
+        from ..config import AzureEmbeddingSettings
+
+        settings = self.azure_settings
+        if settings is None:
+            settings = AzureEmbeddingSettings.from_env()
+        if not settings.configured:
+            reason = f"not configured ({', '.join(settings.missing())})"
+            logger.warning("AZURE_EMBEDDING_FAILED_FALLING_BACK: %s", reason)
+            self.stats.fallback_reason = reason
+            return None
+
+        from ..embedding import AzureEmbedder, AzureEmbeddingError
+
+        try:
+            # One request for the whole batch. The query goes first so its
+            # position is known without searching the response.
+            vectors = AzureEmbedder(settings).embed_batch([query_text] + passages)
+        except AzureEmbeddingError as exc:
+            # Network, auth, timeout, rate limit, wrong deployment: all mean the
+            # same thing here. Logged at WARNING with a fixed marker so support
+            # can count how often the fallback fires.
+            logger.warning("AZURE_EMBEDDING_FAILED_FALLING_BACK: %s", exc)
+            self.stats.fallback_reason = str(exc)
+            return None
+
+        self.stats.backend = AZURE_BACKEND
+        self.stats.backend_detail = settings.deployment
+        return vectors[1:], vectors[0]
+
+    def _build_local(self) -> Embedder:
+        """Instantiate the local model. Only ever called on the fallback path."""
+        if self.local_embedder_factory is not None:
+            return self.local_embedder_factory()
+        from ..config import EmbeddingSettings
+        from ..embedding import BGEEmbedder
+
+        return BGEEmbedder(EmbeddingSettings.from_env())
+
+    @staticmethod
+    def _encode_local(embedder: Embedder, query_text: str, passages: list[str]):
+        """Two calls, not one: bge queries carry an instruction prefix and the
+        passages must not, so they cannot share an encode call."""
+        return embedder.embed_passages(passages), embedder.embed_query(query_text)
 
 
 def _to_candidate(row: HistoryRow, similarity: float) -> Candidate:

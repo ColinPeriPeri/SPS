@@ -6,6 +6,7 @@ and its tests -- import cleanly on a machine without the ML stack.
 
 from __future__ import annotations
 
+import math
 from typing import Protocol, Sequence, runtime_checkable
 
 from .config import BGE_QUERY_INSTRUCTION, EmbeddingSettings
@@ -98,3 +99,87 @@ class BGEEmbedder:
     def unload(self) -> None:
         """Release model memory -- used by the indexer on shutdown."""
         self._model = None
+
+
+class AzureEmbeddingError(RuntimeError):
+    """The Azure embedding call failed and the caller should fall back."""
+
+
+class AzureEmbedder:
+    """Azure OpenAI embeddings, used as the primary encoder.
+
+    Two differences from the local BGE path that matter for correctness:
+
+    * **No instruction prefix.** "Represent this sentence for searching relevant
+      passages: " is a convention `bge-*-v1.5` was trained with. Azure's
+      embedding models were not, so prepending it here would inject a constant
+      meaningless string and shift every query vector for no benefit.
+    * **Vectors are normalised defensively.** OpenAI returns unit-length
+      embeddings today, but the ranking is a bare dot product that silently
+      stops being a cosine if that ever changes. Normalising costs nothing at
+      this size and makes the guarantee ours rather than the vendor's.
+    """
+
+    def __init__(self, settings, client=None) -> None:
+        self.settings = settings
+        self._client = client
+
+    @property
+    def client(self):
+        if self._client is None:
+            from openai import AzureOpenAI
+
+            missing = self.settings.missing()
+            if missing:
+                raise AzureEmbeddingError(
+                    f"Azure embedding deployment is not configured: {', '.join(missing)}"
+                )
+            self._client = AzureOpenAI(
+                azure_endpoint=self.settings.endpoint,
+                api_key=self.settings.api_key,
+                api_version=self.settings.api_version,
+                timeout=self.settings.request_timeout,
+            )
+        return self._client
+
+    def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed every text in one request, in the order given.
+
+        Any failure raises AzureEmbeddingError so the caller can discard the
+        whole batch and re-embed locally. Partial results are never returned:
+        mixing vectors from two models would make the cosine meaningless.
+        """
+        if not texts:
+            return []
+        try:
+            response = self.client.embeddings.create(
+                model=self.settings.deployment,
+                input=list(texts),
+            )
+        except AzureEmbeddingError:
+            raise
+        except Exception as exc:
+            # Network, auth, timeout, rate limit, bad deployment name -- all of
+            # them mean the same thing here: use the local model instead.
+            raise AzureEmbeddingError(
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        # The API documents order preservation, but the response also carries an
+        # index per item. Sorting on it makes the guarantee explicit rather than
+        # assumed -- a silently reordered batch would pair every candidate with
+        # the wrong similarity score.
+        items = sorted(response.data, key=lambda d: d.index)
+        if len(items) != len(texts):
+            raise AzureEmbeddingError(
+                f"Expected {len(texts)} embeddings, received {len(items)}"
+            )
+        return [_unit(item.embedding) for item in items]
+
+
+def _unit(vector: Sequence[float]) -> list[float]:
+    """L2-normalise, so a dot product is a cosine."""
+    norm = math.sqrt(sum(v * v for v in vector))
+    if norm == 0.0:
+        return list(vector)
+    return [v / norm for v in vector]

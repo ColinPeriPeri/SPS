@@ -48,7 +48,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-72 tests, none of which needs a server, an Azure key or a model download. The
+91 tests, none of which needs a server, an Azure key or a model download. The
 real-model checks are opt-in (~130 MB of weights):
 
 ```bash
@@ -64,8 +64,8 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `scripts/run_resolver.py` | **Entry point** — ticket in, two workbooks out |
 | `scripts/run_resolver.cmd` | UiPath wrapper; propagates the exit code |
 | `sps/validators.py` | Part-number canonicalisation + ticket gatekeeping |
-| `sps/retrieval/in_memory.py` | Filter history by part, embed, rank, gate |
-| `sps/embedding.py` | BGE wrapper (lazy load, L2-normalized, CPU) |
+| `sps/retrieval/in_memory.py` | Filter by part, embed (Azure or local), rank, gate |
+| `sps/embedding.py` | Azure + local BGE encoders |
 | `sps/generation/` | Actor / Judge loop, schema-constrained |
 | `sps/schemas.py` | Pydantic response schemas for the LLM |
 | `sps/contracts.py` | Ticket and result shapes |
@@ -96,7 +96,7 @@ python -m scripts.run_resolver --ticket-file ticket.xlsx \
 
 | Output | When | Columns |
 | --- | --- | --- |
-| `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason` |
+| `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason`, `Embedding_Model` |
 | `output.xlsx` | Only when `Status` is PASS | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_SPS_IDs` |
 
 Status codes: `SUCCESS`, `INVALID_INPUT`, `NO_MATCHES`,
@@ -151,36 +151,84 @@ and `0012.43951` remain four distinct identifiers.
 A ticket whose part number is missing, blank, or nothing but delimiters is
 rejected as `INVALID_INPUT` **before** any embedding or LLM call.
 
-### Threshold: recalibrate for bge-small
+### Embedding: Azure primary, local fallback
 
-The resolver uses `bge-small-en-v1.5` (384d), which is about ten times faster
-than `bge-large` on CPU -- 1.0 s versus 11 s to encode 300 candidates -- and is
-what makes per-ticket embedding viable at all.
+Azure embeddings are the primary encoder; local `bge-small-en-v1.5` is the
+fallback. The choice is **all-or-nothing per run**: the query and every
+candidate are always encoded by the same model, because a cosine between vectors
+from two different embedding spaces is not a similarity, it is noise that
+happens to land between -1 and 1.
 
-**It also scores systematically higher, so the 0.82 threshold does not carry
-over.** Same probe texts, same query:
+```
+try  Azure: one request, [query] + candidates      -> AZURE_EMBEDDING_THRESHOLD
+except network / auth / timeout / rate limit / not configured
+     log AZURE_EMBEDDING_FAILED_FALLING_BACK
+     re-encode the WHOLE batch locally             -> LOCAL_EMBEDDING_THRESHOLD
+```
 
-| candidate | bge-small | bge-large |
+Anything Azure managed to return before failing is discarded rather than topped
+up locally. A short or reordered response is treated as a failure for the same
+reason: the response carries a per-item index, and the batch is re-sorted on it
+rather than trusting arrival order, because a silently reordered batch would
+pair every candidate with another candidate's score.
+
+**The local model is not loaded when Azure succeeds.** Constructing `BGEEmbedder`
+is free (0.000 s, no torch import); the ~15 s of torch import and weight loading
+lands on first *encode*. So the retriever takes a factory, not an instance, and
+calls it only inside the `except` branch. A test asserts the factory is never
+invoked on a successful primary run.
+
+The Azure path deliberately sends **no BGE instruction prefix**.
+`"Represent this sentence for searching relevant passages: "` is a convention
+`bge-*-v1.5` was trained with; Azure's models were not, so prepending it would
+inject a constant meaningless string into every query. That asymmetry is also
+why the local path needs two encode calls (queries prefixed, passages not) where
+Azure needs one.
+
+Vectors are L2-normalised on both paths. OpenAI returns unit-length embeddings
+today, but the ranking is a bare dot product that stops being a cosine if that
+ever changes, so the guarantee is made here rather than assumed.
+
+### Two thresholds, one per embedding space
+
+A threshold is a property of one model's scoring distribution and does not
+survive a change of encoder. The gate applies whichever belongs to the model
+that actually answered, and `status.xlsx` records which one that was.
+
+| | value | basis |
 | --- | --- | --- |
-| identical text | 0.9641 | 0.9389 |
-| paraphrase | 0.8736 | 0.7926 |
-| **different defect** (weld porosity vs seam cracking) | **0.8442** | 0.7831 |
-| unrelated | 0.5111 | 0.4395 |
+| `LOCAL_EMBEDDING_THRESHOLD` | **0.89** | Measured. bge-small scores systematically higher than bge-large — a materially different defect reaches 0.8442 against 0.7831 — so 0.82 would have loosened the gate. |
+| `AZURE_EMBEDDING_THRESHOLD` | **0.50** | **Provisional, not measured.** |
 
-At 0.82, bge-large admits only the identical text; bge-small admits the
-paraphrase **and a materially different defect**. Carrying 0.82 across the model
-change would silently loosen the gate, so **the resolver default is 0.89**
-(`DEFAULT_CONFIDENCE_THRESHOLD` in `sps/retrieval/in_memory.py`, which the CLI
-imports rather than repeating).
+> **0.50 is a placeholder, and how wrong it is depends on which model backs the
+> deployment.** `text-embedding-3-small` / `-3-large` put unrelated text around
+> 0.1—0.3, so 0.50 is a plausible starting point. `text-embedding-ada-002`
+> is notorious for keeping even unrelated pairs above 0.7 — against that model
+> 0.50 admits essentially everything and the gate stops existing. Measure the
+> distribution on your own deployment before the evaluation run; the local 0.89
+> was derived from exactly four probe sentences and still wants the eval set to
+> confirm it.
 
-That figure comes from four probe sentences, not a measurement -- the eval set
-should confirm or move it.
+`SPS_CONFIDENCE_THRESHOLD` and `--threshold` override **both**, and are honoured
+whichever encoder answers — an explicit operator instruction is not
+second-guessed by the backend that happened to respond.
 
-> **The threshold is coupled to the model.** 0.89 belongs to bge-small's scoring
-> distribution. Swapping the embedding model invalidates it, and the number lives
-> in `sps/retrieval/in_memory.py` beside the engine that applies it for exactly
-> that reason. Override per run with `--threshold`, or with
-> `SPS_CONFIDENCE_THRESHOLD`.
+### Tracking how often the fallback fires
+
+`status.xlsx` carries `Embedding_Model`, appended as the **last** column so a
+caller reading the first four positionally is unaffected:
+
+```
+azure:text-embedding-3-small     primary path
+local:BAAI/bge-small-en-v1.5     fallback fired
+(blank)                          aborted before anything was encoded
+```
+
+Every fallback also logs `AZURE_EMBEDDING_FAILED_FALLING_BACK` on stderr with
+the cause, at WARNING, with a fixed marker so it can be counted from the job
+logs. A deployment where Azure is quietly misconfigured still works — it just
+pays the local cold start on every ticket, which is exactly the situation this
+column exists to make visible.
 
 Metadata boosting is gone from this path entirely: part number is an exact
 filter, and the other boosts existed to discriminate within a mixed-part result
@@ -243,6 +291,7 @@ Stated explicitly rather than buried:
 
 ```
 tests/test_resolver.py                 32   validation, part filtering, capping, dual workbooks, threshold
+tests/test_embedding_fallback.py       19   Azure primary, all-or-nothing fallback, dual threshold
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                    9   env loading, model/threshold single-sourcing

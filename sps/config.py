@@ -35,6 +35,12 @@ DEFAULT_ENCODE_BATCH = 16
 DEFAULT_API_VERSION = "2024-10-21"
 DEFAULT_REQUEST_TIMEOUT = 60.0
 
+# Azure embeddings are a separate deployment from the chat model, with its own
+# endpoint and key. Kept apart so one can be configured, rotated or fail
+# without touching the other.
+DEFAULT_EMBEDDING_API_VERSION = "2024-10-21"
+DEFAULT_EMBEDDING_TIMEOUT = 20.0
+
 
 def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
@@ -98,4 +104,51 @@ class LLMSettings:
             top_p=_env_float("SPS_LLM_TOP_P", 0.1),
             max_attempts=_env_int("SPS_MAX_ATTEMPTS", MAX_ATTEMPTS),
             request_timeout=_env_float("SPS_LLM_TIMEOUT", DEFAULT_REQUEST_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AzureEmbeddingSettings:
+    """The Azure embedding deployment used as the primary encoder.
+
+    Separate from LLMSettings: the embedding deployment is its own resource,
+    and the resolver must be able to lose it (bad key, throttling, network)
+    and fall back to the local model without the chat path being affected.
+
+    The timeout is deliberately shorter than the chat timeout. A slow embedding
+    call has a working alternative one exception away, so waiting a full minute
+    to discover that costs more than it saves.
+    """
+
+    endpoint: str = ""
+    api_key: str = ""
+    deployment: str = ""
+    api_version: str = DEFAULT_EMBEDDING_API_VERSION
+    request_timeout: float = DEFAULT_EMBEDDING_TIMEOUT
+
+    @property
+    def configured(self) -> bool:
+        """All three are needed; a partial configuration is a misconfiguration."""
+        return bool(self.endpoint and self.api_key and self.deployment)
+
+    def missing(self) -> list[str]:
+        """Which variables are absent, by NAME -- never a value."""
+        return [
+            name
+            for name, value in (
+                ("AZURE_EMBEDDING_ENDPOINT", self.endpoint),
+                ("AZURE_EMBEDDING_API_KEY", self.api_key),
+                ("AZURE_EMBEDDING_DEPLOYMENT", self.deployment),
+            )
+            if not value
+        ]
+
+    @classmethod
+    def from_env(cls) -> "AzureEmbeddingSettings":
+        return cls(
+            endpoint=_env("AZURE_EMBEDDING_ENDPOINT"),
+            api_key=_env("AZURE_EMBEDDING_API_KEY"),
+            deployment=_env("AZURE_EMBEDDING_DEPLOYMENT"),
+            api_version=_env("AZURE_EMBEDDING_API_VERSION", DEFAULT_EMBEDDING_API_VERSION),
+            request_timeout=_env_float("AZURE_EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT),
         )

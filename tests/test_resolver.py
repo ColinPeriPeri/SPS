@@ -126,11 +126,13 @@ def test_validation_runs_before_anything_expensive(tmp_path, monkeypatch):
         "--history-file", str(tmp_path / "h.xlsx"),
         "--output-dir", str(tmp_path / "out"),
     ])
-    code, _, exit_code = resolver.resolve(args, tmp_path / "out")
+    code, _, exit_code, model = resolver.resolve(args, tmp_path / "out")
 
     assert code == resolver.CODE_INVALID_INPUT
     assert exit_code == resolver.EXIT_OK
     assert called == []
+    # Nothing was encoded, so no model is named -- itself information.
+    assert model == ""
 
 
 # ------------------------------------------------------------ history loading
@@ -368,17 +370,23 @@ def test_reason_is_a_single_line(tmp_path, passing_llm):
 # ------------------------------------------------------------------ threshold
 
 
-def test_default_threshold_is_calibrated_for_bge_small():
-    """0.89, not the spec's 0.75 or bge-large's 0.82: bge-small scores higher on
-    the same texts, so carrying a lower number over would loosen the gate.
+def test_each_embedding_space_has_its_own_threshold():
+    """A threshold belongs to one embedding space. Two encoders means two
+    numbers, and the gate must apply whichever produced the vectors."""
+    from sps.retrieval.in_memory import (
+        AZURE_EMBEDDING_THRESHOLD,
+        LOCAL_EMBEDDING_THRESHOLD,
+        InMemoryRetriever,
+    )
 
-    Now that the bge-large path is gone there is only one threshold in the
-    codebase, and it lives beside the engine that applies it."""
-    from sps.retrieval.in_memory import DEFAULT_CONFIDENCE_THRESHOLD, InMemoryRetriever
-
-    assert DEFAULT_CONFIDENCE_THRESHOLD == 0.89
+    assert LOCAL_EMBEDDING_THRESHOLD == 0.89
+    assert AZURE_EMBEDDING_THRESHOLD == 0.50
+    fields = InMemoryRetriever.__dataclass_fields__
+    assert fields["local_threshold"].default == 0.89
+    assert fields["azure_threshold"].default == 0.50
+    # No override by default: the backend decides.
+    assert fields["confidence_threshold"].default is None
     assert resolver.DEFAULT_THRESHOLD == 0.89
-    assert InMemoryRetriever.__dataclass_fields__["confidence_threshold"].default == 0.89
 
 
 def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):
