@@ -9,9 +9,14 @@ tooling in its context to leak in the first place.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
 from ..contracts import SOLUTION_NOT_FOUND, Candidate, IncomingTicket
+
+# The separator in a chunk citation. Named rather than inlined because it
+# appears in the prompt text, in the parser and in the rendered context, and
+# all three have to agree for a citation check to mean anything.
+SECTION_MARK = chr(0x00A7)
 
 ACTOR_SYSTEM_PROMPT = f"""\
 You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.
@@ -81,6 +86,182 @@ Return a single JSON object and nothing else.
 On pass: {"status": "PASS"}
 On fail: {"status": "FAIL", "critique": "<specific, actionable instruction naming the exact offending text and what to do about it>"}
 """
+
+
+TIER2_ACTOR_SYSTEM_PROMPT = f"""\
+You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.
+
+The historical SPS records for this part produced no usable resolution. You are
+therefore working from a second source: extracts of the company's 0250
+ENGINEERING STANDARDS. Each extract is labelled with the document it came from
+and the section within it, in the form [DocumentName.docx {SECTION_MARK} Section Heading].
+
+Your only task is to state what those standards require for this specific
+defect, as a direct recommendation addressed to the supplier.
+
+HARD CONSTRAINTS -- these override any instinct to be helpful:
+1. ZERO external domain knowledge. Every action, limit, tool, measurement,
+   specification, threshold and step you write MUST appear in the STANDARDS
+   EXTRACTS text. You are restating a written requirement, not advising.
+2. A STANDARD IS NOT AUTOMATICALLY A SOLUTION. An extract that states a limit,
+   a tolerance or an acceptance criterion but does NOT state what to do about a
+   part that violates it has not given you a resolution. Do not derive the
+   disposition yourself, and do not reach for the obvious engineering answer:
+   that is exactly the fabrication you are here to avoid.
+3. NO invented specifics. Never introduce a number, tolerance, torque,
+   temperature, duration, revision, document ID or section number that is not
+   present verbatim in the extracts.
+4. CITE EVERY EXTRACT YOU USE. In "justification", name the document and the
+   section exactly as they appear in the bracketed label. Do not abbreviate,
+   renumber or tidy them. Never cite a document or section that is not in the
+   extracts above.
+5. Your "justification" MUST begin by acknowledging the history gap, in these
+   words: "Historical records yielded no resolution." Then state which standard
+   sections the recommendation is drawn from and why they apply.
+6. Write for an EXTERNAL SUPPLIER. Never instruct the reader to open, query or
+   update an internal system, use an internal-only tool, or perform a step the
+   standard assigns to internal staff. Where the standard assigns a step to an
+   internal engineer or quality team, state it as an outcome the supplier
+   awaits, never as an instruction to the supplier.
+7. Match the house style of SPS records: minimal, plain, imperative,
+   step-by-step. No preamble, no restatement of the problem, no pleasantries.
+8. If the extracts do not address THIS SPECIFIC DEFECT -- including when they
+   cover the general subject area but not this failure mode, or state limits
+   without a disposition -- set "recommendation" to exactly "{SOLUTION_NOT_FOUND}".
+   A correct refusal is a successful outcome here. A plausible generic
+   engineering fix is the worst possible one.
+
+OUTPUT
+Return a single JSON object and nothing else:
+{{"recommendation": "<numbered step-by-step text, or '{SOLUTION_NOT_FOUND}'>",
+  "justification": "<begins 'Historical records yielded no resolution.' then names the exact document and section relied on>"}}
+"""
+
+TIER2_JUDGE_SYSTEM_PROMPT = f"""\
+You are a strict compliance auditor for a Supplier Problem Sheet (SPS) system.
+You audit a DRAFT recommendation that will be sent to an EXTERNAL SUPPLIER.
+You are the last gate before a human admin sees it. Be adversarial; the cost of
+passing a bad draft is far higher than the cost of one more revision.
+
+This draft was written from 0250 ENGINEERING STANDARDS extracts, because the
+historical SPS records produced no resolution. You are given the incoming
+problem, the verbatim extracts that are the only permitted source, and the DRAFT.
+
+Run all four checks:
+
+CHECK 1 -- DOMAIN HALLUCINATION
+FAIL if the draft contains any step, action, cause, tool, measurement,
+specification, numeric value, threshold or requirement that does not appear in
+the STANDARDS EXTRACTS. Paraphrase and condensation are acceptable; new
+substance is not.
+
+CHECK 2 -- INTERNAL TOOL LEAKAGE
+FAIL if the draft directs the supplier to access an internal system or database,
+use an internal-only tool or portal, consult internal documentation, or perform
+any task the standard assigns to an internal engineer, buyer or quality team.
+Naming an internal step as an outcome the supplier will receive is acceptable;
+instructing the supplier to perform it is not.
+
+CHECK 3 -- CITATION INTEGRITY
+FAIL if the justification cites a document name or section heading that does not
+appear verbatim in the bracketed labels of the extracts, or if the draft gives a
+substantive recommendation while citing no section at all. An invented or
+altered citation is worse than no answer: it sends a supplier to a document that
+does not say what they were told it says.
+
+CHECK 4 -- UNGROUNDED DISPOSITION
+FAIL if the draft tells the supplier what to DO about the defect while the
+extracts only state a limit, tolerance or acceptance criterion without a
+disposition. A recommendation to rework, scrap, segregate, re-inspect or repair
+must be traceable to text that actually says so. This is the most likely way a
+wrong answer reaches a supplier here, because the fabricated step is usually the
+engineering-plausible one.
+
+Judge only these four checks. Do not fail a draft for terseness, formatting,
+tone or missing detail. An empty or "{SOLUTION_NOT_FOUND}" draft passes -- the
+Actor is expected to refuse when the standards do not cover the defect.
+
+OUTPUT
+Return a single JSON object and nothing else.
+On pass: {{"status": "PASS"}}
+On fail: {{"status": "FAIL", "critique": "<specific, actionable instruction naming the exact offending text and what to do about it>"}}
+"""
+
+
+def format_doc_chunks(chunks: Sequence[Any]) -> str:
+    """Render the Tier-2 grounding context.
+
+    Each chunk already carries its own `[document § section]` label inside
+    `embed_text`, so the citation the Actor is required to reproduce is the same
+    string that was embedded and ranked. Nothing can drift between what was
+    retrieved and what is cited.
+    """
+    if not chunks:
+        return "(none)"
+    return "\n\n".join(
+        f"{chunk.chunk.embed_text}\n[relevance: {chunk.confidence_percent}%]"
+        for chunk in chunks
+    )
+
+
+def build_tier2_actor_messages(
+    ticket: IncomingTicket,
+    chunks: Sequence[Any],
+    critique: str | None = None,
+    previous_draft: str | None = None,
+) -> list[dict[str, str]]:
+    """Tier-2 Actor turn, grounded in standards extracts rather than history."""
+    issue = ticket.issue_type.strip()
+    user = (
+        "INCOMING PROBLEM STATEMENT\n"
+        f"{ticket.problem_description.strip()}\n\n"
+    )
+    if issue:
+        user += f"ISSUE TYPE\n{issue}\n\n"
+    user += (
+        "HISTORICAL SPS RECORDS\n"
+        "None of the historical records for this part produced a usable resolution.\n\n"
+        "0250 STANDARDS EXTRACTS (the only permitted source of content)\n"
+        f"{format_doc_chunks(chunks)}\n"
+    )
+
+    if critique:
+        user += (
+            "\nYOUR PREVIOUS DRAFT WAS REJECTED BY THE COMPLIANCE AUDITOR.\n"
+            "REJECTED DRAFT\n"
+            f"{previous_draft or ''}\n\n"
+            "AUDITOR CRITIQUE (you must resolve this)\n"
+            f"{critique}\n\n"
+            "Rewrite the recommendation so the critique no longer applies. Remove "
+            "the offending content rather than replacing it with something new. "
+            "If resolving the critique leaves nothing the extracts actually "
+            f"support, answer \"{SOLUTION_NOT_FOUND}\" instead of finding another "
+            "way to say the same thing."
+        )
+
+    return [
+        {"role": "system", "content": TIER2_ACTOR_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_tier2_judge_messages(
+    ticket: IncomingTicket,
+    chunks: Sequence[Any],
+    draft: str,
+) -> list[dict[str, str]]:
+    user = (
+        "INCOMING PROBLEM STATEMENT\n"
+        f"{ticket.problem_description.strip()}\n\n"
+        "0250 STANDARDS EXTRACTS (the only permitted source of content)\n"
+        f"{format_doc_chunks(chunks)}\n\n"
+        "DRAFT RECOMMENDATION UNDER AUDIT\n"
+        f"{draft}\n"
+    )
+    return [
+        {"role": "system", "content": TIER2_JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
 
 
 def format_historical_solutions(candidates: Sequence[Candidate]) -> str:

@@ -5,10 +5,16 @@ supplier-submitted problem sheets **strictly from historical precedent**. It nev
 introduces external domain knowledge, never exposes internal tooling to suppliers,
 and always emits a status workbook for human admin review.
 
+Two tiers of evidence. **Tier 1** answers from the part's own historical SPS
+records. When those produce nothing usable, **Tier 2** answers from the company's
+0250 engineering standards instead and cites the document and section it used.
+Neither tier is allowed to answer from the model's own knowledge.
+
 Runs on a **CPU-only host**: `BAAI/bge-small-en-v1.5` locally via
 `sentence-transformers`, generation on an Azure OpenAI deployment at
 `temperature=0.0`, `top_p=0.1`. **No vector database** — history is filtered by
-part number and embedded per ticket.
+part number and embedded per ticket; the standards corpus is embedded once and
+cached against a hash of itself.
 
 ---
 
@@ -52,7 +58,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-154 tests, none of which needs a server, an Azure key or a model download. The
+202 tests, none of which needs a server, an Azure key or a model download. The
 real-model checks are opt-in (~130 MB of weights):
 
 ```bash
@@ -70,7 +76,9 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `scripts/run_eval_batch.py` | Batch evaluator — many tickets, one results workbook |
 | `scripts/run_eval.cmd` | Wrapper for the above |
 | `sps/validators.py` | Part-number canonicalisation + ticket gatekeeping |
-| `sps/retrieval/in_memory.py` | Filter by part, embed (Azure or local), rank, gate |
+| `sps/retrieval/in_memory.py` | **Tier 1** — filter by part, embed (Azure or local), rank, gate |
+| `sps/retrieval/docx_parser.py` | **Tier 2** — parse 0250 .docx into citable, section-bounded chunks |
+| `sps/retrieval/doc_cache.py` | **Tier 2** — hash-keyed vector cache, enriched query, search |
 | `sps/embedding.py` | Azure + local BGE encoders |
 | `sps/generation/` | Actor / Judge loop, schema-constrained |
 | `sps/schemas.py` | Pydantic response schemas for the LLM |
@@ -79,7 +87,9 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/file_reader.py` | .csv / .xlsx dispatch + strict type gate |
 | `service/excel_output.py` | Atomic workbook writer |
 | `scripts/verify_embedder.py` | Acceptance checks against the real model |
-| `samples/` | A ticket + history for smoke tests, and six eval cases |
+| `scripts/make_sample_docs.py` | Regenerates the demo 0250 documents |
+| `samples/` | A ticket + history for smoke tests, six eval cases, three demo standards |
+| `data/0250_docs/` | Where the real 0250 standards go (ships empty) |
 
 
 **Gatekeeping depends on nothing but the standard library.** `sps/validators.py`
@@ -105,10 +115,17 @@ python -m scripts.run_resolver --ticket-file ticket.xlsx \
 | Output | When | Columns |
 | --- | --- | --- |
 | `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason`, `Embedding_Model` |
-| `output.xlsx` | Only when `Status` is PASS | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_SPS_IDs` |
+| `output.xlsx` | Only when `Status` is PASS | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source` |
 
-Status codes: `SUCCESS`, `INVALID_INPUT`, `NO_MATCHES`,
-`BELOW_CONFIDENCE_THRESHOLD`, `LLM_AUDIT_REJECTED`, `INFRASTRUCTURE_ERROR`.
+Status codes: `SUCCESS_HISTORICAL`, `SUCCESS_0250_DOC`, `NO_RESOLUTION_FOUND`,
+`INVALID_INPUT`, `INFRASTRUCTURE_ERROR`. `Status` itself is still PASS or FAIL
+for both success codes, so a caller branching on `Status` is unaffected by the
+second tier.
+
+`Resolution_Source` is `HISTORICAL_DATA` or `0250_DOCUMENTATION`, and
+`Referenced_Sources` holds SPS IDs or document citations to match. Both replace
+the former `Referenced_SPS_IDs` column — **a breaking change** for anything
+reading that sheet by column name.
 
 Exit codes are kept alongside the sheet so a caller can branch without opening a
 workbook: **0** the run completed (PASS, or a legitimate FAIL such as a gated
@@ -121,9 +138,15 @@ cannot succeed:
 
 ```
 validate -> filter history by part -> cap to newest 300 -> embed -> rank -> gate -> LLM
+                                                                                    |
+                                                        (nothing usable) -----------+
+                                                                 |
+                                        Tier 2:  load cache -> rank chunks -> gate -> LLM
 ```
 
-A malformed part number is rejected before the model is even loaded.
+A malformed part number is rejected before the model is even loaded. Tier 2 runs
+only once all of Tier 1 has failed, which is what lets it afford to parse and
+embed a document corpus.
 
 ### Measured latency, 300k-row history
 
@@ -282,6 +305,117 @@ set that no longer occurs. `Confidence_Score` is the cosine alone.
 
 ---
 
+## Tier 2: the 0250 standards fallback
+
+When Tier 1 produces no recommendation — no matching part, nothing similar
+enough, or an Actor that declines the precedent it was shown — the resolver
+searches the 0250 engineering standards in `data/0250_docs/` instead.
+
+```bash
+python -m scripts.run_resolver --ticket-file t.csv --history-file h.csv \
+    --output-dir .\out --docs-dir data\0250_docs
+```
+
+**An empty corpus is a valid state.** With no `.docx` in the folder, Tier 2 does
+not run and every ticket reports exactly the Tier-1 outcome it would have
+reported before Tier 2 existed. `--no-tier2` forces that behaviour explicitly.
+
+### Parsing
+
+Chunks are cut at Word heading styles and never span a section, because the
+citation attached to a chunk has to be true — one straddling 4.2 and 4.3 could
+be cited as either and would be wrong half the time. Each chunk carries its own
+provenance *inside the embedded text*:
+
+```
+[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking]
+Cracking in a fillet or butt weld seam is cause for rejection ...
+```
+
+so the string that was ranked is the string the model is asked to cite, and
+nothing can drift between retrieval and attribution.
+
+Tables are included, flattened one row per line. `document.paragraphs` omits
+them entirely, and a limits table is where a standard keeps its numbers —
+dropping tables would lose "2 percent by area maximum" from a porosity section
+while keeping the prose around it.
+
+Legacy `.doc` files are named in a warning and skipped. A `.doc` is not a zip
+container, so the only way to read one on Windows is to drive Word through COM
+automation, which on a headless robot blocks on a modal dialog and hangs the run
+rather than failing it.
+
+### The cache
+
+The corpus is the same on every ticket, so it is embedded once. Two cache files,
+`0250_cache_azure.npz` and `0250_cache_local.npz`, because a vector belongs to
+one embedding space and one file could not hold two.
+
+Validity is keyed on a SHA-256 of every document's **name and bytes** — a rename
+changes every citation the document produces, so it invalidates too — plus the
+identity of the model that wrote the vectors, since two Azure deployments share a
+filename but not an embedding space. Edit a document and the next run rebuilds;
+touch nothing and it loads in milliseconds. A corrupt or hand-edited cache is a
+rebuild, not a failure: the documents on disk are always the source of truth.
+
+### The enriched query
+
+```
+Issue Type: {Issue_Type} | Defect: {Problem_Description}
+```
+
+A standards corpus is organised by issue class — welding, packaging, plating —
+while a defect sentence often names only the symptom. The enrichment costs a
+little raw similarity (0.8191 → 0.7800 on the measured example, since the header
+tokens are not defect language) and buys discrimination between two standards
+describing the same symptom under different issue classes.
+
+### A third threshold
+
+Tier 2 scores in a different range from Tier 1, and this is not a detail. Tier 1
+compares one short defect sentence against another; Tier 2 compares a defect
+sentence against 300 words of standards prose that answers it **without
+resembling it**. Measured with bge-small against the demo corpus:
+
+| query | top-ranked section | score |
+| --- | --- | --- |
+| weld seam cracking | `§ 4.2 Weld Seam Cracking` | 0.7462 |
+| weld porosity | `§ 4.3 Weld Porosity Limits` | 0.8095 |
+| carton label misprint | `§ 2.1 Carton Labelling` | 0.7507 |
+| hydraulic pump pressure — *not covered by any document* | `§ 4.2 Weld Seam Cracking` | **0.5944** |
+
+Tier 1's gate is 0.89. Reusing it would reject the correct chunk on every ticket
+and Tier 2 would never fire once. `TIER2_LOCAL_THRESHOLD` is **0.62** — above the
+uncovered-defect peak, below every genuine match.
+
+`--threshold` is deliberately Tier 1's alone; Tier 2 has `--tier2-threshold` and
+`SPS_TIER2_THRESHOLD`. One override spanning both would be a single number
+standing for two different embedding spaces.
+
+**Re-measure 0.62 once the real standards are loaded.** A larger corpus gives an
+irrelevant section more chances to score highly, so the uncovered-defect peak
+rises with corpus size, and 0.5944 leaves only 0.026 of headroom.
+
+### Grounding
+
+The Tier-2 Actor is under one constraint the Tier-1 Actor is not: **a standard is
+not automatically a solution.** A section stating a limit, a tolerance or an
+acceptance criterion without saying what to do about a part that violates it has
+not supplied a resolution, and deriving the disposition is fabrication — the more
+dangerous kind, because the invented step is usually the engineering-plausible
+one. The Judge audits this as a fourth check alongside hallucination, tool
+leakage, and citation integrity.
+
+The Actor is also required to open its justification with *"Historical records
+yielded no resolution."*, so a human reviewer can see at a glance that this
+answer came from a standard rather than from precedent.
+
+Citations in `Referenced_Sources` are taken from the retrieved chunks, never from
+the model's prose — the same reason confidence and SPS IDs are supplied from
+measurement in Tier 1. A model asked to author its own citation can invent one.
+
+---
+
 ## The batch evaluator
 
 `scripts/run_eval_batch.py` runs a directory of test tickets and writes one
@@ -397,9 +531,10 @@ Stated explicitly rather than buried:
 ## Test coverage
 
 ```
+tests/test_tier2_docs.py               48   docx parsing, cache invalidation, Tier-2 gating and fallback
 tests/test_resolver.py                 32   validation, part filtering, capping, dual workbooks, threshold
-tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
+tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_embedding_fallback.py       19   Azure primary, all-or-nothing fallback, dual threshold
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries

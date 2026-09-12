@@ -58,7 +58,7 @@ def make_dir(tmp_path, ids, with_history=()):
     return directory
 
 
-def outcome(code=resolver.CODE_SUCCESS, **overrides):
+def outcome(code=resolver.CODE_SUCCESS_HISTORICAL, **overrides):
     fields = dict(
         reason="ok",
         exit_code=resolver.EXIT_OK,
@@ -238,13 +238,13 @@ def test_blank_rows_in_the_run_list_are_skipped(tmp_path):
 def test_a_rejected_case_still_reports_its_score(tmp_path, scripted):
     """The reason this utility exists. Without the score of a case the gate
     turned away, there is nothing to calibrate the gate against."""
-    scripted(outcome(resolver.CODE_BELOW_THRESHOLD, reason="too low", top_score=0.6123))
+    scripted(outcome(resolver.CODE_NO_RESOLUTION, reason="too low", top_score=0.6123))
     case = batch.Case("case04", tmp_path / "t.csv", tmp_path / "h.csv")
 
     result = batch.run_case(case, tmp_path / "work", None)
 
     assert result.status == "FAIL"
-    assert result.status_code == resolver.CODE_BELOW_THRESHOLD
+    assert result.status_code == resolver.CODE_NO_RESOLUTION
     assert result.confidence_score == 0.6123
     assert result.threshold_applied == 0.89
     assert result.cleared == "NO"
@@ -320,7 +320,7 @@ def _run(tmp_path, directory, shared, extra=()):
 def test_the_workbook_carries_every_column_in_order(tmp_path, scripted):
     directory = make_dir(tmp_path, ["case01", "case02"])
     shared = write_history_csv(tmp_path / "master.csv")
-    scripted(outcome(), outcome(resolver.CODE_BELOW_THRESHOLD, top_score=0.5))
+    scripted(outcome(), outcome(resolver.CODE_NO_RESOLUTION, top_score=0.5))
 
     code, out = _run(tmp_path, directory, shared)
 
@@ -354,7 +354,7 @@ def test_a_gated_case_is_a_result_not_an_error(tmp_path, scripted):
     finding, not a fault."""
     directory = make_dir(tmp_path, ["case01"])
     shared = write_history_csv(tmp_path / "master.csv")
-    scripted(outcome(resolver.CODE_BELOW_THRESHOLD, top_score=0.4))
+    scripted(outcome(resolver.CODE_NO_RESOLUTION, top_score=0.4))
 
     code, _ = _run(tmp_path, directory, shared)
     assert code == batch.EXIT_OK

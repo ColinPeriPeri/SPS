@@ -39,6 +39,34 @@ scripts\run_eval.cmd samples\eval_cases eval_out samples\sample_history.csv
 between the scores of cases you judged wrong and the scores of cases you judged
 right, so a set with no `case04` in it cannot calibrate anything.
 
+## Demo 0250 standards
+
+`0250_docs/` holds three invented engineering standards, so Tier 2 can be
+exercised before a real document is loaded. Regenerate them with
+`python -m scripts.make_sample_docs`.
+
+| Document | Contains | Why it is here |
+| --- | --- | --- |
+| `0250-Weld-Standards.docx` | 4.1 Scope, 4.2 Weld Seam Cracking, 4.3 Porosity Limits (a **table**), 4.4 Undercut, 7.1 Re-inspection | The section a weld ticket should land on, plus a limits table that `document.paragraphs` would drop |
+| `0250-Packaging-Standards.docx` | 2.1 Carton Labelling, 2.4 Barcode Symbology | A different issue class, so the enriched query has something to discriminate against |
+| `0250-Surface-Finish.docx` | 3.2 Surface Finish | **States a limit and no disposition.** It retrieves at 0.75 and the Actor is then required to decline it — the fabrication Tier 2's grounding check exists to catch |
+
+```bat
+python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
+```
+
+Both gates forced to 0.99 keeps it offline; the Reason then names a score from
+each tier. Measured against this corpus with bge-small:
+
+| query | top section | score |
+| --- | --- | --- |
+| weld seam cracking | `§ 4.2 Weld Seam Cracking` | 0.7462 |
+| weld porosity | `§ 4.3 Weld Porosity Limits` | 0.8095 |
+| carton label misprint | `§ 2.1 Carton Labelling` | 0.7507 |
+| hydraulic pump pressure (`case04`) | — nothing covers it — | 0.5944 |
+
+That last row is why `TIER2_LOCAL_THRESHOLD` is 0.62.
+
 ## Adding your own
 
 Name files `<id>_ticket.csv|xlsx`, optionally paired with

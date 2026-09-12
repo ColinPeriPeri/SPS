@@ -114,6 +114,13 @@ def score_to_percent(score: float) -> int:
     return int(min(max(score, 0.0), 1.0) * 100)
 
 
+# Which evidence a recommendation was built from. Written verbatim into
+# output.xlsx, so a human reviewer can weigh a precedent-backed answer
+# differently from one derived from a written standard.
+SOURCE_HISTORICAL = "HISTORICAL_DATA"
+SOURCE_DOCUMENTATION = "0250_DOCUMENTATION"
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineResult:
     """The recommendation handed to the output writer."""
@@ -121,7 +128,12 @@ class PipelineResult:
     ai_recommendation: str
     justification: str
     confidence: str
-    sps_ids_referred: list[str] = field(default_factory=list)
+    # SPS IDs when the answer came from history, document citations when it
+    # came from the standards. One column either way: a reviewer reading
+    # output.xlsx wants "what backs this", and Resolution_Source already says
+    # which kind of thing they are looking at.
+    referenced_sources: list[str] = field(default_factory=list)
+    resolution_source: str = SOURCE_HISTORICAL
     # Operational signals only, never written to output.xlsx. They let the
     # caller separate a dependency outage, which is worth retrying, from a
     # legitimate refusal, which is not.

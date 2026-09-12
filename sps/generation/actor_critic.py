@@ -10,14 +10,22 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Callable, Sequence
 
 from ..config import LLMSettings
 from ..contracts import SOLUTION_NOT_FOUND, Candidate, IncomingTicket
 from .llm import ChatClient, LLMError
-from .prompts import build_actor_messages, build_judge_messages
+from .prompts import (
+    build_actor_messages,
+    build_judge_messages,
+    build_tier2_actor_messages,
+    build_tier2_judge_messages,
+)
 
 logger = logging.getLogger(__name__)
+
+TIER_HISTORICAL = "historical"
+TIER_DOCUMENTATION = "0250"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +47,48 @@ class Verdict:
     critique: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class Grounding:
+    """The evidence one loop run is allowed to draw on, and how to render it.
+
+    Both tiers share one loop: the same circuit breaker, the same fail-closed
+    Judge, the same abstention handling. Only the evidence and its prompts
+    differ, so those are the parameters rather than a forked implementation --
+    a second copy of the loop would be a second place for the retry limit to
+    drift.
+    """
+
+    items: Sequence[Any]
+    actor_messages: Callable[..., list[dict[str, str]]]
+    judge_messages: Callable[..., list[dict[str, str]]]
+    # What to report when the Actor declines. Tier 1 and Tier 2 decline for
+    # different reasons and the status sheet should say which.
+    abstention_reason: str
+    tier: str = TIER_HISTORICAL
+
+
+def historical_grounding(candidates: Sequence[Candidate]) -> Grounding:
+    return Grounding(
+        items=candidates,
+        actor_messages=build_actor_messages,
+        judge_messages=build_judge_messages,
+        abstention_reason="Historical records did not address the reported problem.",
+        tier=TIER_HISTORICAL,
+    )
+
+
+def documentation_grounding(chunks: Sequence[Any]) -> Grounding:
+    return Grounding(
+        items=chunks,
+        actor_messages=build_tier2_actor_messages,
+        judge_messages=build_tier2_judge_messages,
+        abstention_reason=(
+            "The 0250 standards retrieved do not address this defect."
+        ),
+        tier=TIER_DOCUMENTATION,
+    )
+
+
 @dataclass(slots=True)
 class LoopOutcome:
     """Result plus the audit trail an admin reviewer may need to see."""
@@ -51,6 +101,10 @@ class LoopOutcome:
     # than because the content failed review. The caller needs this to tell an
     # Azure outage apart from a legitimate refusal.
     infrastructure_failure: bool = False
+    # Which evidence produced this outcome. The status sheet and the result
+    # workbook both report it, so a reviewer can see whether a recommendation
+    # came from precedent or from a standard.
+    tier: str = TIER_HISTORICAL
 
     @property
     def succeeded(self) -> bool:
@@ -71,6 +125,15 @@ class ActorCriticLoop:
         ticket: IncomingTicket,
         candidates: Sequence[Candidate],
     ) -> LoopOutcome:
+        """Tier 1: generate from historical precedent."""
+        return await self.run_grounded(ticket, historical_grounding(candidates))
+
+    async def run_grounded(
+        self,
+        ticket: IncomingTicket,
+        grounding: Grounding,
+    ) -> LoopOutcome:
+        """Generate, audit and refine against whatever evidence is supplied."""
         max_attempts = max(1, self.settings.max_attempts)
         critique: str | None = None
         previous_draft: str | None = None
@@ -78,7 +141,7 @@ class ActorCriticLoop:
 
         for attempt in range(1, max_attempts + 1):
             try:
-                draft = await self._act(ticket, candidates, critique, previous_draft)
+                draft = await self._act(ticket, grounding, critique, previous_draft)
             except LLMError as exc:
                 logger.warning("Ticket %r attempt %d: Actor failed: %s", ticket.sps_id, attempt, exc)
                 return LoopOutcome(
@@ -87,6 +150,7 @@ class ActorCriticLoop:
                     critiques=critiques,
                     failure_reason=f"Generation failed: {exc}",
                     infrastructure_failure=True,
+                    tier=grounding.tier,
                 )
 
             if draft.is_abstention:
@@ -97,11 +161,12 @@ class ActorCriticLoop:
                     draft=None,
                     attempts=attempt,
                     critiques=critiques,
-                    failure_reason="Historical records did not address the reported problem.",
+                    failure_reason=grounding.abstention_reason,
+                    tier=grounding.tier,
                 )
 
             try:
-                verdict = await self._judge(ticket, candidates, draft.recommendation)
+                verdict = await self._judge(ticket, grounding, draft.recommendation)
             except LLMError as exc:
                 logger.warning("Ticket %r attempt %d: Judge failed: %s", ticket.sps_id, attempt, exc)
                 # An unverified draft is never shipped: a Judge outage fails closed.
@@ -111,11 +176,17 @@ class ActorCriticLoop:
                     critiques=critiques,
                     failure_reason=f"Compliance audit unavailable: {exc}",
                     infrastructure_failure=True,
+                    tier=grounding.tier,
                 )
 
             if verdict.passed:
                 logger.info("Ticket %r: draft passed audit on attempt %d", ticket.sps_id, attempt)
-                return LoopOutcome(draft=draft, attempts=attempt, critiques=critiques)
+                return LoopOutcome(
+                    draft=draft,
+                    attempts=attempt,
+                    critiques=critiques,
+                    tier=grounding.tier,
+                )
 
             logger.info(
                 "Ticket %r attempt %d rejected: %s", ticket.sps_id, attempt, verdict.critique
@@ -134,18 +205,21 @@ class ActorCriticLoop:
             failure_reason=(
                 f"Draft failed the compliance audit on all {max_attempts} attempts."
             ),
+            tier=grounding.tier,
         )
 
     async def _act(
         self,
         ticket: IncomingTicket,
-        candidates: Sequence[Candidate],
+        grounding: Grounding,
         critique: str | None,
         previous_draft: str | None,
     ) -> Draft:
         from ..schemas import ActorDraft
 
-        messages = build_actor_messages(ticket, candidates, critique, previous_draft)
+        messages = grounding.actor_messages(
+            ticket, grounding.items, critique, previous_draft
+        )
         drafted = await self.client.complete_model(messages, ActorDraft)
         recommendation = drafted.recommendation.strip()
         if not recommendation:
@@ -158,12 +232,12 @@ class ActorCriticLoop:
     async def _judge(
         self,
         ticket: IncomingTicket,
-        candidates: Sequence[Candidate],
+        grounding: Grounding,
         draft: str,
     ) -> Verdict:
         from ..schemas import JudgeVerdict
 
-        messages = build_judge_messages(ticket, candidates, draft)
+        messages = grounding.judge_messages(ticket, grounding.items, draft)
         # The Literal["PASS", "FAIL"] on JudgeVerdict means an unrecognised
         # status fails validation and raises rather than being read as a pass.
         verdict = await self.client.complete_model(messages, JudgeVerdict)

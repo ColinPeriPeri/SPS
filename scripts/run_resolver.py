@@ -12,7 +12,7 @@ Writes two workbooks into --output-dir:
                 blank when the run aborted before anything was encoded.
   output.xlsx   Only when Status is PASS.
                 Part_Number, AI_Recommendation, Justification,
-                Confidence_Score, Referenced_SPS_IDs.
+                Confidence_Score, Referenced_Sources, Resolution_Source.
 
 Both are written atomically, and both are cleared before any work starts, so a
 process killed outright leaves no stale result to be mistaken for this run's.
@@ -21,9 +21,15 @@ Exit codes are retained alongside the status sheet, since a caller can branch on
 them without opening a workbook: 0 the run completed (PASS or a legitimate
 FAIL), 1 an infrastructure fault, 2 the inputs could not be read.
 
+Two tiers. Tier 1 answers from the part's own historical SPS records. When
+that produces nothing usable -- no matching part, nothing similar enough, or an
+Actor that declines the precedent -- Tier 2 answers from the 0250 engineering
+standards instead, and says so in Resolution_Source.
+
 Order of work is cheapest-first, so nothing expensive runs for a ticket that
 cannot succeed: validate, then filter history by part, then cap, then embed,
-then gate, then the LLM.
+then gate, then the LLM. Tier 2 only runs after all of that has failed, which is
+why it can afford to parse and embed a document corpus.
 """
 
 from __future__ import annotations
@@ -46,6 +52,15 @@ from sps.retrieval.in_memory import (
     DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_THRESHOLD,
 )
 
+# Tier 2 has its own thresholds because a 300-word standards chunk and a
+# one-sentence defect score far lower than two defect sentences do -- measured
+# at 0.78 for a chunk that answers the ticket, against Tier 1's 0.89 gate.
+from sps.retrieval.doc_cache import (
+    DEFAULT_DOCS_DIR,
+    TIER2_AZURE_THRESHOLD,
+    TIER2_LOCAL_THRESHOLD,
+)
+
 logger = logging.getLogger("sps.resolver")
 
 EXIT_OK = 0
@@ -55,12 +70,23 @@ EXIT_BAD_INPUT = 2
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
 
-CODE_SUCCESS = "SUCCESS"
+# The two tiers are delineated in the status code, so a caller can tell a
+# precedent-backed answer from a standards-derived one without opening
+# output.xlsx. Status itself stays PASS/FAIL for both, so a workflow branching
+# on Status is unaffected.
+CODE_SUCCESS_HISTORICAL = "SUCCESS_HISTORICAL"
+CODE_SUCCESS_DOC = "SUCCESS_0250_DOC"
+# One terminal code for "both tiers were tried and neither resolved it". The
+# detail that used to live in NO_MATCHES / BELOW_CONFIDENCE_THRESHOLD /
+# LLM_AUDIT_REJECTED now lives in Reason, which carries the best score from
+# each tier.
+CODE_NO_RESOLUTION = "NO_RESOLUTION_FOUND"
 CODE_INVALID_INPUT = "INVALID_INPUT"
-CODE_NO_MATCHES = "NO_MATCHES"
-CODE_BELOW_THRESHOLD = "BELOW_CONFIDENCE_THRESHOLD"
-CODE_AUDIT_REJECTED = "LLM_AUDIT_REJECTED"
 CODE_INFRASTRUCTURE = "INFRASTRUCTURE_ERROR"
+
+# Retained so a caller comparing against the old constant still imports, and so
+# `Status == PASS` has one definition.
+SUCCESS_CODES = frozenset({CODE_SUCCESS_HISTORICAL, CODE_SUCCESS_DOC})
 
 STATUS_FILE = "status.xlsx"
 OUTPUT_FILE = "output.xlsx"
@@ -87,6 +113,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=None,
         help=f"Confidence threshold (default {DEFAULT_THRESHOLD}, or SPS_CONFIDENCE_THRESHOLD)",
+    )
+    parser.add_argument(
+        "--tier2-threshold",
+        type=float,
+        default=None,
+        help=f"Tier-2 gate (default {TIER2_LOCAL_THRESHOLD} local / "
+        f"{TIER2_AZURE_THRESHOLD} azure, or SPS_TIER2_THRESHOLD). Separate from "
+        "--threshold because the two tiers score in different ranges.",
+    )
+    parser.add_argument(
+        "--docs-dir",
+        default=None,
+        help="0250 standards folder for the Tier-2 fallback "
+        f"(default {DEFAULT_DOCS_DIR}, or SPS_0250_DOCS_DIR). "
+        "Tier 2 is skipped when the folder holds no .docx.",
+    )
+    parser.add_argument(
+        "--no-tier2",
+        action="store_true",
+        help="Answer from history only, as before the 0250 fallback existed.",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args(argv)
@@ -149,6 +195,15 @@ class ResolveOutcome:
     top_score: float = 0.0
     threshold_used: float = 0.0
     candidates_considered: int = 0
+    # Tier 2, reported separately rather than folded into the fields above: the
+    # two tiers score in different ranges, so a single "top score" column that
+    # sometimes meant one and sometimes the other could not be calibrated
+    # against anything.
+    tier2_top_score: float = 0.0
+    tier2_threshold: float = 0.0
+    tier2_chunks: int = 0
+    tier2_cache_state: str = ""
+    resolution_source: str = ""
 
 
 def _reason_with_marker(reason: str, embedding_model: str) -> str:
@@ -179,7 +234,7 @@ def _now() -> str:
 def write_status(output_dir: Path, code: str, reason: str, embedding_model: str = "") -> None:
     from service.excel_output import STATUS_COLUMNS, write_rows
 
-    status = STATUS_PASS if code == CODE_SUCCESS else STATUS_FAIL
+    status = STATUS_PASS if code in SUCCESS_CODES else STATUS_FAIL
     write_rows(
         output_dir / STATUS_FILE,
         STATUS_COLUMNS,
@@ -202,7 +257,7 @@ def write_status(output_dir: Path, code: str, reason: str, embedding_model: str 
     logger.info("status: %s / %s [%s] -- %s", status, code, embedding_model or "none", reason)
 
 
-def write_output(output_dir: Path, part_number: str, result, sps_ids) -> None:
+def write_output(output_dir: Path, part_number: str, result) -> None:
     from service.excel_output import RESULT_COLUMNS, write_rows
 
     write_rows(
@@ -214,7 +269,10 @@ def write_output(output_dir: Path, part_number: str, result, sps_ids) -> None:
                 "AI_Recommendation": result.ai_recommendation,
                 "Justification": result.justification,
                 "Confidence_Score": result.confidence,
-                "Referenced_SPS_IDs": ", ".join(sps_ids),
+                # SPS IDs or document citations depending on the tier;
+                # Resolution_Source alongside says which kind these are.
+                "Referenced_Sources": ", ".join(result.referenced_sources),
+                "Resolution_Source": result.resolution_source,
             }
         ],
     )
@@ -319,54 +377,209 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         candidates_considered=stats.capped_to,
     )
 
-    if stats.usable == 0:
-        return ResolveOutcome(
-            CODE_NO_MATCHES,
-            f"No usable history for part {part_number}: "
-            f"{stats.part_matches} row(s) matched the part out of {stats.rows_scanned} scanned.",
-            EXIT_OK,
-            **measured,
-        )
-    if not candidates:
-        return ResolveOutcome(
-            CODE_BELOW_THRESHOLD,
-            f"Best match {stats.top_score:.4f} is below the "
-            f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s) "
-            f"for part {part_number}.",
-            EXIT_OK,
-            **measured,
-        )
-
     loop = ActorCriticLoop(AzureOpenAIChatClient(LLMSettings.from_env()), LLMSettings.from_env())
-    outcome = asyncio.run(loop.run(ticket, candidates))
 
-    if not outcome.succeeded or outcome.draft is None:
+    # -- Tier 1: the part's own history ------------------------------------
+
+    if stats.usable == 0:
+        tier1_detail = (
+            f"No usable history for part {part_number}: {stats.part_matches} row(s) "
+            f"matched the part out of {stats.rows_scanned} scanned."
+        )
+    elif not candidates:
+        tier1_detail = (
+            f"Best historical match {stats.top_score:.4f} is below the "
+            f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s)."
+        )
+    else:
+        outcome = asyncio.run(loop.run(ticket, candidates))
+
+        if outcome.succeeded and outcome.draft is not None:
+            from sps.output import success
+
+            result = success(
+                recommendation=outcome.draft.recommendation,
+                justification=outcome.draft.justification
+                or f"Synthesized from {len(candidates)} historical record(s) "
+                f"for part {part_number}.",
+                top_score=stats.top_score,
+                candidates=candidates,
+            )
+            write_output(output_dir, part_number, result)
+            return ResolveOutcome(
+                CODE_SUCCESS_HISTORICAL,
+                f"Resolved from {len(candidates)} historical record(s) at "
+                f"{result.confidence} confidence.",
+                EXIT_OK,
+                resolution_source=result.resolution_source,
+                **measured,
+            )
+
         if outcome.infrastructure_failure:
             # A dependency outage is not a content rejection: it must not look
-            # like a legitimate refusal, or a caller retries nothing.
+            # like a legitimate refusal, or a caller retries nothing. Tier 2
+            # needs the same Azure deployment, so there is nothing to fall
+            # back to -- trying it would only fail again, slower.
             logger.error("dependency failure: %s", outcome.failure_reason)
             return ResolveOutcome(
                 CODE_INFRASTRUCTURE, outcome.failure_reason, EXIT_INFRASTRUCTURE, **measured
             )
+
+        tier1_detail = outcome.failure_reason
+
+    logger.info("Tier 1 produced no resolution: %s", tier1_detail)
+
+    # -- Tier 2: the 0250 engineering standards ----------------------------
+
+    return _resolve_from_docs(
+        args=args,
+        ticket=ticket,
+        part_number=part_number,
+        output_dir=output_dir,
+        loop=loop,
+        tier1_detail=tier1_detail,
+        tier1_backend=stats.backend,
+        local_embedder_factory=local_embedder,
+        measured=measured,
+    )
+
+
+def _resolve_from_docs(
+    args: argparse.Namespace,
+    ticket,
+    part_number: str,
+    output_dir: Path,
+    loop,
+    tier1_detail: str,
+    tier1_backend: str,
+    local_embedder_factory,
+    measured: dict,
+) -> ResolveOutcome:
+    """Tier 2. Reached only once Tier 1 has produced nothing usable."""
+    import asyncio
+    import os
+
+    from sps.generation.actor_critic import documentation_grounding
+    from sps.retrieval.doc_cache import DocRetriever
+
+    def _no_resolution(extra: str, **fields) -> ResolveOutcome:
+        """Both tiers tried, neither resolved it.
+
+        Reason carries the best score from each tier, because that is what
+        tells a reviewer whether this was a near miss worth a threshold change
+        or a genuine absence of evidence.
+        """
         return ResolveOutcome(
-            CODE_AUDIT_REJECTED, outcome.failure_reason, EXIT_OK, **measured
+            CODE_NO_RESOLUTION,
+            f"{tier1_detail} {extra}".strip(),
+            EXIT_OK,
+            **measured,
+            **fields,
         )
 
-    from sps.output import success
+    if args.no_tier2:
+        return _no_resolution("Tier 2 disabled by --no-tier2.")
 
-    result = success(
+    docs_dir = (
+        args.docs_dir
+        or os.environ.get("SPS_0250_DOCS_DIR", "").strip()
+        or DEFAULT_DOCS_DIR
+    )
+
+    def _threshold(name: str, fallback: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        return float(raw) if raw else fallback
+
+    # Deliberately NOT --threshold. That number is calibrated against Tier 1's
+    # ticket-to-ticket distribution, where 0.89 is a normal gate; against
+    # Tier 2's ticket-to-document distribution the same number rejects every
+    # chunk. One override spanning both would be a single number standing for
+    # two different embedding spaces, which is the mistake this codebase keeps
+    # not making.
+    tier2_override = args.tier2_threshold
+    if tier2_override is None:
+        raw = os.environ.get("SPS_TIER2_THRESHOLD", "").strip()
+        tier2_override = float(raw) if raw else None
+
+    docs = DocRetriever(
+        docs_dir=docs_dir,
+        local_embedder_factory=local_embedder_factory,
+        confidence_threshold=tier2_override,
+        azure_threshold=_threshold("TIER2_AZURE_THRESHOLD", TIER2_AZURE_THRESHOLD),
+        local_threshold=_threshold("TIER2_LOCAL_THRESHOLD", TIER2_LOCAL_THRESHOLD),
+        # Tier 1 already discovered whether Azure answers. Probing again would
+        # buy nothing and cost another full timeout.
+        force_backend=tier1_backend or None,
+    )
+
+    if not docs.available:
+        # The normal state of a deployment whose standards have not been loaded
+        # yet. Not an error: the ticket reports exactly the Tier-1 outcome it
+        # would have reported before Tier 2 existed.
+        return _no_resolution(f"No 0250 documents found in {docs_dir}.")
+
+    try:
+        chunks = docs.retrieve(ticket)
+    except Exception as exc:
+        # Tier 2 is a fallback. A corpus that cannot be read must not turn a
+        # legitimate Tier-1 "no resolution" into an infrastructure fault that
+        # the robot then retries forever.
+        logger.error("Tier 2 failed; reporting the Tier-1 outcome: %s", exc)
+        return _no_resolution(f"Tier 2 unavailable: {exc}")
+
+    tier2_stats = docs.stats
+    logger.info("tier 2 stats: %s", tier2_stats.as_dict())
+    tier2_measured = dict(
+        tier2_top_score=tier2_stats.top_score,
+        tier2_threshold=tier2_stats.threshold_used,
+        tier2_chunks=tier2_stats.chunks,
+        tier2_cache_state=tier2_stats.cache_state,
+    )
+
+    if not chunks:
+        return _no_resolution(
+            f"Best 0250 match {tier2_stats.top_score:.4f} is below the "
+            f"{tier2_stats.threshold_used:.2f} threshold across "
+            f"{tier2_stats.chunks} chunk(s).",
+            **tier2_measured,
+        )
+
+    outcome = asyncio.run(loop.run_grounded(ticket, documentation_grounding(chunks)))
+
+    if not outcome.succeeded or outcome.draft is None:
+        if outcome.infrastructure_failure:
+            logger.error("dependency failure in Tier 2: %s", outcome.failure_reason)
+            return ResolveOutcome(
+                CODE_INFRASTRUCTURE,
+                outcome.failure_reason,
+                EXIT_INFRASTRUCTURE,
+                **measured,
+                **tier2_measured,
+            )
+        return _no_resolution(
+            f"{outcome.failure_reason} Best 0250 match "
+            f"{tier2_stats.top_score:.4f}.",
+            **tier2_measured,
+        )
+
+    from sps.output import success_from_docs
+
+    result = success_from_docs(
         recommendation=outcome.draft.recommendation,
         justification=outcome.draft.justification
-        or f"Synthesized from {len(candidates)} historical record(s) for part {part_number}.",
-        top_score=stats.top_score,
-        candidates=candidates,
+        or f"Derived from {len(chunks)} 0250 standard section(s).",
+        top_score=tier2_stats.top_score,
+        chunks=chunks,
     )
-    write_output(output_dir, part_number, result, result.sps_ids_referred)
+    write_output(output_dir, part_number, result)
     return ResolveOutcome(
-        CODE_SUCCESS,
-        f"Resolved from {len(candidates)} record(s) at {result.confidence} confidence.",
+        CODE_SUCCESS_DOC,
+        f"{tier1_detail} Resolved instead from {len(chunks)} 0250 section(s) at "
+        f"{result.confidence} confidence: {', '.join(result.referenced_sources)}.",
         EXIT_OK,
+        resolution_source=result.resolution_source,
         **measured,
+        **tier2_measured,
     )
 
 

@@ -44,12 +44,16 @@ STATUS_COLUMNS = (
     "Reason",
     "Embedding_Model",
 )
+# Referenced_Sources replaces the former Referenced_SPS_IDs: with two tiers the
+# column holds SPS IDs or document citations, and Resolution_Source says which.
+# Both are a BREAKING change for a caller that reads this sheet by column name.
 RESULT_COLUMNS = (
     "Part_Number",
     "AI_Recommendation",
     "Justification",
     "Confidence_Score",
-    "Referenced_SPS_IDs",
+    "Referenced_Sources",
+    "Resolution_Source",
 )
 
 

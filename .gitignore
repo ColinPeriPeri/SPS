@@ -15,3 +15,8 @@ SPS code.zip
 status.txt
 test_input.txt
 test_output.xlsx
+
+# Tier-2 vector caches. Derived from the .docx corpus and rebuilt automatically
+# whenever its SHA-256 changes, so committing them would only ever ship a stale
+# copy of something the next run regenerates.
+0250_cache_*.npz

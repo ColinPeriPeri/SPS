@@ -310,15 +310,16 @@ def test_success_writes_both_workbooks(tmp_path, passing_llm):
     assert code == resolver.EXIT_OK
     status = read_sheet(out / "status.xlsx").iloc[0]
     assert status["Status"] == "PASS"
-    assert status["Status_Code"] == "SUCCESS"
+    assert status["Status_Code"] == "SUCCESS_HISTORICAL"
 
     result = read_sheet(out / "output.xlsx")
     assert list(result.columns) == [
         "Part_Number", "AI_Recommendation", "Justification",
-        "Confidence_Score", "Referenced_SPS_IDs",
+        "Confidence_Score", "Referenced_Sources", "Resolution_Source",
     ]
     assert result.iloc[0]["Part_Number"] == PART
-    assert result.iloc[0]["Referenced_SPS_IDs"] == "SPS-1001"
+    assert result.iloc[0]["Referenced_Sources"] == "SPS-1001"
+    assert result.iloc[0]["Resolution_Source"] == "HISTORICAL_DATA"
     assert result.iloc[0]["Confidence_Score"].endswith("%")
 
 
@@ -354,9 +355,11 @@ def test_status_codes_cover_each_outcome(tmp_path, passing_llm):
     cases = [
         (dict(part=""), "INVALID_INPUT"),
         (dict(problem="short"), "INVALID_INPUT"),
-        (dict(part="0099-99999"), "NO_MATCHES"),
-        (dict(threshold=0.99), "BELOW_CONFIDENCE_THRESHOLD"),
-        (dict(), "SUCCESS"),
+        # Both tiers tried and neither resolved it: one terminal code, with
+        # the tier-by-tier detail in Reason.
+        (dict(part="0099-99999"), "NO_RESOLUTION_FOUND"),
+        (dict(threshold=0.99), "NO_RESOLUTION_FOUND"),
+        (dict(), "SUCCESS_HISTORICAL"),
     ]
     for kwargs, expected in cases:
         _, out = run_cli(tmp_path, **kwargs)
@@ -408,8 +411,10 @@ def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):
     monkeypatch.setenv("SPS_CONFIDENCE_THRESHOLD", "0.95")
     out = tmp_path / "env"
     resolver.main(common + ["--output-dir", str(out)])
-    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
+    status = read_sheet(out / "status.xlsx").iloc[0]
+    assert status["Status_Code"] == "NO_RESOLUTION_FOUND"
+    assert "0.95 threshold" in status["Reason"]
 
     out2 = tmp_path / "flag"
     resolver.main(common + ["--output-dir", str(out2), "--threshold", "0.1"])
-    assert read_sheet(out2 / "status.xlsx").iloc[0]["Status_Code"] == "SUCCESS"
+    assert read_sheet(out2 / "status.xlsx").iloc[0]["Status_Code"] == "SUCCESS_HISTORICAL"

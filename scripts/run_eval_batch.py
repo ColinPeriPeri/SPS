@@ -57,6 +57,15 @@ RESULT_COLUMNS = (
     "Threshold_Applied",
     "Cleared_Threshold",
     "Candidates_Considered",
+    # Tier 2 is calibrated the same way and needs the same columns. They are
+    # kept separate from the Tier-1 ones rather than reusing them: the two
+    # tiers score in different ranges, so one pooled column could not be
+    # calibrated against anything.
+    "Resolution_Source",
+    "Tier2_Score",
+    "Tier2_Threshold",
+    "Tier2_Chunks",
+    "Tier2_Cache",
     "Duration_Seconds",
     "Ticket_File",
     "History_File",
@@ -89,6 +98,11 @@ class Row:
     threshold_applied: float | str = ""
     cleared: str = ""
     candidates: int | str = ""
+    resolution_source: str = ""
+    tier2_score: float | str = ""
+    tier2_threshold: float | str = ""
+    tier2_chunks: int | str = ""
+    tier2_cache: str = ""
     duration: float = 0.0
     ticket: str = ""
     history: str = ""
@@ -104,6 +118,11 @@ class Row:
             "Threshold_Applied": self.threshold_applied,
             "Cleared_Threshold": self.cleared,
             "Candidates_Considered": self.candidates,
+            "Resolution_Source": self.resolution_source,
+            "Tier2_Score": self.tier2_score,
+            "Tier2_Threshold": self.tier2_threshold,
+            "Tier2_Chunks": self.tier2_chunks,
+            "Tier2_Cache": self.tier2_cache,
             "Duration_Seconds": round(self.duration, 2),
             "Ticket_File": self.ticket,
             "History_File": self.history,
@@ -232,7 +251,7 @@ def run_case(case: Case, work_dir: Path, threshold: float | None) -> Row:
         row.duration = time.time() - started
         return row
 
-    row.status = "PASS" if outcome.code == resolver.CODE_SUCCESS else "FAIL"
+    row.status = "PASS" if outcome.code in resolver.SUCCESS_CODES else "FAIL"
     row.status_code = outcome.code
     row.reason = " ".join(outcome.reason.split())
     row.embedding_model = outcome.embedding_model
@@ -245,6 +264,15 @@ def run_case(case: Case, work_dir: Path, threshold: float | None) -> Row:
         row.threshold_applied = round(outcome.threshold_used, 4)
         row.cleared = "YES" if outcome.top_score >= outcome.threshold_used else "NO"
         row.candidates = outcome.candidates_considered
+
+    row.resolution_source = outcome.resolution_source
+    row.tier2_cache = outcome.tier2_cache_state
+    # Populated only when Tier 2 actually ran, so a blank means "Tier 1
+    # answered" rather than "Tier 2 scored zero".
+    if outcome.tier2_cache_state and outcome.tier2_cache_state != "absent":
+        row.tier2_score = round(outcome.tier2_top_score, 4)
+        row.tier2_threshold = round(outcome.tier2_threshold, 4)
+        row.tier2_chunks = outcome.tier2_chunks
     return row
 
 

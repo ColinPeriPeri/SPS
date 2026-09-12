@@ -79,3 +79,17 @@ class ScriptedChatClient:
 @pytest.fixture
 def embedder() -> TokenOverlapEmbedder:
     return TokenOverlapEmbedder()
+
+
+@pytest.fixture(autouse=True)
+def isolated_0250_corpus(tmp_path_factory, monkeypatch):
+    """Point Tier 2 at an empty folder for every test that does not set its own.
+
+    Without this the default corpus path is resolved against the working
+    directory, so a deployment that had actually loaded its 0250 documents
+    would change the outcome of tests written about Tier 1 -- passing or
+    failing depending on what was in a folder the test never mentions.
+    """
+    monkeypatch.setenv(
+        "SPS_0250_DOCS_DIR", str(tmp_path_factory.mktemp("no_0250_docs"))
+    )

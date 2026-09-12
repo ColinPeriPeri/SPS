@@ -24,6 +24,7 @@ error.
 | Git | `git --version` | Or download the repo as a zip. |
 | Network to `pypi.org`, `download.pytorch.org`, `huggingface.co` | | The first resolver run downloads ~130 MB of model weights from Hugging Face. |
 | Your Azure OpenAI endpoint and keys | | Two deployments: one chat, one embedding. See [step 6](#6-configure-env). |
+| Your 0250 standards as `.docx` | | Optional. Tier 2 is skipped entirely if the folder is empty — see [step 10](#10-load-the-0250-standards-tier-2). |
 
 No admin rights, no database, no service to install. The whole thing is a
 Python process the UiPath Performer invokes per ticket.
@@ -95,9 +96,16 @@ torch is already satisfied, so it is not refetched.
 ```bat
 pip check
 python -c "import torch, numpy; print(torch.__version__, numpy.__version__)"
+python -c "from lxml import etree; import docx; print('docx OK', etree.__version__)"
 ```
 
-Expect `No broken requirements found.` and `2.3.1+cpu 1.26.4`.
+Expect `No broken requirements found.`, `2.3.1+cpu 1.26.4`, and `docx OK 5.3.0`.
+
+That third line is not decoration. `lxml` is pinned below 6 because its 6.x
+Windows wheel ships a native DLL that **Windows Application Control blocks on a
+managed machine** — the import dies with *"An Application Control policy has
+blocked this file"*, which reads like a corrupt install rather than a policy
+decision. If you see that error, you have an lxml 6.x: `pip install "lxml<6"`.
 
 This check earns its place. torch, numpy, scipy, scikit-learn and httpx are
 pinned as **one coupled set**: torch 2.3.1 is built against the NumPy 1.x C ABI,
@@ -162,7 +170,7 @@ weaker.
 python -m pytest -q
 ```
 
-Expect **154 passed, 1 skipped** in about 30 seconds. Nothing here needs a
+Expect **202 passed, 1 skipped** in about 75 seconds. Nothing here needs a
 server, an Azure key or a model download — the skip is the real-model module,
 which is opt-in:
 
@@ -172,7 +180,7 @@ python -m pytest -q
 set SPS_MODEL_TESTS=
 ```
 
-That is **168 passed**, and it downloads ~130 MB of weights the first time. It
+That is **216 passed**, and it downloads ~130 MB of weights the first time. It
 pins the properties the ranking maths assumes: 384 dimensions, unit-length
 vectors (so the NumPy matmul *is* the cosine the 0.89 gate is calibrated on),
 and the query instruction applied to queries but never to history passages.
@@ -197,11 +205,13 @@ The first run downloads the local model, so allow a minute. Expect
 | Column | Value |
 |---|---|
 | `Status` | `FAIL` |
-| `Status_Code` | `BELOW_CONFIDENCE_THRESHOLD` |
-| `Reason` | `Best match 0.9641 is below the 0.99 threshold across 3 candidate(s) for part 0012-43951. [Local]` |
+| `Status_Code` | `NO_RESOLUTION_FOUND` |
+| `Reason` | `Best historical match 0.9641 is below the 0.99 threshold across 3 candidate(s). No 0250 documents found in data\0250_docs. [Local]` |
 | `Embedding_Model` | `local:BAAI/bge-small-en-v1.5` |
 
 A `FAIL` is the *expected* result here — you asked for an impossible threshold.
+The Reason names both tiers because both were tried: Tier 1 gated, and Tier 2
+had no documents to search yet.
 What it proves is everything underneath: the file reader, part-number matching,
 the torch/numpy stack, the embedding model, cosine ranking and the atomic Excel
 write all work on this machine. `0.9641` is the real similarity between the
@@ -214,10 +224,11 @@ scripts\run_resolver.cmd samples\sample_ticket.csv samples\sample_history.csv sm
 echo %ERRORLEVEL%
 ```
 
-Expect `%ERRORLEVEL%` of **0**, `Status` of `PASS` in `status.xlsx`, and a
-second workbook `smoke\output.xlsx` carrying the four contract keys. With
-Azure embeddings configured, `Embedding_Model` reads
-`azure:text-embedding-3-large` and `Reason` ends `[Azure]`.
+Expect `%ERRORLEVEL%` of **0**, `Status` of `PASS` and `Status_Code` of
+`SUCCESS_HISTORICAL` in `status.xlsx`, and a second workbook
+`smoke\output.xlsx` with `Resolution_Source` of `HISTORICAL_DATA`. With Azure
+embeddings configured, `Embedding_Model` reads `azure:text-embedding-3-large`
+and `Reason` ends `[Azure]`.
 
 `INFRASTRUCTURE_ERROR` and exit 1 here means the credentials did not work — the
 `Reason` column names which variable or which call failed.
@@ -298,6 +309,63 @@ Two things to watch for:
 
 ---
 
+## 10. Load the 0250 standards (Tier 2)
+
+Tier 2 answers from the engineering standards when the historical records
+produce nothing usable. **It is optional and it ships switched off**, in the
+sense that `data\0250_docs\` is empty and an empty folder means Tier 2 never
+runs. Every ticket then behaves exactly as it did before Tier 2 existed.
+
+### Try it on the demo corpus first
+
+Three invented standards ship in `samples\0250_docs\`, so you can see the whole
+path work before touching a real document:
+
+```bat
+python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
+```
+
+Forcing *both* gates to 0.99 keeps this offline. Expect exit **0**,
+`NO_RESOLUTION_FOUND`, and a Reason naming a score from each tier:
+
+```
+Best historical match 0.9641 is below the 0.99 threshold across 3 candidate(s).
+Best 0250 match 0.7462 is below the 0.99 threshold across 8 chunk(s). [Local]
+```
+
+`8 chunk(s)` proves the documents parsed, embedded and cached. Drop
+`--tier2-threshold 0.99` and Tier 2 will retrieve 5 sections and call Azure for
+real.
+
+### Then load the real ones
+
+```bat
+copy "\\your-share\standards\0250-*.docx" data\0250_docs\
+```
+
+That is the whole procedure — no index to build, no command to run. The first
+ticket afterwards parses and embeds; every ticket after that loads the cache in
+milliseconds. Editing, adding, removing or renaming a document rebuilds it
+automatically, because the cache is keyed on a SHA-256 of the folder's contents.
+
+Three things to check before you trust it:
+
+- **`.docx` only.** A legacy `.doc` is skipped with a warning naming the file.
+  Open it in Word and *Save As* `.docx`. (`.doc` is not a zip container; reading
+  one needs Word via COM automation, which hangs a headless robot on a modal
+  dialog instead of failing it.)
+- **Heading styles must be real headings.** Chunks are cut at `Heading 1` /
+  `Heading 2`, and the heading becomes the citation the supplier sees. A
+  document whose section titles are bold body text parses as one block and cites
+  only the filename.
+- **Re-measure the threshold.** `TIER2_LOCAL_THRESHOLD=0.62` was measured on the
+  three-document demo corpus, where a defect nothing covers peaks at 0.5944 —
+  only 0.026 of headroom. A larger corpus gives irrelevant sections more chances
+  to score highly, so run the batch evaluator and read the `Tier2_Score` column
+  before trusting it.
+
+---
+
 ## Exit codes
 
 Both wrappers propagate these verbatim, so the UiPath state machine can branch
@@ -331,6 +399,11 @@ unambiguous.
 | `Problem description is N characters; at least 10 required.` | The description column is blank or nearly so | Check the ticket's column name — `Problem_Description`, matched case-insensitively |
 | `NO_MATCHES` on a part you know exists | Part numbers differ after normalisation (`.strip().upper()`, invisible characters removed) | `Reason` reports how many rows matched out of how many scanned — usually a stray character in one source |
 | Everything falls back to `local:` | One of the three `AZURE_EMBEDDING_*` values is missing or wrong | The `AZURE_EMBEDDING_FAILED_FALLING_BACK` log line names exactly which |
+| `An Application Control policy has blocked this file` on `from lxml import etree` | lxml 6.x's native DLL is blocked on a managed Windows machine | `pip install "lxml<6"` |
+| Tier 2 never runs | `data\0250_docs\` holds no `.docx` | Expected until the standards are loaded. Check with `dir data\0250_docs\*.docx` |
+| A 0250 document is ignored | It is a legacy `.doc`, or a `~$` lock file | The warning names it. Re-save as `.docx`; close the document if Word has it open |
+| Every 0250 citation is just the filename | The document's section titles are bold body text, not `Heading 2` | Apply Word's heading styles, then delete `data\0250_docs\0250_cache_*.npz` |
+| Tier 2 finds nothing on a defect you know is covered | 0.62 is calibrated for the demo corpus, not yours | Run the batch evaluator and read `Tier2_Score`, then set `SPS_TIER2_THRESHOLD` |
 
 ---
 
