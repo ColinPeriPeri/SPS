@@ -212,7 +212,7 @@ def test_both_formats_reach_the_same_outcome(tmp_path, history_name):
     assert code == resolver.EXIT_OK
     # A threshold of 0.99 gates before the LLM, so this exercises read, filter
     # and embed without needing Azure.
-    assert status["Status_Code"] == "NO_RESOLUTION_FOUND"
+    assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     # Azure is unconfigured in tests, so the local fallback answers.
     assert status["Embedding_Model"].startswith("local:")
 

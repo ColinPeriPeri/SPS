@@ -588,11 +588,12 @@ def tiered_llm(monkeypatch):
     return install
 
 
-def run_cli(tmp_path, docs_dir=None, threshold=0.99, extra=()):
+def run_cli(tmp_path, docs_dir=None, threshold=0.99, part=PART,
+            tier2_threshold=None, extra=()):
     """Threshold 0.99 by default so Tier 1 gates and Tier 2 is reached."""
     out = tmp_path / "out"
     write_history(tmp_path / "h.xlsx", [row("SPS-1001")])
-    write_ticket(tmp_path / "t.xlsx")
+    write_ticket(tmp_path / "t.xlsx", part=part)
     argv = [
         "--ticket-file", str(tmp_path / "t.xlsx"),
         "--history-file", str(tmp_path / "h.xlsx"),
@@ -602,6 +603,8 @@ def run_cli(tmp_path, docs_dir=None, threshold=0.99, extra=()):
     ]
     if docs_dir is not None:
         argv += ["--docs-dir", str(docs_dir)]
+    if tier2_threshold is not None:
+        argv += ["--tier2-threshold", str(tier2_threshold)]
     return resolver.main(argv), out
 
 
@@ -650,7 +653,9 @@ def test_the_reason_logs_the_best_score_from_both_tiers(tmp_path, tiered_llm):
     _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.999)
 
     status = read_sheet(out / "status.xlsx").iloc[0]
-    assert status["Status_Code"] == "NO_RESOLUTION_FOUND"
+    # Tier 1 gated, but Tier 2 cleared its own gate and the Actor then declined:
+    # the furthest stage reached was the audit, so that is what is reported.
+    assert status["Status_Code"] == "LLM_AUDIT_REJECTED"
     assert "Best historical match" in status["Reason"]
     assert "Best 0250 match" in status["Reason"]
 
@@ -665,7 +670,8 @@ def test_no_corpus_reports_the_tier1_outcome(tmp_path, tiered_llm):
 
     assert code == resolver.EXIT_OK
     status = read_sheet(out / "status.xlsx").iloc[0]
-    assert status["Status_Code"] == "NO_RESOLUTION_FOUND"
+    # Nothing retrieved from Tier 2, so Tier 1's own stage stands.
+    assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "No 0250 documents found" in status["Reason"]
 
 
@@ -676,7 +682,7 @@ def test_no_tier2_restores_the_single_tier_behaviour(tmp_path, tiered_llm):
     _, out = run_cli(tmp_path, docs_dir=docs, extra=["--no-tier2"])
 
     status = read_sheet(out / "status.xlsx").iloc[0]
-    assert status["Status_Code"] == "NO_RESOLUTION_FOUND"
+    assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "disabled by --no-tier2" in status["Reason"]
     assert not (out / "output.xlsx").exists()
 
@@ -733,10 +739,139 @@ def test_a_broken_corpus_does_not_become_an_infrastructure_fault(tmp_path, tiere
 
     assert code == resolver.EXIT_OK
     status = read_sheet(out / "status.xlsx").iloc[0]
-    assert status["Status_Code"] == "NO_RESOLUTION_FOUND"
+    assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "Tier 2 unavailable" in status["Reason"]
 
 
 def test_status_stays_pass_or_fail_for_both_tiers():
     """A workflow branching on Status is unaffected by the new codes."""
     assert resolver.SUCCESS_CODES == {"SUCCESS_HISTORICAL", "SUCCESS_0250_DOC"}
+
+
+# ------------------------------------------------- the routing state machine
+
+
+UNKNOWN_PART = "0099-99999"
+
+
+def _empty_dir(tmp_path):
+    directory = tmp_path / "no_docs"
+    directory.mkdir(exist_ok=True)
+    return directory
+
+
+@pytest.mark.parametrize(
+    "tier1,tier2,expected",
+    [
+        # Neither tier had anything to offer. The part is unknown to history
+        # and no standard covers it -- Master Data's problem.
+        ("nothing", "nothing", "NO_MATCHES"),
+        # Something was retrieved somewhere, but nothing cleared its gate.
+        ("nothing", "gated", "BELOW_CONFIDENCE_THRESHOLD"),
+        ("gated", "nothing", "BELOW_CONFIDENCE_THRESHOLD"),
+        ("gated", "gated", "BELOW_CONFIDENCE_THRESHOLD"),
+        # The maths was satisfied somewhere and the Actor or Judge still
+        # refused. A human reviewer's problem, not a data one.
+        ("nothing", "rejected", "LLM_AUDIT_REJECTED"),
+        ("gated", "rejected", "LLM_AUDIT_REJECTED"),
+        ("rejected", "nothing", "LLM_AUDIT_REJECTED"),
+        ("rejected", "gated", "LLM_AUDIT_REJECTED"),
+        ("rejected", "rejected", "LLM_AUDIT_REJECTED"),
+    ],
+)
+def test_the_reported_code_is_the_furthest_stage_either_tier_reached(
+    tmp_path, tiered_llm, tier1, tier2, expected
+):
+    """The robot routes on this column, so the combination rule is a contract.
+
+    A run where history reached the Judge and was refused, while the standards
+    had nothing to say, is an audit rejection -- reporting NO_MATCHES would
+    send a perfectly well-known part to Master Data.
+    """
+    tiered_llm(tier1=_Outcome(failure_reason="tier 1 declined."),
+               tier2=_Outcome(failure_reason="tier 2 declined."))
+
+    # Tier 1: unknown part retrieves nothing; 0.99 gates what it does retrieve;
+    # 0.1 lets it through to the Actor, which the fixture makes decline.
+    part = UNKNOWN_PART if tier1 == "nothing" else PART
+    threshold = {"nothing": 0.5, "gated": 0.99, "rejected": 0.1}[tier1]
+
+    # Tier 2: an empty folder retrieves nothing; 0.99 gates the demo corpus;
+    # 0.1 lets it through.
+    docs = _empty_dir(tmp_path) if tier2 == "nothing" else weld_corpus(tmp_path / "0250")
+    tier2_threshold = {"nothing": None, "gated": 0.99, "rejected": 0.1}[tier2]
+
+    code, out = run_cli(
+        tmp_path, docs_dir=docs, threshold=threshold, part=part,
+        tier2_threshold=tier2_threshold,
+    )
+
+    assert code == resolver.EXIT_OK
+    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == expected
+
+
+def test_the_reason_still_carries_both_tiers_whatever_the_code(tmp_path, tiered_llm):
+    """The code is for the robot's switch; the Reason is for the human who has
+    to decide what to do about it."""
+    tiered_llm(tier1=_Outcome(failure_reason="tier 1 declined."), tier2=_Outcome())
+    docs = weld_corpus(tmp_path / "0250")
+
+    _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.99, tier2_threshold=0.99)
+
+    reason = read_sheet(out / "status.xlsx").iloc[0]["Reason"]
+    assert "Best historical match 0.9641" in reason
+    assert "Best 0250 match" in reason
+
+
+def test_a_stage_maps_to_exactly_one_code():
+    """Ordered, and the order is the routing precedence."""
+    assert resolver.STAGE_NOTHING < resolver.STAGE_GATED < resolver.STAGE_REJECTED
+    assert resolver.STAGE_CODES == {
+        resolver.STAGE_NOTHING: "NO_MATCHES",
+        resolver.STAGE_GATED: "BELOW_CONFIDENCE_THRESHOLD",
+        resolver.STAGE_REJECTED: "LLM_AUDIT_REJECTED",
+    }
+
+
+def test_every_status_code_the_robot_can_see_is_named():
+    """The full switch a UiPath workflow has to handle: two success codes,
+    three exhaustion codes, and the two that were never tier-specific."""
+    codes = {
+        resolver.CODE_SUCCESS_HISTORICAL,
+        resolver.CODE_SUCCESS_DOC,
+        resolver.CODE_NO_MATCHES,
+        resolver.CODE_BELOW_THRESHOLD,
+        resolver.CODE_AUDIT_REJECTED,
+        resolver.CODE_INVALID_INPUT,
+        resolver.CODE_INFRASTRUCTURE,
+    }
+    assert codes == {
+        "SUCCESS_HISTORICAL", "SUCCESS_0250_DOC", "NO_MATCHES",
+        "BELOW_CONFIDENCE_THRESHOLD", "LLM_AUDIT_REJECTED",
+        "INVALID_INPUT", "INFRASTRUCTURE_ERROR",
+    }
+    assert set(resolver.STAGE_CODES.values()) <= codes
+
+
+def test_a_tier2_only_encode_still_names_its_encoder(tmp_path, tiered_llm):
+    """An unknown part stops Tier 1 before it embeds anything. Support counts
+    Azure fallbacks from Embedding_Model, so a run where only Tier 2 encoded
+    must not report an empty one."""
+    tiered_llm(tier1=_Outcome(failure_reason="none"), tier2=_Outcome())
+    docs = weld_corpus(tmp_path / "0250")
+
+    _, out = run_cli(tmp_path, docs_dir=docs, part=UNKNOWN_PART, tier2_threshold=0.99)
+
+    status = read_sheet(out / "status.xlsx").iloc[0]
+    assert status["Embedding_Model"].startswith("local:")
+    assert status["Reason"].endswith("[Local]")
+
+
+def test_tier1_keeps_naming_the_encoder_when_it_did_embed(tmp_path, tiered_llm):
+    """Tier 2 must not overwrite an encoder Tier 1 legitimately reported."""
+    tiered_llm(tier1=_Outcome(failure_reason="none"), tier2=_Outcome())
+    docs = weld_corpus(tmp_path / "0250")
+
+    _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.99, tier2_threshold=0.99)
+
+    assert read_sheet(out / "status.xlsx").iloc[0]["Embedding_Model"].startswith("local:")

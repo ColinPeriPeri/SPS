@@ -76,17 +76,34 @@ STATUS_FAIL = "FAIL"
 # on Status is unaffected.
 CODE_SUCCESS_HISTORICAL = "SUCCESS_HISTORICAL"
 CODE_SUCCESS_DOC = "SUCCESS_0250_DOC"
-# One terminal code for "both tiers were tried and neither resolved it". The
-# detail that used to live in NO_MATCHES / BELOW_CONFIDENCE_THRESHOLD /
-# LLM_AUDIT_REJECTED now lives in Reason, which carries the best score from
-# each tier.
-CODE_NO_RESOLUTION = "NO_RESOLUTION_FOUND"
+# When neither tier resolves the ticket, the code says WHY the pipeline ran out
+# of options, because the robot routes on it: an unknown part goes to Master
+# Data, a novel defect goes to a Reliability Engineer, and a draft the Judge
+# refused goes to a human reviewer. One collapsed code would send all three to
+# the same queue.
+CODE_NO_MATCHES = "NO_MATCHES"
+CODE_BELOW_THRESHOLD = "BELOW_CONFIDENCE_THRESHOLD"
+CODE_AUDIT_REJECTED = "LLM_AUDIT_REJECTED"
 CODE_INVALID_INPUT = "INVALID_INPUT"
 CODE_INFRASTRUCTURE = "INFRASTRUCTURE_ERROR"
 
-# Retained so a caller comparing against the old constant still imports, and so
 # `Status == PASS` has one definition.
 SUCCESS_CODES = frozenset({CODE_SUCCESS_HISTORICAL, CODE_SUCCESS_DOC})
+
+# How far a tier got before it stopped. Ordered, because the reported code is
+# the FURTHEST stage either tier reached: a run where history reached the Judge
+# and was refused, while the standards had nothing to say, is an audit
+# rejection -- routing it to Master Data as NO_MATCHES would be wrong, since
+# the part was perfectly well known.
+STAGE_NOTHING = 0    # nothing retrieved at all
+STAGE_GATED = 1      # retrieved, nothing cleared the threshold
+STAGE_REJECTED = 2   # cleared the threshold, the Actor or Judge refused it
+
+STAGE_CODES = {
+    STAGE_NOTHING: CODE_NO_MATCHES,
+    STAGE_GATED: CODE_BELOW_THRESHOLD,
+    STAGE_REJECTED: CODE_AUDIT_REJECTED,
+}
 
 STATUS_FILE = "status.xlsx"
 OUTPUT_FILE = "output.xlsx"
@@ -382,11 +399,13 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     # -- Tier 1: the part's own history ------------------------------------
 
     if stats.usable == 0:
+        tier1_stage = STAGE_NOTHING
         tier1_detail = (
             f"No usable history for part {part_number}: {stats.part_matches} row(s) "
             f"matched the part out of {stats.rows_scanned} scanned."
         )
     elif not candidates:
+        tier1_stage = STAGE_GATED
         tier1_detail = (
             f"Best historical match {stats.top_score:.4f} is below the "
             f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s)."
@@ -425,6 +444,10 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
                 CODE_INFRASTRUCTURE, outcome.failure_reason, EXIT_INFRASTRUCTURE, **measured
             )
 
+        # Reaching the Actor at all means the retrieval maths was satisfied;
+        # an abstention and a tripped circuit breaker are both the Judge's
+        # side of the pipeline declining, not a retrieval shortfall.
+        tier1_stage = STAGE_REJECTED
         tier1_detail = outcome.failure_reason
 
     logger.info("Tier 1 produced no resolution: %s", tier1_detail)
@@ -438,6 +461,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         output_dir=output_dir,
         loop=loop,
         tier1_detail=tier1_detail,
+        tier1_stage=tier1_stage,
         tier1_backend=stats.backend,
         local_embedder_factory=local_embedder,
         measured=measured,
@@ -451,6 +475,7 @@ def _resolve_from_docs(
     output_dir: Path,
     loop,
     tier1_detail: str,
+    tier1_stage: int,
     tier1_backend: str,
     local_embedder_factory,
     measured: dict,
@@ -462,15 +487,17 @@ def _resolve_from_docs(
     from sps.generation.actor_critic import documentation_grounding
     from sps.retrieval.doc_cache import DocRetriever
 
-    def _no_resolution(extra: str, **fields) -> ResolveOutcome:
+    def _no_resolution(extra: str, tier2_stage: int, **fields) -> ResolveOutcome:
         """Both tiers tried, neither resolved it.
 
-        Reason carries the best score from each tier, because that is what
-        tells a reviewer whether this was a near miss worth a threshold change
-        or a genuine absence of evidence.
+        The code is the furthest stage either tier reached, so the robot can
+        route on how the pipeline ran out of options. Reason carries the detail
+        from both tiers, including each one's best score, because that is what
+        tells a human whether this was a near miss worth a threshold change or
+        a genuine absence of evidence.
         """
         return ResolveOutcome(
-            CODE_NO_RESOLUTION,
+            STAGE_CODES[max(tier1_stage, tier2_stage)],
             f"{tier1_detail} {extra}".strip(),
             EXIT_OK,
             **measured,
@@ -478,7 +505,9 @@ def _resolve_from_docs(
         )
 
     if args.no_tier2:
-        return _no_resolution("Tier 2 disabled by --no-tier2.")
+        # Nothing was retrieved because nothing was looked for, so Tier 1's
+        # stage stands on its own.
+        return _no_resolution("Tier 2 disabled by --no-tier2.", STAGE_NOTHING)
 
     docs_dir = (
         args.docs_dir
@@ -516,7 +545,9 @@ def _resolve_from_docs(
         # The normal state of a deployment whose standards have not been loaded
         # yet. Not an error: the ticket reports exactly the Tier-1 outcome it
         # would have reported before Tier 2 existed.
-        return _no_resolution(f"No 0250 documents found in {docs_dir}.")
+        return _no_resolution(
+            f"No 0250 documents found in {docs_dir}.", STAGE_NOTHING
+        )
 
     try:
         chunks = docs.retrieve(ticket)
@@ -525,10 +556,25 @@ def _resolve_from_docs(
         # legitimate Tier-1 "no resolution" into an infrastructure fault that
         # the robot then retries forever.
         logger.error("Tier 2 failed; reporting the Tier-1 outcome: %s", exc)
-        return _no_resolution(f"Tier 2 unavailable: {exc}")
+        return _no_resolution(f"Tier 2 unavailable: {exc}", STAGE_NOTHING)
 
     tier2_stats = docs.stats
     logger.info("tier 2 stats: %s", tier2_stats.as_dict())
+
+    # Tier 1 can stop before encoding anything -- an unknown part scans the
+    # history, matches no row and never reaches the model. If Tier 2 then
+    # encoded, the status sheet must name the encoder that actually ran:
+    # support counts Azure fallbacks from this column, and a run where only
+    # Tier 2 embedded would otherwise report no encoder at all.
+    #
+    # Rebinding rather than mutating, and _no_resolution reads `measured` from
+    # this scope when it is called, so every later return picks this up.
+    if not measured.get("embedding_model") and tier2_stats.backend:
+        measured = dict(
+            measured,
+            embedding_model=f"{tier2_stats.backend}:{tier2_stats.backend_detail}",
+        )
+
     tier2_measured = dict(
         tier2_top_score=tier2_stats.top_score,
         tier2_threshold=tier2_stats.threshold_used,
@@ -537,10 +583,20 @@ def _resolve_from_docs(
     )
 
     if not chunks:
+        if not tier2_stats.chunks:
+            # Documents were present but yielded no usable text at all -- every
+            # one unparseable, or every section too short to embed. Nothing was
+            # scored, so nothing was gated.
+            return _no_resolution(
+                f"No usable text in {tier2_stats.documents} 0250 document(s).",
+                STAGE_NOTHING,
+                **tier2_measured,
+            )
         return _no_resolution(
             f"Best 0250 match {tier2_stats.top_score:.4f} is below the "
             f"{tier2_stats.threshold_used:.2f} threshold across "
             f"{tier2_stats.chunks} chunk(s).",
+            STAGE_GATED,
             **tier2_measured,
         )
 
@@ -559,6 +615,7 @@ def _resolve_from_docs(
         return _no_resolution(
             f"{outcome.failure_reason} Best 0250 match "
             f"{tier2_stats.top_score:.4f}.",
+            STAGE_REJECTED,
             **tier2_measured,
         )
 

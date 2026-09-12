@@ -170,7 +170,7 @@ weaker.
 python -m pytest -q
 ```
 
-Expect **202 passed, 1 skipped** in about 75 seconds. Nothing here needs a
+Expect **216 passed, 1 skipped** in about two minutes. Nothing here needs a
 server, an Azure key or a model download — the skip is the real-model module,
 which is opt-in:
 
@@ -180,7 +180,7 @@ python -m pytest -q
 set SPS_MODEL_TESTS=
 ```
 
-That is **216 passed**, and it downloads ~130 MB of weights the first time. It
+That is **230 passed**, and it downloads ~130 MB of weights the first time. It
 pins the properties the ranking maths assumes: 384 dimensions, unit-length
 vectors (so the NumPy matmul *is* the cosine the 0.89 gate is calibrated on),
 and the query instruction applied to queries but never to history passages.
@@ -205,13 +205,14 @@ The first run downloads the local model, so allow a minute. Expect
 | Column | Value |
 |---|---|
 | `Status` | `FAIL` |
-| `Status_Code` | `NO_RESOLUTION_FOUND` |
+| `Status_Code` | `BELOW_CONFIDENCE_THRESHOLD` |
 | `Reason` | `Best historical match 0.9641 is below the 0.99 threshold across 3 candidate(s). No 0250 documents found in data\0250_docs. [Local]` |
 | `Embedding_Model` | `local:BAAI/bge-small-en-v1.5` |
 
 A `FAIL` is the *expected* result here — you asked for an impossible threshold.
 The Reason names both tiers because both were tried: Tier 1 gated, and Tier 2
-had no documents to search yet.
+had no documents to search yet. The code is Tier 1's own, because Tier 2
+retrieved nothing to improve on it.
 What it proves is everything underneath: the file reader, part-number matching,
 the torch/numpy stack, the embedding model, cosine ranking and the atomic Excel
 write all work on this machine. `0.9641` is the real similarity between the
@@ -326,7 +327,7 @@ python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history
 ```
 
 Forcing *both* gates to 0.99 keeps this offline. Expect exit **0**,
-`NO_RESOLUTION_FOUND`, and a Reason naming a score from each tier:
+`BELOW_CONFIDENCE_THRESHOLD`, and a Reason naming a score from each tier:
 
 ```
 Best historical match 0.9641 is below the 0.99 threshold across 3 candidate(s).
@@ -373,9 +374,14 @@ without opening a workbook.
 
 | Code | Meaning | What the robot should do |
 |---|---|---|
-| `0` | The run completed. `PASS`, or a legitimate `FAIL` — gated ticket, unknown part, wrong file type. | Log a business exception. **Do not retry.** |
+| `0` | The run completed. `PASS`, or a legitimate `FAIL` — gated ticket, unknown part, wrong file type. | Log a business exception, routed on `Status_Code`. **Do not retry.** |
 | `1` | Infrastructure fault: Azure unreachable, unhandled error. | Retry. |
 | `2` | The ticket or history file could not be read. | Alert a human. |
+
+Within exit 0, branch on `Status_Code`: `SUCCESS_HISTORICAL` and
+`SUCCESS_0250_DOC` go to admin review, `NO_MATCHES` to Master Data,
+`BELOW_CONFIDENCE_THRESHOLD` to a Reliability Engineer, `LLM_AUDIT_REJECTED` to
+a human reviewer, and `INVALID_INPUT` faults the item.
 
 `status.xlsx` is written **always**, including on an early abort or an unhandled
 exception. `output.xlsx` appears only on `PASS`. Both are deleted before work

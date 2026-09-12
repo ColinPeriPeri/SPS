@@ -58,7 +58,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-202 tests, none of which needs a server, an Azure key or a model download. The
+216 tests, none of which needs a server, an Azure key or a model download. The
 real-model checks are opt-in (~130 MB of weights):
 
 ```bash
@@ -117,10 +117,36 @@ python -m scripts.run_resolver --ticket-file ticket.xlsx \
 | `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason`, `Embedding_Model` |
 | `output.xlsx` | Only when `Status` is PASS | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source` |
 
-Status codes: `SUCCESS_HISTORICAL`, `SUCCESS_0250_DOC`, `NO_RESOLUTION_FOUND`,
-`INVALID_INPUT`, `INFRASTRUCTURE_ERROR`. `Status` itself is still PASS or FAIL
-for both success codes, so a caller branching on `Status` is unaffected by the
-second tier.
+### Status codes
+
+The robot routes exceptions on this column, so it says *how* the pipeline ran
+out of options, not merely that it did.
+
+| Code | Meaning | Typical routing |
+| --- | --- | --- |
+| `SUCCESS_HISTORICAL` | Answered from the part's own precedent | Admin review |
+| `SUCCESS_0250_DOC` | Answered from a 0250 standard | Admin review |
+| `NO_MATCHES` | No history for the part **and** no standard covered it | Master Data |
+| `BELOW_CONFIDENCE_THRESHOLD` | Candidates found in either tier, none cleared its gate | Reliability Engineer — a genuinely novel defect |
+| `LLM_AUDIT_REJECTED` | Candidates cleared the maths, the Actor or Judge refused | Human reviewer |
+| `INVALID_INPUT` | Bad part number, missing file, unsupported format | Fault the item |
+| `INFRASTRUCTURE_ERROR` | Azure outage, unhandled crash | Retry |
+
+With two tiers the reported code is the **furthest stage either tier reached** —
+nothing retrieved < gated < audited and refused. A run where history reached the
+Judge and was refused while the standards had nothing to say is an audit
+rejection: reporting `NO_MATCHES` would send a perfectly well-known part to
+Master Data.
+
+A corollary worth knowing: with no 0250 corpus loaded, Tier 2 retrieves nothing
+and every code is Tier 1's own, identical to the behaviour before Tier 2 existed.
+
+`Reason` carries the detail underneath — including the best score from *each*
+tier — because the code is for the robot's switch and the Reason is for the
+human who has to act on it.
+
+`Status` itself is still PASS or FAIL for both success codes, so a caller
+branching on `Status` is unaffected by the second tier.
 
 `Resolution_Source` is `HISTORICAL_DATA` or `0250_DOCUMENTATION`, and
 `Referenced_Sources` holds SPS IDs or document citations to match. Both replace
@@ -531,7 +557,7 @@ Stated explicitly rather than buried:
 ## Test coverage
 
 ```
-tests/test_tier2_docs.py               48   docx parsing, cache invalidation, Tier-2 gating and fallback
+tests/test_tier2_docs.py               62   docx parsing, cache invalidation, Tier-2 gating, the routing matrix
 tests/test_resolver.py                 32   validation, part filtering, capping, dual workbooks, threshold
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism

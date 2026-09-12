@@ -355,10 +355,10 @@ def test_status_codes_cover_each_outcome(tmp_path, passing_llm):
     cases = [
         (dict(part=""), "INVALID_INPUT"),
         (dict(problem="short"), "INVALID_INPUT"),
-        # Both tiers tried and neither resolved it: one terminal code, with
-        # the tier-by-tier detail in Reason.
-        (dict(part="0099-99999"), "NO_RESOLUTION_FOUND"),
-        (dict(threshold=0.99), "NO_RESOLUTION_FOUND"),
+        # With no 0250 corpus loaded, Tier 2 retrieves nothing and the code
+        # is Tier 1's own -- identical to the behaviour before Tier 2 existed.
+        (dict(part="0099-99999"), "NO_MATCHES"),
+        (dict(threshold=0.99), "BELOW_CONFIDENCE_THRESHOLD"),
         (dict(), "SUCCESS_HISTORICAL"),
     ]
     for kwargs, expected in cases:
@@ -412,7 +412,7 @@ def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):
     out = tmp_path / "env"
     resolver.main(common + ["--output-dir", str(out)])
     status = read_sheet(out / "status.xlsx").iloc[0]
-    assert status["Status_Code"] == "NO_RESOLUTION_FOUND"
+    assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "0.95 threshold" in status["Reason"]
 
     out2 = tmp_path / "flag"
