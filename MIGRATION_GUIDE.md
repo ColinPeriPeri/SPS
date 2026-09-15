@@ -1,7 +1,11 @@
 # Migration guide — standing this up on a fresh Windows laptop
 
 Copy-paste, top to bottom, in a **Command Prompt** (`cmd.exe`) opened in the
-folder you want the project in. Roughly 15 minutes, nearly all of it downloads.
+folder you want the project in. About five minutes, most of it `pip install`.
+
+You need working Azure credentials to get past step 7. There is no offline
+mode: the local encoder is out of the pipeline, so nothing resolves without a
+reachable embedding deployment.
 
 Every step ends with something to check. If a check fails, jump to
 [Troubleshooting](#troubleshooting) rather than continuing — each step depends
@@ -13,6 +17,34 @@ error.
 > is `venv\Scripts\Activate.ps1`. If PowerShell refuses to run it, either use
 > `cmd.exe` or run
 > `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
+
+---
+
+## In a hurry
+
+The whole thing, assuming nothing goes wrong. Each line is a step below, and
+every one of them has a check worth reading if it does go wrong.
+
+```bat
+git clone https://github.com/ColinPeriPeri/SPS.git
+cd SPS
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+pip check
+copy .env.example .env
+notepad .env
+python -m pytest -q
+python -m scripts.verify_embedder
+scripts
+un_resolver.cmd samples\sample_ticket.csv samples\sample_history.csv smoke
+```
+
+The two that most often surprise people: `pip check` must also survive
+`python -c "from openai import AzureOpenAI"` on a managed laptop
+([step 4](#4-verify-the-install)), and `verify_embedder` is the only thing that
+will tell you whether the shipped thresholds suit your deployment
+([step 7](#7-check-the-azure-deployment)).
 
 ---
 
@@ -218,32 +250,39 @@ resolves without a working embedding deployment.
 
 ## 9. Run the batch evaluator
 
-This is the tool for calibrating `AZURE_EMBEDDING_THRESHOLD`. It runs every
-case in **one process**, so the model is loaded once for the whole batch rather
-than once per case, and it records the raw similarity on **every** row —
-including the cases the gate rejected, which are precisely the ones that tell
-you whether the threshold sits in the right place.
+This is the tool for calibrating `AZURE_EMBEDDING_THRESHOLD` and
+`TIER2_AZURE_THRESHOLD` — the two numbers that gate everything, neither of which
+has ever been measured against a real deployment.
+
+It runs every case in **one process**, and records the raw similarity on
+**every** row — including the cases the gate rejected, which are precisely the
+ones that tell you whether the threshold sits in the right place. A run that
+reported only its successes would hide exactly the scores you need.
 
 ```bat
 scripts\run_eval.cmd samples\eval_cases eval_out samples\sample_history.csv
 ```
 
-Six cases, about 15 seconds. It writes `eval_out\eval_results.xlsx` and prints a
-digest ending in something like:
+Six cases. It writes `eval_out\eval_results.xlsx` and prints a digest ending in
+a score distribution:
 
 ```
   score distribution over 4 scored case(s):
-    min 0.5658   p25 0.5658   median 0.9633
-    p75 0.9641   p90 0.9641   max 0.9656
+    min 0.xxxx   p25 0.xxxx   median 0.xxxx
+    p75 0.xxxx   p90 0.xxxx   max 0.xxxx
 ```
 
-That spread is the shape you are looking for: genuine matches bunched at
-0.96, the deliberately-unrelated case (`case04`, a hydraulic pump problem filed
-against a bracket part) down at 0.5658, and a wide gap between them for the
-threshold to sit in.
+**The shape matters, not the values.** What you want is genuine matches bunched
+high, the deliberately-unrelated case (`case04`, a hydraulic pump problem filed
+against a bracket part) well below them, and a wide gap in between for the
+threshold to sit in. On the retired local encoder that gap ran from 0.5658 to
+0.9633; your deployment will produce different numbers, and finding out what
+they are is the entire point of this step.
 
-To run it without Azure, set `SPS_CONFIDENCE_THRESHOLD=0.99` first — every case
-then gates before the LLM and the batch exits 0.
+Set `SPS_CONFIDENCE_THRESHOLD=0.99` first to gate every case before the LLM.
+That still costs one embedding call per case — embeddings are what you are
+measuring — but no generation, so it is the cheap way to collect the
+distribution.
 
 ### Your own test set
 
@@ -277,16 +316,20 @@ have matched? — sort by score, and the threshold goes in the gap: above every
 case you judged wrong, below every case you judged right. If there is no gap,
 the threshold is not the problem and no value will save it.
 
+`Tier2_Score` does the same job for Tier 2, and is populated only on the rows
+where Tier 2 actually ran.
+
 Two things to watch for:
 
-- **Check the `Embedding_Model` column is all `azure:...` before trusting the
-  numbers.** A threshold belongs to one embedding space and does not survive a
-  change of encoder. If some rows fell back to `local:...` the digest prints a
-  `WARNING` and the distribution is pooled across two models, describing
-  neither.
-- Set the number in `.env`, not in code. `AZURE_EMBEDDING_THRESHOLD` and
-  `LOCAL_EMBEDDING_THRESHOLD` override one encoder each;
-  `SPS_CONFIDENCE_THRESHOLD` overrides both.
+- **Check `Embedding_Model` is `azure:...` on every row.** It should be — there
+  is only one encoder now — so anything else means a row took a path you did not
+  intend, and a distribution pooled across two embedding spaces describes
+  neither. The digest prints a `WARNING` if it happens.
+- Set the number in `.env`, not in code:
+  `AZURE_EMBEDDING_THRESHOLD` for Tier 1, `TIER2_AZURE_THRESHOLD` for Tier 2.
+  `SPS_CONFIDENCE_THRESHOLD` and `SPS_TIER2_THRESHOLD` override each tier
+  regardless of encoder. The `LOCAL_*` pair is dormant and changing it does
+  nothing while the local encoder is disabled.
 
 ---
 
@@ -341,11 +384,12 @@ Three things to check before you trust it:
   `Heading 2`, and the heading becomes the citation the supplier sees. A
   document whose section titles are bold body text parses as one block and cites
   only the filename.
-- **Re-measure the threshold.** `TIER2_LOCAL_THRESHOLD=0.62` was measured on the
-  three-document demo corpus, where a defect nothing covers peaks at 0.5944 —
-  only 0.026 of headroom. A larger corpus gives irrelevant sections more chances
-  to score highly, so run the batch evaluator and read the `Tier2_Score` column
-  before trusting it.
+- **Measure the threshold.** `TIER2_AZURE_THRESHOLD=0.35` is the one that
+  gates your runs, and it is a guess derived from another guess — never measured
+  against any deployment. (`TIER2_LOCAL_THRESHOLD=0.62` *was* measured, but on
+  the retired encoder.) A larger corpus also gives irrelevant sections more
+  chances to score highly, so the headroom shrinks as you load more documents.
+  Run the batch evaluator and read `Tier2_Score` before trusting it.
 
 ---
 
