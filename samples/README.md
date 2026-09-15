@@ -12,9 +12,13 @@ across two part numbers. Used by the install check in
 python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --threshold 0.99
 ```
 
-The forced 0.99 threshold gates the run before the LLM, so it proves the reader,
-the part filter, the torch/numpy stack, the embedding model, cosine ranking and
-the Excel writer without needing an Azure key. The real top score is `0.9641`.
+The forced 0.99 threshold gates the run before the LLM, so it costs one
+embedding call and no generation while still proving the reader, the part
+filter, the Azure encoder, cosine ranking and the Excel writer.
+
+It does need a working `AZURE_EMBEDDING_*` configuration: the local encoder is
+out of the pipeline, so there is no offline path. The top score depends on your
+deployment.
 
 ## Eval cases
 
@@ -55,8 +59,11 @@ exercised before a real document is loaded. Regenerate them with
 python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
 ```
 
-Both gates forced to 0.99 keeps it offline; the Reason then names a score from
-each tier. Measured against this corpus with bge-small:
+Both gates forced to 0.99 stop before the LLM; the Reason then names a score
+from each tier. The numbers below were measured with **bge-small**, the encoder
+that is currently disabled, and are what `TIER2_LOCAL_THRESHOLD = 0.62` was
+derived from. Your Azure deployment will produce a different distribution --
+`python -m scripts.verify_embedder` reads it:
 
 | query | top section | score |
 | --- | --- | --- |

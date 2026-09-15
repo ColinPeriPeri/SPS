@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Sequence
 
 from ..contracts import Candidate, IncomingTicket
 from ..embedding import Embedder
@@ -313,19 +313,15 @@ def cap_to_newest(rows: list[HistoryRow], limit: int = MAX_CANDIDATES) -> list[H
 class InMemoryRetriever:
     """Filter, embed and rank one part's history per ticket.
 
-    Azure embeddings are the primary encoder; the local bge-small model is the
-    fallback. The choice is all-or-nothing per run: the query and every
-    candidate are always encoded by the same model, because a cosine between
-    vectors from two different embedding spaces is not a similarity, it is
-    noise that happens to be a number between -1 and 1.
+    Azure embeddings are the only encoder. The local bge-small fallback is
+    disabled -- the wrapper still exists in sps/embedding.py but nothing here
+    reaches it -- so an Azure failure ends the run instead of being absorbed.
+    That is the safer direction: a silent fallback changed which threshold
+    applied and which embedding space the scores lived in, and did it inside a
+    run that still reported success.
     """
 
     history_path: Path | str
-    # A factory, not an instance. Building the local embedder is free, but the
-    # first encode pays ~15 s of torch import and weight loading, so it must not
-    # happen on a run where Azure succeeds. Nothing here touches it until the
-    # fallback fires.
-    local_embedder_factory: Callable[[], Embedder] | None = None
     azure_settings: Any = None
     azure_threshold: float = AZURE_EMBEDDING_THRESHOLD
     local_threshold: float = LOCAL_EMBEDDING_THRESHOLD
@@ -337,8 +333,8 @@ class InMemoryRetriever:
     max_context_records: int = 15
     min_text_length: int = 15
     stats: RetrievalStats = field(default_factory=RetrievalStats)
-    # Escape hatch for tests and for a deployment that wants one specific
-    # encoder: set it and no fallback logic runs at all.
+    # Injection seam for tests, and where a locally-hosted encoder would be
+    # supplied if one is wired back in. The pipeline never sets it.
     embedder: Embedder | None = None
 
     def retrieve(self, ticket: IncomingTicket) -> list[Candidate]:
@@ -407,75 +403,62 @@ class InMemoryRetriever:
         """Encode query and candidates with one model. Never a mixture.
 
         Returns (candidate_matrix, query_vector) as NumPy arrays.
+        Raises AzureEmbeddingError if the encoder is unavailable.
         """
         import numpy as np
 
         if self.embedder is not None:
-            # Explicitly supplied encoder: no fallback, no ambiguity.
+            # An explicitly supplied encoder. The pipeline never sets this --
+            # it is the injection seam for tests, and the seam the local model
+            # would be wired back through.
+            #
+            # ---- LOCAL MODEL DISABLED -------------------------------------
+            # The Azure-primary / local-fallback branch used to live here. To
+            # restore it: re-add `local_embedder_factory` to this dataclass,
+            # catch AzureEmbeddingError below instead of letting it out, and
+            # encode through `_encode_injected` with a BGEEmbedder. The model
+            # wrapper itself is untouched in sps/embedding.py, as are the
+            # LOCAL_* thresholds above.
+            # ---------------------------------------------------------------
             self.stats.backend = LOCAL_BACKEND
             self.stats.backend_detail = type(self.embedder).__name__
-            matrix, query = self._encode_local(self.embedder, query_text, passages)
+            matrix, query = self._encode_injected(self.embedder, query_text, passages)
             return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
 
-        azure = self._try_azure(query_text, passages)
-        if azure is not None:
-            matrix, query = azure
-            return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
-
-        # Fallback. Everything Azure may have produced is discarded: the batch
-        # is re-encoded from scratch so query and candidates share one space.
-        embedder = self._build_local()
-        self.stats.backend = LOCAL_BACKEND
-        self.stats.backend_detail = getattr(
-            getattr(embedder, "settings", None), "model_name", type(embedder).__name__
-        )
-        matrix, query = self._encode_local(embedder, query_text, passages)
+        matrix, query = self._embed_azure(query_text, passages)
         return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
 
-    def _try_azure(self, query_text: str, passages: list[str]):
-        """Attempt the primary path. Returns None to mean "fall back"."""
+    def _embed_azure(self, query_text: str, passages: list[str]):
+        """The only encoder in the pipeline. Raises rather than falling back.
+
+        Missing credentials raise AzureEmbeddingNotConfigured, which the caller
+        turns into a "fix the configuration" exit rather than a retry: no
+        number of retries produces an API key.
+        """
         from ..config import AzureEmbeddingSettings
+        from ..embedding import AzureEmbedder, AzureEmbeddingNotConfigured
 
         settings = self.azure_settings
         if settings is None:
             settings = AzureEmbeddingSettings.from_env()
         if not settings.configured:
-            reason = f"not configured ({', '.join(settings.missing())})"
-            logger.warning("AZURE_EMBEDDING_FAILED_FALLING_BACK: %s", reason)
-            self.stats.fallback_reason = reason
-            return None
+            raise AzureEmbeddingNotConfigured(
+                "Azure embeddings are not configured: " + ", ".join(settings.missing())
+            )
 
-        from ..embedding import AzureEmbedder, AzureEmbeddingError
-
-        try:
-            # One request for the whole batch. The query goes first so its
-            # position is known without searching the response.
-            vectors = AzureEmbedder(settings).embed_batch([query_text] + passages)
-        except AzureEmbeddingError as exc:
-            # Network, auth, timeout, rate limit, wrong deployment: all mean the
-            # same thing here. Logged at WARNING with a fixed marker so support
-            # can count how often the fallback fires.
-            logger.warning("AZURE_EMBEDDING_FAILED_FALLING_BACK: %s", exc)
-            self.stats.fallback_reason = str(exc)
-            return None
+        # One request for the whole batch. The query goes first so its position
+        # is known without searching the response.
+        vectors = AzureEmbedder(settings).embed_batch([query_text] + passages)
 
         self.stats.backend = AZURE_BACKEND
         self.stats.backend_detail = settings.deployment
         return vectors[1:], vectors[0]
 
-    def _build_local(self) -> Embedder:
-        """Instantiate the local model. Only ever called on the fallback path."""
-        if self.local_embedder_factory is not None:
-            return self.local_embedder_factory()
-        from ..config import EmbeddingSettings
-        from ..embedding import BGEEmbedder
-
-        return BGEEmbedder(EmbeddingSettings.from_env())
-
     @staticmethod
-    def _encode_local(embedder: Embedder, query_text: str, passages: list[str]):
-        """Two calls, not one: bge queries carry an instruction prefix and the
-        passages must not, so they cannot share an encode call."""
+    def _encode_injected(embedder: Embedder, query_text: str, passages: list[str]):
+        """Two calls, not one: a bge query carries an instruction prefix and the
+        passages must not, so they cannot share an encode call. Kept in that
+        shape so the local model drops straight back in."""
         return embedder.embed_passages(passages), embedder.embed_query(query_text)
 
 

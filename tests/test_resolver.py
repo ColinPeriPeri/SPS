@@ -22,7 +22,20 @@ from sps.retrieval.in_memory import (  # noqa: E402
 from sps.validators import normalize_part_number, validate_ticket  # noqa: E402
 from tests.conftest import TokenOverlapEmbedder  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _stubbed_azure(azure_embeddings):
+    """Azure is the only encoder now, so every test in this module embeds
+    through the stub. A test that wants the unconfigured path deletes the
+    variables itself."""
+
+
 PROBLEM = "Bracket weld seam cracking observed during incoming inspection"
+# A near-duplicate: 0.9354 against PROBLEM through the stubbed encoder, so a
+# 0.99 gate rejects it and a 0.5 gate does not. Identical text scores exactly
+# 1.0 -- Azure applies no query-instruction prefix, unlike bge, so query and
+# passage vectors coincide -- and would clear any threshold below 1.
+NEAR_PROBLEM = "Bracket weld seam cracking observed during incoming"
 PART = "0012-43951"
 BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -358,7 +371,8 @@ def test_status_codes_cover_each_outcome(tmp_path, passing_llm):
         # With no 0250 corpus loaded, Tier 2 retrieves nothing and the code
         # is Tier 1's own -- identical to the behaviour before Tier 2 existed.
         (dict(part="0099-99999"), "NO_MATCHES"),
-        (dict(threshold=0.99), "BELOW_CONFIDENCE_THRESHOLD"),
+        (dict(rows=[row("SPS-1001", problem=NEAR_PROBLEM)], threshold=0.99),
+         "BELOW_CONFIDENCE_THRESHOLD"),
         (dict(), "SUCCESS_HISTORICAL"),
     ]
     for kwargs, expected in cases:
@@ -408,12 +422,12 @@ def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):
     args = resolver.parse_args(common)
     assert args.threshold is None          # falls through to the default
 
-    monkeypatch.setenv("SPS_CONFIDENCE_THRESHOLD", "0.95")
+    monkeypatch.setenv("SPS_CONFIDENCE_THRESHOLD", "0.99")
     out = tmp_path / "env"
     resolver.main(common + ["--output-dir", str(out)])
     status = read_sheet(out / "status.xlsx").iloc[0]
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
-    assert "0.95 threshold" in status["Reason"]
+    assert "0.99 threshold" in status["Reason"]
 
     out2 = tmp_path / "flag"
     resolver.main(common + ["--output-dir", str(out2), "--threshold", "0.1"])

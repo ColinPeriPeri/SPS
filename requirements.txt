@@ -1,23 +1,21 @@
 # --- Retrieval and generation ------------------------------------------------
-sentence-transformers==3.0.1     # BAAI/bge-small-en-v1.5 loader
-torch==2.3.1                     # CPU wheel; install FIRST via --index-url .../cpu
-
-# torch 2.3.1 wheels are built against the NumPy 1.x C ABI. With NumPy 2.x the
-# import succeeds but torch's array bridge is dead, and any tensor.numpy() call
-# raises "RuntimeError: Numpy is not available". scipy/scikit-learn/pandas must
-# be held to the same era or they break the other way (np.long missing under
-# NumPy 1.x). These move together -- verify with `pip check` after any bump.
-numpy>=1.26,<2                   # cosine ranking via matmul
-scipy>=1.11,<1.14
-scikit-learn>=1.3,<1.6
-
-openai==1.40.0                   # Azure OpenAI (AsyncAzureOpenAI)
+openai==1.40.0                   # Azure OpenAI: embeddings AND chat
 
 # openai 1.40.0 passes `proxies=` to httpx, which httpx 0.28 removed. Left
 # unpinned, the Azure client raises TypeError at construction before any request
 # is made. Lift this pin only together with an openai upgrade.
 httpx>=0.27,<0.28
 
+# openai declares `jiter<1`, so a fresh install takes the newest build. On a
+# managed Windows machine jiter 0.17.0's native DLL is blocked by Application
+# Control -- `import openai` then dies with "DLL load failed while importing
+# jiter: An Application Control policy has blocked this file", which reads like
+# a corrupt install rather than a policy decision, and takes every Azure call
+# with it. 0.16.0 loads on the same machine. Same failure mode as the lxml pin
+# below. Verify with `python -c "from openai import AzureOpenAI"` after any bump.
+jiter>=0.4.0,<0.17
+
+numpy>=1.26,<2                   # cosine ranking via matmul
 pydantic==2.8.2                  # strict response_format for the Actor/Judge
 python-dotenv==1.0.1             # .env loading for the UiPath-invoked CLI
 
@@ -28,7 +26,7 @@ openpyxl==3.1.5                  # .xlsx reader/writer engine
 # --- Tier 2: 0250 engineering standards --------------------------------------
 python-docx==1.1.2               # .docx parsing for the standards fallback
 
-# python-docx needs lxml, and lxml 6.x is held below 6 on purpose. Its Windows
+# python-docx needs lxml, and lxml is held below 6 on purpose. Its Windows
 # wheel ships a native _elementpath DLL that Windows Application Control blocks
 # on a managed machine -- the import dies with "An Application Control policy
 # has blocked this file", which reads like a corrupt install rather than a
@@ -39,6 +37,49 @@ lxml>=5.0,<6
 # --- Dev ---------------------------------------------------------------------
 pytest==8.3.2
 pytest-asyncio==0.23.8
+
+
+# =============================================================================
+# DISABLED: the local bge-small encoder
+# =============================================================================
+# Azure OpenAI is currently the only encoder in the pipeline. The local model's
+# code is untouched -- sps/embedding.py:BGEEmbedder, scripts/verify_embedder.py
+# --local, tests/test_real_embedder.py -- but nothing reaches it, so none of
+# this is installed.
+#
+# To wire it back in:
+#
+#   1. Install torch FIRST, from PyTorch's own index. The CPU wheel is only
+#      published there; plain PyPI `torch==2.3.1` on Windows resolves to the
+#      CUDA-bundled build, a far larger download and ~2.4 GB unpacked for no
+#      benefit on a CPU-only host.
+#
+#        pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+#
+#   2. Uncomment the four pins below and `pip install -r requirements.txt`.
+#   3. Restore the fallback branch at the two sites marked
+#      "LOCAL MODEL DISABLED" in sps/retrieval/in_memory.py and
+#      sps/retrieval/doc_cache.py, and the factory in scripts/run_resolver.py.
+#   4. `python -m scripts.verify_embedder --local` to confirm the model loads
+#      and still produces 384 unit-length dimensions.
+#
+# The four move together as one ABI-coupled set. torch 2.3.1 is built against
+# the NumPy 1.x C ABI: with NumPy 2.x the import still succeeds but every
+# tensor.numpy() call raises "RuntimeError: Numpy is not available" -- at
+# ranking time, on a real ticket. scipy and scikit-learn are transitive
+# dependencies of sentence-transformers and have to be held to the same era or
+# they break the other way. `pip check` after any bump.
+#
+# sentence-transformers==3.0.1   # BAAI/bge-small-en-v1.5 loader
+# torch==2.3.1                   # CPU wheel; install FIRST via --index-url .../cpu
+# scipy>=1.11,<1.14
+# scikit-learn>=1.3,<1.6
+#
+# numpy stays pinned <2 above while these are disabled. Nothing left in the
+# installed set requires that -- pandas 2.2.2 declares no upper bound -- so the
+# pin is now conservatism rather than necessity, kept so re-enabling torch does
+# not also mean a numpy downgrade.
+# =============================================================================
 
 # No vector database, no web framework, no SQL driver. The resolver reads a
 # history file per ticket and is invoked as a process by the UiPath Performer.

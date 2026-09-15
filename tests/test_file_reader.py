@@ -26,10 +26,22 @@ from sps.file_reader import (  # noqa: E402
     validate_file_type,
 )
 from tests.test_resolver import (  # noqa: E402
-    HEADERS, PART, PROBLEM, read_sheet, row, write_csv_history, write_history, write_ticket,
+    HEADERS, NEAR_PROBLEM, PART, PROBLEM, read_sheet, row, write_csv_history,
+    write_history, write_ticket,
 )
 
-ROWS = [row("SPS-1"), row("SPS-2", minutes=1)]
+
+@pytest.fixture(autouse=True)
+def _stubbed_azure(azure_embeddings):
+    """Azure is the only encoder now, so every test in this module embeds
+    through the stub. A test that wants the unconfigured path deletes the
+    variables itself."""
+
+
+# Near-duplicates of the ticket rather than copies: through the stubbed Azure
+# encoder identical text scores exactly 1.0, so a 0.99 gate would not gate.
+ROWS = [row("SPS-1", problem=NEAR_PROBLEM),
+        row("SPS-2", problem=NEAR_PROBLEM, minutes=1)]
 
 
 # ---------------------------------------------------------------- the gate
@@ -213,10 +225,10 @@ def test_both_formats_reach_the_same_outcome(tmp_path, history_name):
     # A threshold of 0.99 gates before the LLM, so this exercises read, filter
     # and embed without needing Azure.
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
-    # Azure is unconfigured in tests, so the local fallback answers.
-    assert status["Embedding_Model"].startswith("local:")
+    # Azure is the only encoder; the stub stands in for the deployment.
+    assert status["Embedding_Model"].startswith("azure:")
 
 
 def test_reason_carries_the_encoder_marker(tmp_path):
     _, status = _run(tmp_path, history_name="h.csv")
-    assert status["Reason"].endswith("[Local]")
+    assert status["Reason"].endswith("[Azure]")

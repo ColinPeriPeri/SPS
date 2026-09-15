@@ -93,3 +93,38 @@ def isolated_0250_corpus(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         "SPS_0250_DOCS_DIR", str(tmp_path_factory.mktemp("no_0250_docs"))
     )
+
+
+class FakeAzureEmbedder:
+    """Offline stand-in for the Azure embedding deployment.
+
+    Same surface and the same semantics that matter: one `embed_batch` call for
+    query and passages together, no BGE instruction prefix, unit-length vectors
+    out. Scores therefore track token overlap, so retrieval assertions stay
+    exact without a network call.
+    """
+
+    def __init__(self, settings, client=None) -> None:
+        self.settings = settings
+        self._inner = TokenOverlapEmbedder()
+        self.batches: list[list[str]] = []
+
+    def embed_batch(self, texts):
+        self.batches.append(list(texts))
+        return [self._inner._vector(t) for t in texts]
+
+
+@pytest.fixture
+def azure_embeddings(monkeypatch):
+    """Configure and stub the Azure deployment for a whole run.
+
+    With the local encoder out of the pipeline nothing embeds offline, so any
+    test that drives the resolver end to end needs this. Before, the same tests
+    ran on the bge-small fallback without noticing they had no credentials.
+    """
+    monkeypatch.setenv("AZURE_EMBEDDING_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("AZURE_EMBEDDING_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
+    # Patched on the module, not the call site: both retrievers import
+    # AzureEmbedder inside the function that uses it, so the lookup is fresh.
+    monkeypatch.setattr("sps.embedding.AzureEmbedder", FakeAzureEmbedder)

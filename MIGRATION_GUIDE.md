@@ -20,10 +20,10 @@ error.
 
 | Need | Check | Notes |
 |---|---|---|
-| Python 3.11 or 3.12 | `python --version` | Built and tested on 3.12.0. 3.13 is untested and torch 2.3.1 has no 3.13 wheel. |
+| Python 3.11 or 3.12 | `python --version` | Built and tested on 3.12.0. 3.13 is untested. |
 | Git | `git --version` | Or download the repo as a zip. |
-| Network to `pypi.org`, `download.pytorch.org`, `huggingface.co` | | The first resolver run downloads ~130 MB of model weights from Hugging Face. |
-| Your Azure OpenAI endpoint and keys | | Two deployments: one chat, one embedding. See [step 6](#6-configure-env). |
+| Network to `pypi.org` | | That is the whole list. No model download, no PyTorch index. |
+| Your Azure OpenAI endpoint and keys | | **Required.** Two deployments: one chat, one embedding. The local encoder is disabled, so nothing resolves without these. See [step 5](#5-configure-env). |
 | Your 0250 standards as `.docx` | | Optional. Tier 2 is skipped entirely if the folder is empty — see [step 10](#10-load-the-0250-standards-tier-2). |
 
 No admin rights, no database, no service to install. The whole thing is a
@@ -59,63 +59,41 @@ full path.
 
 ---
 
-## 3. Install PyTorch first, from PyTorch's own index
-
-```bat
-pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
-```
-
-This has to come **before** `requirements.txt`. The CPU wheel is only published
-on PyTorch's index; plain PyPI `torch==2.3.1` on Windows resolves to the
-CUDA-bundled build, which is a far larger download and about 2.4 GB unpacked for
-no benefit on a CPU-only host.
-
-**Check:**
-
-```bat
-python -c "import torch; print(torch.__version__)"
-```
-
-Expect `2.3.1+cpu`. A bare `2.3.1` means the CUDA build landed — see
-[Troubleshooting](#troubleshooting).
-
----
-
-## 4. Install everything else
+## 3. Install the dependencies
 
 ```bat
 pip install -r requirements.txt
 ```
 
-torch is already satisfied, so it is not refetched.
+33 packages, no PyTorch, no model download. A minute or so.
 
 ---
 
-## 5. Verify the pinned set landed together
+## 4. Verify the install
 
 ```bat
 pip check
-python -c "import torch, numpy; print(torch.__version__, numpy.__version__)"
-python -c "from lxml import etree; import docx; print('docx OK', etree.__version__)"
+python -c "from openai import AzureOpenAI; from lxml import etree; import docx; print('OK')"
 ```
 
-Expect `No broken requirements found.`, `2.3.1+cpu 1.26.4`, and `docx OK 5.3.0`.
+Expect `No broken requirements found.` and `OK`.
 
-That third line is not decoration. `lxml` is pinned below 6 because its 6.x
-Windows wheel ships a native DLL that **Windows Application Control blocks on a
-managed machine** — the import dies with *"An Application Control policy has
-blocked this file"*, which reads like a corrupt install rather than a policy
-decision. If you see that error, you have an lxml 6.x: `pip install "lxml<6"`.
+**This check earns its place on a corporate laptop.** Two pins exist only to
+survive Windows Application Control, which blocks the native DLLs shipped by the
+newest builds of two dependencies:
 
-This check earns its place. torch, numpy, scipy, scikit-learn and httpx are
-pinned as **one coupled set**: torch 2.3.1 is built against the NumPy 1.x C ABI,
-so with NumPy 2.x installed the import still succeeds but every `tensor.numpy()`
-call raises `RuntimeError: Numpy is not available` — at ranking time, on a real
-ticket, not here.
+| Pin | Without it |
+|---|---|
+| `jiter<0.17` | `import openai` dies with *"DLL load failed while importing jiter: An Application Control policy has blocked this file"* — and takes **every Azure call** with it, embeddings and chat alike |
+| `lxml<6` | The same error on `_elementpath`, taking Tier-2 document parsing with it |
+
+Both read like a corrupt install rather than a policy decision, which is what
+makes them expensive to diagnose. If you hit either, you have a version above
+the pin: `pip install "jiter<0.17"` or `pip install "lxml<6"`.
 
 ---
 
-## 6. Configure `.env`
+## 5. Configure `.env`
 
 ```bat
 copy .env.example .env
@@ -128,7 +106,9 @@ win** — so a UiPath robot with machine-level variables set does not need the
 file at all.
 
 There are **two separate Azure deployments**, with their own endpoint and key,
-so one can be rotated or fail without touching the other. Fill in four values:
+so one can be rotated or fail without touching the other. Both are required —
+the local encoder is disabled, so a missing embedding key means no ticket
+resolves at all. Fill in four values:
 
 ### Embeddings — required
 
@@ -138,10 +118,10 @@ so one can be rotated or fail without touching the other. Fill in four values:
 | `AZURE_EMBEDDING_API_KEY` | the key for that resource |
 | `AZURE_EMBEDDING_DEPLOYMENT` | **`text-embedding-3-large`** — the deployment *name*, not the model name, if they differ |
 
-If any one of the three is missing, the resolver logs
-`AZURE_EMBEDDING_FAILED_FALLING_BACK` and uses the local model for the **whole**
-run. It never mixes vectors from two models in one run, so a partial
-configuration degrades cleanly rather than producing meaningless scores.
+If any one of the three is missing, the run ends with `INFRASTRUCTURE_ERROR`
+and **exit 2** — alert a human, do not retry, because no number of retries
+produces an API key. A transient failure (network, timeout, throttling) is
+`INFRASTRUCTURE_ERROR` with **exit 1** instead, which is worth retrying.
 
 ### Chat (the Actor/Judge loop) — required
 
@@ -156,69 +136,62 @@ it is the first GA version with `json_schema` structured outputs. Older versions
 silently fall back to JSON mode plus client-side validation, which works but is
 weaker.
 
-### Thresholds — leave as shipped, for now
+### Thresholds — both live ones are guesses
 
-`LOCAL_EMBEDDING_THRESHOLD=0.89` is measured against `bge-small`.
-`AZURE_EMBEDDING_THRESHOLD=0.50` is **provisional and has never been measured**.
-[Step 9](#9-run-the-batch-evaluator) is how you replace that guess with a number.
+`AZURE_EMBEDDING_THRESHOLD=0.50` and `TIER2_AZURE_THRESHOLD=0.35` are the two
+that now apply, and **neither has ever been measured**. The measured pair
+(0.89 / 0.62) belonged to the local encoder and is dormant.
+
+[Step 7](#7-check-the-azure-deployment) gives a first reading in about ten
+seconds; [step 9](#9-run-the-batch-evaluator) turns it into a distribution.
 
 ---
 
-## 7. Run the test suite
+## 6. Run the test suite
 
 ```bat
 python -m pytest -q
 ```
 
-Expect **216 passed, 1 skipped** in about two minutes. Nothing here needs a
-server, an Azure key or a model download — the skip is the real-model module,
-which is opt-in:
+Expect **219 passed, 1 skipped** in about five seconds. Nothing here needs a
+server, an Azure key or a model download.
+
+The skip is `tests/test_real_embedder.py`, which exercises the disabled local
+encoder. It needs torch and sentence-transformers reinstalled and is not part of
+the current pipeline — leave it skipped.
+
+---
+
+## 7. Check the Azure deployment
+
+Before any ticket, confirm the encoder works and see what its numbers look like:
 
 ```bat
-set SPS_MODEL_TESTS=1
-python -m pytest -q
-set SPS_MODEL_TESTS=
+python -m scripts.verify_embedder
 ```
 
-That is **230 passed**, and it downloads ~130 MB of weights the first time. It
-pins the properties the ranking maths assumes: 384 dimensions, unit-length
-vectors (so the NumPy matmul *is* the cosine the 0.89 gate is calibrated on),
-and the query instruction applied to queries but never to history passages.
+It checks reachability, vector dimension, unit length and batch ordering, then
+scores real SPS text against both live gates and ends with a suggested range:
+
+```
+  Suggested gates from this run: Tier 1 between 0.1xxx and 0.8xxx,
+  Tier 2 between 0.2xxx and 0.7xxx.
+```
+
+Two checks matter more than the rest. **"unrelated record is blocked by the 0.50
+gate"** — if that FAILS the gate admits everything and is not a gate, which
+usually means the deployment is `ada-002` rather than `text-embedding-3-large`.
+And the reported dimension: **3072** confirms `-3-large`; 1536 means `-3-small`
+or `ada-002`.
+
+One sample each, so treat it as a smoke test with a hint attached, not a
+calibration. [Step 9](#9-run-the-batch-evaluator) is the calibration.
 
 ---
 
 ## 8. Prove the pipeline runs, before any real data
 
-### 8a. Everything except Azure
-
-`samples\` ships a ticket and a five-row history. Forcing the threshold to 0.99
-gates the run *before* the LLM is called, so this works with no keys at all:
-
-```bat
-python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --threshold 0.99
-echo %ERRORLEVEL%
-```
-
-The first run downloads the local model, so allow a minute. Expect
-`%ERRORLEVEL%` of **0** and, in `smoke\status.xlsx`:
-
-| Column | Value |
-|---|---|
-| `Status` | `FAIL` |
-| `Status_Code` | `BELOW_CONFIDENCE_THRESHOLD` |
-| `Reason` | `Best historical match 0.9641 is below the 0.99 threshold across 3 candidate(s). No 0250 documents found in data\0250_docs. [Local]` |
-| `Embedding_Model` | `local:BAAI/bge-small-en-v1.5` |
-
-A `FAIL` is the *expected* result here — you asked for an impossible threshold.
-The Reason names both tiers because both were tried: Tier 1 gated, and Tier 2
-had no documents to search yet. The code is Tier 1's own, because Tier 2
-retrieved nothing to improve on it.
-What it proves is everything underneath: the file reader, part-number matching,
-the torch/numpy stack, the embedding model, cosine ranking and the atomic Excel
-write all work on this machine. `0.9641` is the real similarity between the
-sample ticket and its closest historical match.
-
-### 8b. With Azure, through the wrapper UiPath actually calls
+### 8a. Through the wrapper UiPath actually calls
 
 ```bat
 scripts\run_resolver.cmd samples\sample_ticket.csv samples\sample_history.csv smoke
@@ -227,12 +200,19 @@ echo %ERRORLEVEL%
 
 Expect `%ERRORLEVEL%` of **0**, `Status` of `PASS` and `Status_Code` of
 `SUCCESS_HISTORICAL` in `status.xlsx`, and a second workbook
-`smoke\output.xlsx` with `Resolution_Source` of `HISTORICAL_DATA`. With Azure
-embeddings configured, `Embedding_Model` reads `azure:text-embedding-3-large`
-and `Reason` ends `[Azure]`.
+`smoke\output.xlsx` with `Resolution_Source` of `HISTORICAL_DATA`.
+`Embedding_Model` reads `azure:text-embedding-3-large` and `Reason` ends
+`[Azure]`.
 
-`INFRASTRUCTURE_ERROR` and exit 1 here means the credentials did not work — the
-`Reason` column names which variable or which call failed.
+If it fails, the exit code says which kind of problem it is:
+
+| Exit | Meaning |
+|---|---|
+| **2** with `INFRASTRUCTURE_ERROR` | A credential is missing. The `Reason` names exactly which variable. |
+| **1** with `INFRASTRUCTURE_ERROR` | The deployment was reachable but the call failed — wrong deployment name, throttling, network. |
+
+There is no longer an offline mode: with the local encoder disabled, nothing
+resolves without a working embedding deployment.
 
 ---
 
@@ -326,17 +306,19 @@ path work before touching a real document:
 python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
 ```
 
-Forcing *both* gates to 0.99 keeps this offline. Expect exit **0**,
-`BELOW_CONFIDENCE_THRESHOLD`, and a Reason naming a score from each tier:
+Forcing *both* gates to 0.99 stops before the LLM, so this costs two embedding
+calls and no generation. Expect exit **0**, `BELOW_CONFIDENCE_THRESHOLD`, and a
+Reason naming a score from each tier:
 
 ```
-Best historical match 0.9641 is below the 0.99 threshold across 3 candidate(s).
-Best 0250 match 0.7462 is below the 0.99 threshold across 8 chunk(s). [Local]
+Best historical match 0.xxxx is below the 0.99 threshold across 3 candidate(s).
+Best 0250 match 0.xxxx is below the 0.99 threshold across 8 chunk(s). [Azure]
 ```
 
-`8 chunk(s)` proves the documents parsed, embedded and cached. Drop
-`--tier2-threshold 0.99` and Tier 2 will retrieve 5 sections and call Azure for
-real.
+`8 chunk(s)` proves the documents parsed, embedded and cached. The scores
+themselves depend on your deployment, which is the point of running it. Drop
+`--tier2-threshold 0.99` and Tier 2 will retrieve its top sections and generate
+for real.
 
 ### Then load the real ones
 
@@ -394,22 +376,24 @@ unambiguous.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `RuntimeError: Numpy is not available` | NumPy 2.x got pulled in past the pin | `pip install "numpy>=1.26,<2"` then `pip check` |
-| `python -c "import torch..."` prints `2.3.1`, not `2.3.1+cpu` | The CUDA build installed — step 3 ran after step 4, or without `--index-url` | `pip uninstall -y torch` then redo step 3 |
+| `An Application Control policy has blocked this file` on `import openai` (via `jiter`) | jiter 0.17+ ships a native DLL your machine's policy blocks. **This kills every Azure call, embeddings and chat.** | `pip install "jiter<0.17"` |
+| `An Application Control policy has blocked this file` on `from lxml import etree` | Same, for lxml 6.x. Kills Tier-2 document parsing. | `pip install "lxml<6"` |
 | `TypeError: Client.__init__() got an unexpected keyword argument 'proxies'` | httpx 0.28+ removed `proxies`, which openai 1.40.0 still passes | `pip install "httpx>=0.27,<0.28"` |
 | `Python interpreter not found` from a `.cmd` | No `venv\` or `env\` in the project root | Redo step 2, or set `SPS_PYTHON` to the interpreter's full path |
-| Hugging Face download fails or hangs | Corporate proxy or blocked host | Set `HTTPS_PROXY`, or copy an existing `%USERPROFILE%\.cache\huggingface` folder from a machine that has one |
 | `pip` SSL errors on install | TLS interception | Point `pip` at your internal mirror via `PIP_INDEX_URL` — ask IT rather than disabling verification |
 | `INVALID_INPUT`, exit 0, `Reason` names the file | A `.pdf` / `.docx` / `.xls` was attached | Only `.csv`, `.xlsx` and `.xlsm` are accepted. This is deliberate: a wrong attachment is a business problem, faulted rather than retried |
 | `INVALID_INPUT`, exit 2 | The file is the right type but missing or unreadable | Genuine I/O trouble — check the path the robot passed |
 | `Problem description is N characters; at least 10 required.` | The description column is blank or nearly so | Check the ticket's column name — `Problem_Description`, matched case-insensitively |
 | `NO_MATCHES` on a part you know exists | Part numbers differ after normalisation (`.strip().upper()`, invisible characters removed) | `Reason` reports how many rows matched out of how many scanned — usually a stray character in one source |
-| Everything falls back to `local:` | One of the three `AZURE_EMBEDDING_*` values is missing or wrong | The `AZURE_EMBEDDING_FAILED_FALLING_BACK` log line names exactly which |
-| `An Application Control policy has blocked this file` on `from lxml import etree` | lxml 6.x's native DLL is blocked on a managed Windows machine | `pip install "lxml<6"` |
+| `INFRASTRUCTURE_ERROR`, exit **2**, on every ticket | One of the three `AZURE_EMBEDDING_*` values is missing | The `Reason` names exactly which. There is no local fallback to absorb it any more |
+| `INFRASTRUCTURE_ERROR`, exit **1**, on every ticket | The deployment name is wrong, or the endpoint is unreachable | Run `python -m scripts.verify_embedder` — it isolates reachability from configuration |
+| Everything is gated, nothing resolves | 0.50 is a guess and may be far from right for your deployment | `python -m scripts.verify_embedder` suggests a range; set `SPS_CONFIDENCE_THRESHOLD` |
+| Nothing is gated, everything resolves | Same, in the other direction — likely an `ada-002` deployment, where even unrelated text scores above 0.7 | Same check. If the "unrelated record is blocked" line FAILS, raise the threshold |
 | Tier 2 never runs | `data\0250_docs\` holds no `.docx` | Expected until the standards are loaded. Check with `dir data\0250_docs\*.docx` |
 | A 0250 document is ignored | It is a legacy `.doc`, or a `~$` lock file | The warning names it. Re-save as `.docx`; close the document if Word has it open |
 | Every 0250 citation is just the filename | The document's section titles are bold body text, not `Heading 2` | Apply Word's heading styles, then delete `data\0250_docs\0250_cache_*.npz` |
-| Tier 2 finds nothing on a defect you know is covered | 0.62 is calibrated for the demo corpus, not yours | Run the batch evaluator and read `Tier2_Score`, then set `SPS_TIER2_THRESHOLD` |
+| Tier 2 finds nothing on a defect you know is covered | 0.35 is a guess derived from another guess | Run the batch evaluator and read `Tier2_Score`, then set `SPS_TIER2_THRESHOLD` |
+| `pytest` reports 1 skipped | `tests/test_real_embedder.py`, which exercises the disabled local encoder | Expected. Leave it skipped |
 
 ---
 

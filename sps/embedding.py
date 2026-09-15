@@ -102,7 +102,22 @@ class BGEEmbedder:
 
 
 class AzureEmbeddingError(RuntimeError):
-    """The Azure embedding call failed and the caller should fall back."""
+    """The Azure embedding call failed.
+
+    With the local encoder out of the pipeline there is nothing to fall back
+    to, so this now ends the run. It stays a single base class because most
+    callers only need "embedding did not happen".
+    """
+
+
+class AzureEmbeddingNotConfigured(AzureEmbeddingError):
+    """Credentials or the deployment name are missing.
+
+    A subclass, so `except AzureEmbeddingError` still catches it, but the
+    resolver checks for it first and exits 2 rather than 1. A timeout is worth
+    retrying; an absent API key is not, and a robot retrying one fifty times
+    only delays the human who has to go and set it.
+    """
 
 
 class AzureEmbedder:
@@ -127,13 +142,18 @@ class AzureEmbedder:
     @property
     def client(self):
         if self._client is None:
-            from openai import AzureOpenAI
-
+            # Configuration first, import second. Importing openai can fail on
+            # its own -- a blocked native dependency, a broken install -- and
+            # reporting that when the real problem is an unset API key sends
+            # the reader somewhere entirely wrong.
             missing = self.settings.missing()
             if missing:
-                raise AzureEmbeddingError(
+                raise AzureEmbeddingNotConfigured(
                     f"Azure embedding deployment is not configured: {', '.join(missing)}"
                 )
+
+            from openai import AzureOpenAI
+
             self._client = AzureOpenAI(
                 azure_endpoint=self.settings.endpoint,
                 api_key=self.settings.api_key,
@@ -145,9 +165,10 @@ class AzureEmbedder:
     def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed every text in one request, in the order given.
 
-        Any failure raises AzureEmbeddingError so the caller can discard the
-        whole batch and re-embed locally. Partial results are never returned:
-        mixing vectors from two models would make the cosine meaningless.
+        Any failure raises AzureEmbeddingError and the whole batch is discarded.
+        Partial results are never returned: a half-embedded batch would leave
+        some candidates scored and some not, which ranks as though the missing
+        ones were simply poor matches.
         """
         if not texts:
             return []
@@ -160,7 +181,7 @@ class AzureEmbedder:
             raise
         except Exception as exc:
             # Network, auth, timeout, rate limit, bad deployment name -- all of
-            # them mean the same thing here: use the local model instead.
+            # them mean the same thing here: this run cannot be embedded.
             raise AzureEmbeddingError(
                 f"{type(exc).__name__}: {exc}"
             ) from exc

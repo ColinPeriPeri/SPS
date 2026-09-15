@@ -10,11 +10,18 @@ records. When those produce nothing usable, **Tier 2** answers from the company'
 0250 engineering standards instead and cites the document and section it used.
 Neither tier is allowed to answer from the model's own knowledge.
 
-Runs on a **CPU-only host**: `BAAI/bge-small-en-v1.5` locally via
-`sentence-transformers`, generation on an Azure OpenAI deployment at
-`temperature=0.0`, `top_p=0.1`. **No vector database** — history is filtered by
-part number and embedded per ticket; the standards corpus is embedded once and
-cached against a hash of itself.
+Embeddings and generation both run on **Azure OpenAI**, at `temperature=0.0`,
+`top_p=0.1`. **No vector database** — history is filtered by part number and
+embedded per ticket; the standards corpus is embedded once and cached against a
+hash of itself.
+
+> **The local `bge-small` encoder is currently disabled.** Azure is the only
+> encoder in the pipeline. The model wrapper, its acceptance checks and its
+> thresholds are all still in the tree and untouched — see
+> [The local encoder, disabled](#the-local-encoder-disabled) — but nothing
+> reaches them, and `requirements.txt` no longer installs torch. The practical
+> consequence: **an Azure embedding failure now ends the run** instead of being
+> absorbed, and there is no offline mode.
 
 ---
 
@@ -24,33 +31,25 @@ Setting this up on a fresh Windows machine? **[`MIGRATION_GUIDE.md`](MIGRATION_G
 is the copy-paste version of this section, with the checks, the `.env` values and
 a smoke test that proves the install before any real data touches it.
 
-Install PyTorch **first**, from PyTorch's own index. The CPU wheel is only
-published there: on Windows, plain PyPI `torch==2.3.1` resolves to the
-CUDA-bundled build, which is a far larger download and roughly 2.4 GB unpacked
-for no benefit on a CPU-only host.
-
-```bash
-python -m pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
-```
-
-Then the rest. torch is already satisfied, so it is not refetched:
-
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-Verify the install before running anything. torch, numpy, scipy, scikit-learn
-and httpx are pinned as one set and have to land together; this is the command
-that proves they did:
+No torch, no CUDA, no model download — 33 packages. Verify before running
+anything:
 
 ```bash
 python -m pip check
-python -c "import torch; print(torch.__version__)"   # expect 2.3.1+cpu
+python -c "from openai import AzureOpenAI; from lxml import etree; import docx"
 ```
 
-`pip check` must print `No broken requirements found.` A `+cpu` suffix on the
-torch version confirms the right wheel; a bare `2.3.1` means the CUDA build was
-installed instead.
+`pip check` must print `No broken requirements found.`, and the second line must
+print nothing at all. Two pins exist purely to make that second line work on a
+managed Windows machine: **jiter below 0.17** and **lxml below 6**, whose native
+DLLs are blocked by Windows Application Control. Both fail with *"An Application
+Control policy has blocked this file"*, which reads like a corrupt install
+rather than a policy decision — and the jiter one takes every Azure call with
+it, since `openai` imports it.
 
 Run the test suite:
 
@@ -58,8 +57,9 @@ Run the test suite:
 python -m pytest -q
 ```
 
-216 tests, none of which needs a server, an Azure key or a model download. The
-real-model checks are opt-in (~130 MB of weights):
+219 tests in about five seconds, none of which needs a server, an Azure key or
+a model download. The real-model checks are opt-in, and now also need the
+disabled dependencies reinstalled (~130 MB of weights plus torch):
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -76,17 +76,17 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `scripts/run_eval_batch.py` | Batch evaluator — many tickets, one results workbook |
 | `scripts/run_eval.cmd` | Wrapper for the above |
 | `sps/validators.py` | Part-number canonicalisation + ticket gatekeeping |
-| `sps/retrieval/in_memory.py` | **Tier 1** — filter by part, embed (Azure or local), rank, gate |
+| `sps/retrieval/in_memory.py` | **Tier 1** — filter by part, embed via Azure, rank, gate |
 | `sps/retrieval/docx_parser.py` | **Tier 2** — parse 0250 .docx into citable, section-bounded chunks |
 | `sps/retrieval/doc_cache.py` | **Tier 2** — hash-keyed vector cache, enriched query, search |
-| `sps/embedding.py` | Azure + local BGE encoders |
+| `sps/embedding.py` | Azure encoder; the BGE wrapper, disabled but intact |
 | `sps/generation/` | Actor / Judge loop, schema-constrained |
 | `sps/schemas.py` | Pydantic response schemas for the LLM |
 | `sps/contracts.py` | Ticket and result shapes |
 | `sps/output.py` | Builds the resolved recommendation |
 | `sps/file_reader.py` | .csv / .xlsx dispatch + strict type gate |
 | `service/excel_output.py` | Atomic workbook writer |
-| `scripts/verify_embedder.py` | Acceptance checks against the real model |
+| `scripts/verify_embedder.py` | Acceptance checks + threshold reading against the live encoder |
 | `scripts/make_sample_docs.py` | Regenerates the demo 0250 documents |
 | `samples/` | A ticket + history for smoke tests, six eval cases, three demo standards |
 | `data/0250_docs/` | Where the real 0250 standards go (ships empty) |
@@ -242,88 +242,93 @@ exit 2 — that is genuine I/O trouble and a human should look at it.
 Prefer CSV for a large history: at 300k rows the same data takes about 1.5 s as
 `.csv` against about 40 s as `.xlsx`, because openpyxl parses XML per row.
 
-### Embedding: Azure primary, local fallback
+### The local encoder, disabled
 
-Azure embeddings are the primary encoder; local `bge-small-en-v1.5` is the
-fallback. The choice is **all-or-nothing per run**: the query and every
-candidate are always encoded by the same model, because a cosine between vectors
-from two different embedding spaces is not a similarity, it is noise that
-happens to land between -1 and 1.
+Azure OpenAI is the only encoder the pipeline reaches. The `bge-small` path is
+disabled, not deleted:
 
-```
-try  Azure: one request, [query] + candidates      -> AZURE_EMBEDDING_THRESHOLD
-except network / auth / timeout / rate limit / not configured
-     log AZURE_EMBEDDING_FAILED_FALLING_BACK
-     re-encode the WHOLE batch locally             -> LOCAL_EMBEDDING_THRESHOLD
-```
+| Still in the tree | State |
+| --- | --- |
+| `sps/embedding.py` → `BGEEmbedder` | Untouched |
+| `scripts/verify_embedder.py --local` | Works, once torch is reinstalled |
+| `tests/test_real_embedder.py` | Skips cleanly without `sentence_transformers` |
+| `LOCAL_EMBEDDING_THRESHOLD` (0.89), `TIER2_LOCAL_THRESHOLD` (0.62) | Dormant; kept so re-enabling is a wiring change, not a re-measurement |
+| The `embedder=` injection seam on both retrievers | Live — tests use it, and it is where a local model drops back in |
 
-Anything Azure managed to return before failing is discarded rather than topped
-up locally. A short or reordered response is treated as a failure for the same
-reason: the response carries a per-item index, and the batch is re-sorted on it
-rather than trusting arrival order, because a silently reordered batch would
-pair every candidate with another candidate's score.
+Re-wiring it means restoring one branch at each of the three sites marked
+`LOCAL MODEL DISABLED`, in `sps/retrieval/in_memory.py`,
+`sps/retrieval/doc_cache.py` and `scripts/run_resolver.py`, and uncommenting
+four pins in `requirements.txt`. The steps are written out at the bottom of that
+file.
 
-**The local model is not loaded when Azure succeeds.** Constructing `BGEEmbedder`
-is free (0.000 s, no torch import); the ~15 s of torch import and weight loading
-lands on first *encode*. So the retriever takes a factory, not an instance, and
-calls it only inside the `except` branch. A test asserts the factory is never
-invoked on a successful primary run.
+**What changed behaviourally.** A failure used to be absorbed: the run fell back
+to `bge-small`, scored in a different embedding space, applied a different
+threshold, and still reported success — with only the `Embedding_Model` column
+to say so. Now it ends the run, and the exit code says which kind of failure it
+was:
 
-The Azure path deliberately sends **no BGE instruction prefix**.
-`"Represent this sentence for searching relevant passages: "` is a convention
-`bge-*-v1.5` was trained with; Azure's models were not, so prepending it would
-inject a constant meaningless string into every query. That asymmetry is also
-why the local path needs two encode calls (queries prefixed, passages not) where
-Azure needs one.
+| Situation | `Status_Code` | Exit | Why |
+| --- | --- | --- | --- |
+| Network, timeout, throttling, bad response | `INFRASTRUCTURE_ERROR` | **1** | Transient; retry |
+| `AZURE_EMBEDDING_*` missing | `INFRASTRUCTURE_ERROR` | **2** | No number of retries produces an API key |
 
-Vectors are L2-normalised on both paths. OpenAI returns unit-length embeddings
-today, but the ranking is a bare dot product that stops being a cosine if that
-ever changes, so the guarantee is made here rather than assumed.
+That split is the whole reason `AzureEmbeddingNotConfigured` subclasses
+`AzureEmbeddingError`: existing `except` clauses still catch both, while the
+resolver checks the specific type first.
 
-### Two thresholds, one per embedding space
+The batch evaluator gains something from this too — with one encoder there is no
+longer any way for a run to pool scores from two embedding spaces, which was the
+failure its mixed-encoder warning existed to catch.
+
+### Thresholds, one per embedding space
 
 A threshold is a property of one model's scoring distribution and does not
-survive a change of encoder. The gate applies whichever belongs to the model
-that actually answered, and `status.xlsx` records which one that was.
+survive a change of encoder. Four exist; **two are live and two are dormant**,
+and `status.xlsx` records which encoder actually answered.
 
-| | value | basis |
-| --- | --- | --- |
-| `LOCAL_EMBEDDING_THRESHOLD` | **0.89** | Measured. bge-small scores systematically higher than bge-large — a materially different defect reaches 0.8442 against 0.7831 — so 0.82 would have loosened the gate. |
-| `AZURE_EMBEDDING_THRESHOLD` | **0.50** | **Provisional, not measured.** |
+| | value | state | basis |
+| --- | --- | --- | --- |
+| `AZURE_EMBEDDING_THRESHOLD` | **0.50** | **live** | **Provisional, never measured.** |
+| `TIER2_AZURE_THRESHOLD` | **0.35** | **live** | **Provisional twice over** — derived from the 0.50 above, itself a guess. |
+| `LOCAL_EMBEDDING_THRESHOLD` | 0.89 | dormant | Measured, on bge-small. |
+| `TIER2_LOCAL_THRESHOLD` | 0.62 | dormant | Measured, on bge-small against the demo corpus. |
 
-> **0.50 is a placeholder, and how wrong it is depends on which model backs the
-> deployment.** `text-embedding-3-small` / `-3-large` put unrelated text around
-> 0.1—0.3, so 0.50 is a plausible starting point. `text-embedding-ada-002`
-> is notorious for keeping even unrelated pairs above 0.7 — against that model
-> 0.50 admits essentially everything and the gate stops existing. Measure the
-> distribution on your own deployment before the evaluation run; the local 0.89
-> was derived from exactly four probe sentences and still wants the eval set to
-> confirm it.
+> **Every gating decision the pipeline now makes rests on an unmeasured
+> number.** Disabling the local encoder retired both measured thresholds and
+> promoted both guesses. How wrong 0.50 is depends on which model backs the
+> deployment: `text-embedding-3-small` / `-3-large` put unrelated text around
+> 0.1—0.3, so it is a plausible starting point; `text-embedding-ada-002` is
+> notorious for keeping even unrelated pairs above 0.7, where 0.50 admits
+> essentially everything and the gate stops existing.
+>
+> `python -m scripts.verify_embedder` reads both live gates against the real
+> deployment and suggests a range for each. Run it before trusting either, and
+> widen it with `scripts/run_eval_batch.py`.
 
-`SPS_CONFIDENCE_THRESHOLD` and `--threshold` override **both**, and are honoured
-whichever encoder answers — an explicit operator instruction is not
-second-guessed by the backend that happened to respond.
+`SPS_CONFIDENCE_THRESHOLD` and `--threshold` override the Tier-1 pair;
+`SPS_TIER2_THRESHOLD` and `--tier2-threshold` override the Tier-2 pair. An
+explicit operator instruction is not second-guessed by the backend that
+happened to respond.
 
-### Tracking how often the fallback fires
+### Which encoder answered
 
 `status.xlsx` carries `Embedding_Model`, appended as the **last** column so a
 caller reading the first four positionally is unaffected:
 
 ```
-azure:text-embedding-3-small     primary path
-local:BAAI/bge-small-en-v1.5     fallback fired
+azure:text-embedding-3-large     the encoder
 (blank)                          aborted before anything was encoded
+local:<model>                    only reachable through an injected encoder
 ```
 
 `Reason` also ends with `[Azure]` or `[Local]`, so a support engineer skimming
-the sheet — or a caller reading only the first four columns — sees which
-encoder ran without needing to know the column exists.
+the sheet — or a caller reading only the first four columns — sees which encoder
+ran without needing to know the column exists.
 
-Every fallback also logs `AZURE_EMBEDDING_FAILED_FALLING_BACK` on stderr with
-the cause, at WARNING, with a fixed marker so it can be counted from the job
-logs. A deployment where Azure is quietly misconfigured still works — it just
-pays the local cold start on every ticket, which is exactly the situation this
-column exists to make visible.
+The column kept its value after the fallback was removed: a ticket whose Tier 1
+never embedded — an unknown part stops before the model is reached — still
+reports Tier 2's encoder if Tier 2 ran, so a run that embedded is never recorded
+as one that did not.
 
 Metadata boosting is gone from this path entirely: part number is an exact
 filter, and the other boosts existed to discriminate within a mixed-part result
@@ -487,9 +492,10 @@ machines.
 The console digest prints the score distribution — min, p25, median, p75, p90,
 max — so the shape is visible without opening Excel. It also **warns if more
 than one encoder ran in the batch**: a threshold belongs to one embedding space,
-so a distribution pooled across Azure and the local fallback describes neither.
-Nothing else would report that, because falling back is normal behaviour rather
-than an error.
+so a pooled distribution describes neither. With the local encoder out of the
+pipeline nothing can currently trigger it — which is the point of keeping it.
+It was written for a fallback that fired silently, and it is what would catch
+the same mistake if one is wired back in.
 
 Exit code 0 means the batch ran, whatever the individual cases did; 1 means at
 least one case hit an infrastructure error; 2 means the case list could not be
@@ -561,14 +567,16 @@ tests/test_tier2_docs.py               62   docx parsing, cache invalidation, Ti
 tests/test_resolver.py                 32   validation, part filtering, capping, dual workbooks, threshold
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
-tests/test_embedding_fallback.py       19   Azure primary, all-or-nothing fallback, dual threshold
+tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                    9   env loading, model/threshold single-sourcing
-tests/test_real_embedder.py            14   the real bge-small model (opt-in)
+tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)
 ```
 
-The real-model tests load ~130 MB of weights and are therefore opt-in:
+The real-model tests exercise the disabled local encoder. They need torch and
+sentence-transformers reinstalled, and load ~130 MB of weights, so they are
+opt-in and skip cleanly when those are absent:
 
 ```bash
 SPS_MODEL_TESTS=1 python -m pytest -q
@@ -578,6 +586,10 @@ They pin the properties the ranking maths assumes: 384 dimensions, unit-length
 vectors (so the NumPy matmul *is* the cosine the 0.89 gate is calibrated on), and
 the query instruction applied to queries but never to history passages.
 
-`python -m scripts.verify_embedder` runs the same checks as a standalone report
-and prints real cosine numbers for related versus unrelated SPS text, which is
-the fastest way to sanity-check the threshold on a new machine.
+`python -m scripts.verify_embedder` checks the **live Azure deployment**:
+reachability, vector dimension, unit length, batch ordering, and then real
+cosine numbers for related versus unrelated SPS text scored against both gates.
+It ends by suggesting a range for each. That is the fastest way to find out
+whether 0.50 and 0.35 are anywhere near right on a new deployment — both are
+guesses until it has been run. `--local` runs the original bge-small checks
+instead, and reports what to install if torch is absent.

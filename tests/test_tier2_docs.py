@@ -38,7 +38,17 @@ from sps.retrieval.docx_parser import (  # noqa: E402
     parse_docx,
 )
 from tests.conftest import TokenOverlapEmbedder  # noqa: E402
-from tests.test_resolver import PART, PROBLEM, read_sheet, row, write_history, write_ticket  # noqa: E402
+from tests.test_resolver import (  # noqa: E402
+    NEAR_PROBLEM, PART, PROBLEM, read_sheet, row, write_history, write_ticket,
+)
+
+
+@pytest.fixture(autouse=True)
+def _stubbed_azure(azure_embeddings):
+    """Azure is the only encoder now, so every test in this module embeds
+    through the stub. A test that wants the unconfigured path deletes the
+    variables itself."""
+
 
 CRACKING = (
     "Cracking in a fillet or butt weld seam is cause for rejection of the affected "
@@ -457,42 +467,51 @@ def test_a_populated_corpus_is_available(tmp_path):
     assert DocRetriever(docs_dir=tmp_path).available is True
 
 
-def test_a_failed_corpus_batch_never_mixes_embedding_spaces(tmp_path, caplog):
-    """If the query encoded via Azure and the corpus batch then failed, ranking
-    an Azure query against local vectors would produce a number between -1 and
-    1 that is not a similarity."""
+def test_a_failed_corpus_batch_aborts_rather_than_ranking_half_a_corpus(tmp_path):
+    """The query encodes, then the corpus batch fails. Nothing is ranked.
+
+    There is no second encoder to reach for now, so the only wrong answer
+    available is ranking the query against a partial corpus -- which would look
+    like a successful search that simply found nothing relevant.
+    """
+    from sps.embedding import AzureEmbeddingError
+
     weld_corpus(tmp_path)
     retriever = DocRetriever(docs_dir=tmp_path)
     calls = []
 
     def azure(texts):
         calls.append(len(texts))
-        if len(texts) == 1:                      # the query probe succeeds
+        if len(texts) == 1:                      # the query encodes
             class S:
                 deployment = "text-embedding-3-large"
             return S(), [[1.0, 0.0]]
-        return None                              # the corpus batch fails
+        raise AzureEmbeddingError("corpus batch failed")   # the corpus does not
 
-    retriever._try_azure = azure
-    with caplog.at_level("ERROR"):
-        assert retriever.retrieve(ticket()) == []
+    retriever._embed_azure = azure
+    with pytest.raises(AzureEmbeddingError):
+        retriever.retrieve(ticket())
 
-    assert "mixing embedding spaces" in caplog.text
+    # Both calls were attempted, and the failure was not swallowed into an
+    # empty result the caller would read as "no standard covers this".
     assert calls == [1, 2]
 
 
-def test_the_tier1_backend_choice_is_not_re_litigated(tmp_path):
-    """Tier 1 already found out whether Azure answers. A second probe would buy
-    nothing and cost another full timeout."""
-    weld_corpus(tmp_path)
-    retriever = DocRetriever(docs_dir=tmp_path, force_backend="local",
-                             local_embedder_factory=TokenOverlapEmbedder)
-    attempted = []
-    retriever._try_azure = lambda texts: attempted.append(texts) or None
+def test_missing_credentials_are_their_own_error(tmp_path, monkeypatch):
+    """Distinguished from a transient failure so the caller can exit 2 instead
+    of asking a robot to retry its way to an API key."""
+    from sps.embedding import AzureEmbeddingError, AzureEmbeddingNotConfigured
 
-    retriever.retrieve(ticket())
-    assert attempted == []
-    assert retriever.stats.backend == "local"
+    for name in ("AZURE_EMBEDDING_ENDPOINT", "AZURE_EMBEDDING_API_KEY",
+                 "AZURE_EMBEDDING_DEPLOYMENT"):
+        monkeypatch.delenv(name, raising=False)
+    weld_corpus(tmp_path)
+
+    with pytest.raises(AzureEmbeddingNotConfigured) as info:
+        DocRetriever(docs_dir=tmp_path).retrieve(ticket())
+
+    assert issubclass(AzureEmbeddingNotConfigured, AzureEmbeddingError)
+    assert "AZURE_EMBEDDING_API_KEY" in str(info.value)
 
 
 # ------------------------------------------------------------------ prompts
@@ -592,7 +611,10 @@ def run_cli(tmp_path, docs_dir=None, threshold=0.99, part=PART,
             tier2_threshold=None, extra=()):
     """Threshold 0.99 by default so Tier 1 gates and Tier 2 is reached."""
     out = tmp_path / "out"
-    write_history(tmp_path / "h.xlsx", [row("SPS-1001")])
+    # A near-duplicate, not a copy: identical text scores exactly 1.0 through
+    # the stubbed Azure encoder and would clear the 0.99 gate these tests use
+    # to force Tier 1 to fail.
+    write_history(tmp_path / "h.xlsx", [row("SPS-1001", problem=NEAR_PROBLEM)])
     write_ticket(tmp_path / "t.xlsx", part=part)
     argv = [
         "--ticket-file", str(tmp_path / "t.xlsx"),
@@ -819,7 +841,7 @@ def test_the_reason_still_carries_both_tiers_whatever_the_code(tmp_path, tiered_
     _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.99, tier2_threshold=0.99)
 
     reason = read_sheet(out / "status.xlsx").iloc[0]["Reason"]
-    assert "Best historical match 0.9641" in reason
+    assert "Best historical match 0.9354" in reason
     assert "Best 0250 match" in reason
 
 
@@ -863,8 +885,8 @@ def test_a_tier2_only_encode_still_names_its_encoder(tmp_path, tiered_llm):
     _, out = run_cli(tmp_path, docs_dir=docs, part=UNKNOWN_PART, tier2_threshold=0.99)
 
     status = read_sheet(out / "status.xlsx").iloc[0]
-    assert status["Embedding_Model"].startswith("local:")
-    assert status["Reason"].endswith("[Local]")
+    assert status["Embedding_Model"].startswith("azure:")
+    assert status["Reason"].endswith("[Azure]")
 
 
 def test_tier1_keeps_naming_the_encoder_when_it_did_embed(tmp_path, tiered_llm):
@@ -874,4 +896,4 @@ def test_tier1_keeps_naming_the_encoder_when_it_did_embed(tmp_path, tiered_llm):
 
     _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.99, tier2_threshold=0.99)
 
-    assert read_sheet(out / "status.xlsx").iloc[0]["Embedding_Model"].startswith("local:")
+    assert read_sheet(out / "status.xlsx").iloc[0]["Embedding_Model"].startswith("azure:")

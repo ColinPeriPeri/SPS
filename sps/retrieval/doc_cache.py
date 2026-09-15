@@ -12,6 +12,11 @@ embedding space, so `0250_cache_azure.npz` and `0250_cache_local.npz` are
 separate files and a run reads whichever matches the encoder that actually
 answered. Mixing them would compute cosines between unrelated spaces and return
 numbers that look like similarities.
+
+Only the azure cache is written at present: the local encoder is out of the
+pipeline, so `0250_cache_local.npz` is reachable only through an injected
+embedder. The filename stays reserved rather than removed, so a corpus embedded
+by a re-wired local model can never land in the Azure file.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 from ..contracts import IncomingTicket
 from ..embedding import Embedder
@@ -266,16 +271,18 @@ class DocRetriever:
     # Caches live beside the documents by default: one folder to copy to a new
     # machine, one folder to clear when something looks wrong.
     cache_dir: Path | str | None = None
-    local_embedder_factory: Callable[[], Embedder] | None = None
     azure_settings: Any = None
     azure_threshold: float = TIER2_AZURE_THRESHOLD
     local_threshold: float = TIER2_LOCAL_THRESHOLD
     confidence_threshold: float | None = None
     top_k: int = TIER2_TOP_K
-    # Tier 1 has already chosen an encoder by the time Tier 2 runs. Passing that
-    # choice through skips a second Azure attempt that is certain to fail the
-    # same way -- and a certain failure still costs a full timeout.
-    force_backend: str | None = None
+    # Injection seam for tests, and where a locally-hosted encoder would be
+    # supplied if one is wired back in. The pipeline never sets it.
+    #
+    # `force_backend` used to live here, to stop Tier 2 re-probing Azure after
+    # Tier 1 had already fallen back. With no fallback there is nothing to
+    # re-probe: Tier 1 either embedded through Azure, in which case Tier 2 will
+    # too, or the run ended before Tier 2 was reached.
     embedder: Embedder | None = None
     stats: Tier2Stats = field(default_factory=Tier2Stats)
 
@@ -362,10 +369,7 @@ class DocRetriever:
         digest = corpus_hash(paths)
         cache_dir = Path(self.cache_dir) if self.cache_dir else Path(self.docs_dir)
 
-        encoded = self._encode_query(query)
-        if encoded is None:
-            return None
-        backend, model, query_vector = encoded
+        backend, model, query_vector = self._encode_query(query)
 
         cached = load_cache(_cache_path(cache_dir, backend), digest, model)
         if cached is not None:
@@ -382,8 +386,6 @@ class DocRetriever:
 
         started = time.time()
         vectors = self._encode_passages([c.embed_text for c in chunks], backend)
-        if vectors is None:
-            return None
         matrix = np.asarray(vectors, dtype=np.float32)
         self.stats.build_seconds = time.time() - started
         self.stats.cache_state = "rebuilt"
@@ -432,8 +434,18 @@ class DocRetriever:
     # -- encoding ----------------------------------------------------------
 
     def _encode_query(self, query: str):
-        """Returns (backend, model identity, vector), or None."""
+        """Returns (backend, model identity, vector).
+
+        Raises AzureEmbeddingError if the encoder is unavailable.
+        """
         if self.embedder is not None:
+            # ---- LOCAL MODEL DISABLED -------------------------------------
+            # The Azure-primary / local-fallback branch used to live here. To
+            # restore it: re-add `local_embedder_factory` to this dataclass and
+            # fall through to it when the Azure call below raises. The model
+            # wrapper is untouched in sps/embedding.py, as are the TIER2_LOCAL_*
+            # thresholds above.
+            # ---------------------------------------------------------------
             detail = getattr(
                 getattr(self.embedder, "settings", None),
                 "model_name",
@@ -441,86 +453,35 @@ class DocRetriever:
             )
             self.stats.backend = LOCAL_BACKEND
             self.stats.backend_detail = detail
-            self._local = self.embedder
             return LOCAL_BACKEND, f"local:{detail}", self.embedder.embed_query(query)
 
-        if self.force_backend != LOCAL_BACKEND:
-            azure = self._try_azure([query])
-            if azure is not None:
-                settings, vectors = azure
-                self.stats.backend = AZURE_BACKEND
-                self.stats.backend_detail = settings.deployment
-                return AZURE_BACKEND, f"azure:{settings.deployment}", vectors[0]
-
-        try:
-            embedder = self._build_local()
-            detail = getattr(
-                getattr(embedder, "settings", None), "model_name", type(embedder).__name__
-            )
-            vector = embedder.embed_query(query)
-        except Exception as exc:
-            logger.error("Tier 2 could not encode the query: %s", exc)
-            self.stats.fallback_reason = str(exc)
-            return None
-        self._local = embedder
-        self.stats.backend = LOCAL_BACKEND
-        self.stats.backend_detail = detail
-        return LOCAL_BACKEND, f"local:{detail}", vector
+        settings, vectors = self._embed_azure([query])
+        self.stats.backend = AZURE_BACKEND
+        self.stats.backend_detail = settings.deployment
+        return AZURE_BACKEND, f"azure:{settings.deployment}", vectors[0]
 
     def _encode_passages(self, texts: list[str], backend: str):
-        """Encode the corpus with the backend the query already chose.
+        """Encode the corpus with the backend the query already used.
 
-        Never re-decides. If the query went through Azure and the corpus batch
-        then failed, falling back to the local model here would rank an Azure
-        query against local vectors -- a number between -1 and 1 that is not a
-        similarity.
+        Never re-decides. A corpus encoded by a different model than the query
+        would be ranked by a dot product between two unrelated spaces -- a
+        number between -1 and 1 that is not a similarity.
         """
         if backend == AZURE_BACKEND:
-            azure = self._try_azure(texts)
-            if azure is None:
-                logger.error(
-                    "Tier 2: the query encoded via Azure but the corpus batch failed; "
-                    "abandoning Tier 2 rather than mixing embedding spaces."
-                )
-                return None
-            return azure[1]
-
+            return self._embed_azure(texts)[1]
         # Whatever encoded the query encodes the corpus. Building a second
         # embedder here is how a 128-dim query ends up multiplied against a
         # 384-dim matrix.
-        embedder = self.embedder or getattr(self, "_local", None) or self._build_local()
-        try:
-            return embedder.embed_passages(texts)
-        except Exception as exc:
-            logger.error("Tier 2 could not encode the corpus: %s", exc)
-            self.stats.fallback_reason = str(exc)
-            return None
+        return self.embedder.embed_passages(texts)
 
-    def _try_azure(self, texts: list[str]):
-        """Returns (settings, vectors), or None to mean "fall back"."""
+    def _embed_azure(self, texts: list[str]):
+        """Returns (settings, vectors). Raises rather than falling back."""
         from ..config import AzureEmbeddingSettings
+        from ..embedding import AzureEmbedder, AzureEmbeddingNotConfigured
 
         settings = self.azure_settings or AzureEmbeddingSettings.from_env()
         if not settings.configured:
-            reason = f"not configured ({', '.join(settings.missing())})"
-            if not self.stats.fallback_reason:
-                logger.warning("AZURE_EMBEDDING_FAILED_FALLING_BACK: %s", reason)
-                self.stats.fallback_reason = reason
-            return None
-
-        from ..embedding import AzureEmbedder, AzureEmbeddingError
-
-        try:
-            return settings, AzureEmbedder(settings).embed_batch(texts)
-        except AzureEmbeddingError as exc:
-            logger.warning("AZURE_EMBEDDING_FAILED_FALLING_BACK: %s", exc)
-            self.stats.fallback_reason = str(exc)
-            return None
-
-    def _build_local(self) -> Embedder:
-        if self.local_embedder_factory is not None:
-            return self.local_embedder_factory()
-        from ..config import EmbeddingSettings
-        from ..embedding import BGEEmbedder
-
-        return BGEEmbedder(EmbeddingSettings.from_env())
+            raise AzureEmbeddingNotConfigured(
+                "Azure embeddings are not configured: " + ", ".join(settings.missing())
+            )
+        return settings, AzureEmbedder(settings).embed_batch(texts)

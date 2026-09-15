@@ -41,10 +41,19 @@ data/0250_docs/
 
 ## Before you trust the scores
 
-`TIER2_LOCAL_THRESHOLD` is 0.62, measured against the three-document demo corpus
-in `samples/0250_docs/`. **Re-measure it once the real standards are loaded.**
-A larger corpus has more chances for an irrelevant section to score highly, so
-the top score for an uncovered defect rises with corpus size — on the demo set
-it peaks at 0.5944, which leaves only 0.026 of headroom.
+`TIER2_AZURE_THRESHOLD` is **0.35, and has never been measured** — it was
+derived from the Tier-1 Azure figure, itself a guess, scaled by a ratio measured
+on the now-disabled local encoder. It is the number that actually gates your
+runs.
+
+`TIER2_LOCAL_THRESHOLD` (0.62) *was* measured, against the three-document demo
+corpus in `samples/0250_docs/`, but it belongs to the local encoder and is
+dormant.
+
+**Measure before trusting either.** A larger corpus has more chances for an
+irrelevant section to score highly, so the top score for an uncovered defect
+rises with corpus size — on the demo set it peaked at 0.5944 against a 0.62
+gate, leaving only 0.026 of headroom. `python -m scripts.verify_embedder` gives
+a first reading against your own deployment in seconds.
 
 `scripts/run_eval_batch.py` reports `Tier2_Score` on every row for exactly this.

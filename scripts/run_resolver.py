@@ -43,9 +43,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# The model, its dimension and the threshold are all properties of the
-# embedding space, defined once beside the code that owns them.
-from sps.config import DEFAULT_DIMENSION, DEFAULT_MODEL_NAME as DEFAULT_MODEL
+# A threshold is a property of the embedding space, defined once beside the
+# code that owns it. The LOCAL_* pair is dormant while the local encoder is out
+# of the pipeline, and is imported so the constants stay in one place.
 from sps.retrieval.in_memory import (
     AZURE_EMBEDDING_THRESHOLD,
     LOCAL_EMBEDDING_THRESHOLD,
@@ -129,7 +129,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--threshold",
         type=float,
         default=None,
-        help=f"Confidence threshold (default {DEFAULT_THRESHOLD}, or SPS_CONFIDENCE_THRESHOLD)",
+        help=f"Tier-1 confidence threshold (default {AZURE_EMBEDDING_THRESHOLD} for "
+        "Azure embeddings, or SPS_CONFIDENCE_THRESHOLD)",
     )
     parser.add_argument(
         "--tier2-threshold",
@@ -302,8 +303,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
 
     from sps.config import LLMSettings
     from sps.contracts import IncomingTicket
-    from sps.embedding import BGEEmbedder
-    from sps.config import EmbeddingSettings
+    from sps.embedding import AzureEmbeddingError, AzureEmbeddingNotConfigured
     from sps.generation import ActorCriticLoop, AzureOpenAIChatClient
     from sps.retrieval.in_memory import HistoryError, InMemoryRetriever
     from sps.validators import normalize_part_number, validate_ticket
@@ -353,18 +353,12 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         raw_threshold = os.environ.get("SPS_CONFIDENCE_THRESHOLD", "").strip()
         threshold_override = float(raw_threshold) if raw_threshold else None
 
-    def local_embedder() -> BGEEmbedder:
-        """Built only if the Azure path fails. Constructing it is free; the
-        ~15 s of torch import and weight loading happens on first encode, which
-        is why nothing calls this on a successful primary run."""
-        return BGEEmbedder(
-            EmbeddingSettings(
-                model_name=os.environ.get("SPS_EMBEDDING_MODEL", "").strip() or DEFAULT_MODEL,
-                dimension=int(
-                    os.environ.get("SPS_EMBEDDING_DIM", "").strip() or DEFAULT_DIMENSION
-                ),
-            )
-        )
+    # ---- LOCAL MODEL DISABLED ------------------------------------------
+    # A `local_embedder()` factory was passed to both retrievers here, so an
+    # Azure failure fell back to bge-small. Restoring it means re-adding that
+    # factory and the `local_embedder_factory=` arguments below; the wrapper
+    # itself is untouched in sps/embedding.py.
+    # ---------------------------------------------------------------------
 
     def _threshold(name: str, fallback: float) -> float:
         raw = os.environ.get(name, "").strip()
@@ -372,7 +366,6 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
 
     retriever = InMemoryRetriever(
         history_path=history_path,
-        local_embedder_factory=local_embedder,
         confidence_threshold=threshold_override,
         azure_threshold=_threshold("AZURE_EMBEDDING_THRESHOLD", AZURE_EMBEDDING_THRESHOLD),
         local_threshold=_threshold("LOCAL_EMBEDDING_THRESHOLD", LOCAL_EMBEDDING_THRESHOLD),
@@ -382,6 +375,17 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         candidates = retriever.retrieve(ticket)
     except HistoryError as exc:
         return ResolveOutcome(CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT)
+    except AzureEmbeddingNotConfigured as exc:
+        # Exit 2, not 1. No number of retries produces an API key, and a robot
+        # cycling through fifty of them only delays the human who has to go and
+        # set one.
+        logger.error("embedding is not configured: %s", exc)
+        return ResolveOutcome(CODE_INFRASTRUCTURE, str(exc), EXIT_BAD_INPUT)
+    except AzureEmbeddingError as exc:
+        # Transient: network, timeout, throttling, a bad response. Worth a
+        # retry, and there is no longer a local encoder to absorb it.
+        logger.error("embedding failed: %s", exc)
+        return ResolveOutcome(CODE_INFRASTRUCTURE, str(exc), EXIT_INFRASTRUCTURE)
 
     stats = retriever.stats
     logger.info("retrieval stats: %s", stats.as_dict())
@@ -462,8 +466,6 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         loop=loop,
         tier1_detail=tier1_detail,
         tier1_stage=tier1_stage,
-        tier1_backend=stats.backend,
-        local_embedder_factory=local_embedder,
         measured=measured,
     )
 
@@ -476,14 +478,13 @@ def _resolve_from_docs(
     loop,
     tier1_detail: str,
     tier1_stage: int,
-    tier1_backend: str,
-    local_embedder_factory,
     measured: dict,
 ) -> ResolveOutcome:
     """Tier 2. Reached only once Tier 1 has produced nothing usable."""
     import asyncio
     import os
 
+    from sps.embedding import AzureEmbeddingError, AzureEmbeddingNotConfigured
     from sps.generation.actor_critic import documentation_grounding
     from sps.retrieval.doc_cache import DocRetriever
 
@@ -532,13 +533,9 @@ def _resolve_from_docs(
 
     docs = DocRetriever(
         docs_dir=docs_dir,
-        local_embedder_factory=local_embedder_factory,
         confidence_threshold=tier2_override,
         azure_threshold=_threshold("TIER2_AZURE_THRESHOLD", TIER2_AZURE_THRESHOLD),
         local_threshold=_threshold("TIER2_LOCAL_THRESHOLD", TIER2_LOCAL_THRESHOLD),
-        # Tier 1 already discovered whether Azure answers. Probing again would
-        # buy nothing and cost another full timeout.
-        force_backend=tier1_backend or None,
     )
 
     if not docs.available:
@@ -551,10 +548,21 @@ def _resolve_from_docs(
 
     try:
         chunks = docs.retrieve(ticket)
+    except AzureEmbeddingNotConfigured as exc:
+        logger.error("Tier 2 embedding is not configured: %s", exc)
+        return ResolveOutcome(CODE_INFRASTRUCTURE, str(exc), EXIT_BAD_INPUT, **measured)
+    except AzureEmbeddingError as exc:
+        # Tier 1 embedded successfully or the run would have ended already, so
+        # Azure going down between the tiers is a genuine outage -- not a
+        # corpus the robot should stop retrying.
+        logger.error("Tier 2 embedding failed: %s", exc)
+        return ResolveOutcome(
+            CODE_INFRASTRUCTURE, str(exc), EXIT_INFRASTRUCTURE, **measured
+        )
     except Exception as exc:
-        # Tier 2 is a fallback. A corpus that cannot be read must not turn a
-        # legitimate Tier-1 "no resolution" into an infrastructure fault that
-        # the robot then retries forever.
+        # A corpus that cannot be PARSED is different: Tier 2 is a fallback, and
+        # an unreadable document must not turn a legitimate Tier-1 "no
+        # resolution" into a fault the robot retries forever.
         logger.error("Tier 2 failed; reporting the Tier-1 outcome: %s", exc)
         return _no_resolution(f"Tier 2 unavailable: {exc}", STAGE_NOTHING)
 

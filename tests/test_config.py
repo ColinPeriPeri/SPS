@@ -25,12 +25,16 @@ def test_settings_load_from_a_bare_environment(monkeypatch):
     assert isinstance(LLMSettings.from_env().request_timeout, float)
 
 
-def test_the_default_model_is_the_one_the_resolver_uses():
-    """Config and the CLI must not drift apart on the model."""
+def test_the_local_model_settings_survive_being_out_of_the_pipeline():
+    """The bge-small defaults stay single-sourced in config even though nothing
+    reaches them: the resolver no longer names a local model at all, so config
+    is now the only place that does."""
     import scripts.run_resolver as resolver
 
-    assert EmbeddingSettings().model_name == resolver.DEFAULT_MODEL
-    assert EmbeddingSettings().dimension == resolver.DEFAULT_DIMENSION == 384
+    assert EmbeddingSettings().model_name == "BAAI/bge-small-en-v1.5"
+    assert EmbeddingSettings().dimension == 384
+    # The resolver used to re-declare both to build its fallback factory.
+    assert not hasattr(resolver, "DEFAULT_MODEL")
 
 
 def test_inference_settings_are_deterministic_by_default():
