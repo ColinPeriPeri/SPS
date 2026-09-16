@@ -243,9 +243,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Same .env the resolver reads. Without this the script sees only real
+    # environment variables and reports every credential missing on a machine
+    # whose .env is perfectly well filled in.
+    from sps.config import load_env_file
+
+    env_file = load_env_file()
+
     checks = Checks()
     if not args.local:
-        print("Checking the Azure embedding deployment.\n")
+        print("Checking the Azure embedding deployment.")
+        print(f"  .env: {env_file if env_file else 'not found -- using the environment only'}\n")
         verify_azure(checks, args.quiet)
         return _report(checks)
 

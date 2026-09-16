@@ -178,20 +178,12 @@ def read_ticket(path: Path) -> dict[str, Any]:
 
 
 def _load_dotenv() -> None:
-    """Best-effort .env load.
+    """Load the deployment's .env. Kept as a name here because the batch
+    evaluator imports it and tests patch it; the logic lives in sps.config so
+    every entry point reaches the same one."""
+    from sps.config import load_env_file
 
-    A process launched by a UiPath robot does not necessarily inherit an
-    interactive shell's environment, so the deployment's .env is read here.
-    Real environment variables always win (`override=False`).
-    """
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"):
-        if candidate.exists():
-            load_dotenv(candidate, override=False)
-            return
+    load_env_file()
 
 
 @dataclass(frozen=True, slots=True)

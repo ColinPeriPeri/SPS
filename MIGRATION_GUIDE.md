@@ -202,8 +202,20 @@ Before any ticket, confirm the encoder works and see what its numbers look like:
 python -m scripts.verify_embedder
 ```
 
-It checks reachability, vector dimension, unit length and batch ordering, then
-scores real SPS text against both live gates and ends with a suggested range:
+Its first two lines tell you whether it found your `.env` at all:
+
+```
+Checking the Azure embedding deployment.
+  .env: D:\PRB\SPS\.env
+```
+
+`not found -- using the environment only` there means the file is missing or
+sits somewhere other than the working directory or the project root. Everything
+below it will then report missing credentials no matter what you typed.
+
+It goes on to check reachability, vector dimension, unit length and batch
+ordering, then scores real SPS text against both live gates and ends with a
+suggested range:
 
 ```
   Suggested gates from this run: Tier 1 between 0.1xxx and 0.8xxx,
@@ -430,6 +442,7 @@ unambiguous.
 | `Problem description is N characters; at least 10 required.` | The description column is blank or nearly so | Check the ticket's column name — `Problem_Description`, matched case-insensitively |
 | `NO_MATCHES` on a part you know exists | Part numbers differ after normalisation (`.strip().upper()`, invisible characters removed) | `Reason` reports how many rows matched out of how many scanned — usually a stray character in one source |
 | `INFRASTRUCTURE_ERROR`, exit **2**, on every ticket | One of the three `AZURE_EMBEDDING_*` values is missing | The `Reason` names exactly which. There is no local fallback to absorb it any more |
+| Credentials are set but everything still reports them missing | `.env` is not where the tools look: the working directory, or the project root | `verify_embedder`'s second line prints the file it read, or `not found`. `copy .env.example .env` in the project root |
 | `INFRASTRUCTURE_ERROR`, exit **1**, on every ticket | The deployment name is wrong, or the endpoint is unreachable | Run `python -m scripts.verify_embedder` — it isolates reachability from configuration |
 | Everything is gated, nothing resolves | 0.50 is a guess and may be far from right for your deployment | `python -m scripts.verify_embedder` suggests a range; set `SPS_CONFIDENCE_THRESHOLD` |
 | Nothing is gated, everything resolves | Same, in the other direction — likely an `ada-002` deployment, where even unrelated text scores above 0.7 | Same check. If the "unrelated record is blocked" line FAILS, raise the threshold |

@@ -42,6 +42,46 @@ DEFAULT_EMBEDDING_API_VERSION = "2024-10-21"
 DEFAULT_EMBEDDING_TIMEOUT = 20.0
 
 
+def load_env_file(start=None):
+    """Best-effort .env load. Returns the Path that was read, or None.
+
+    It lives here, next to the settings that read the variables, rather than
+    inside one entry point -- `verify_embedder` was written later, did not know
+    to call the resolver's private copy, and spent a migration reporting every
+    credential as missing while the resolver read the same file perfectly well.
+
+    A process launched by a UiPath robot does not necessarily inherit an
+    interactive shell's environment, which is why the file is read at all. Real
+    environment variables always win (`override=False`), so a machine-level
+    setting is never overridden by a stale checkout.
+    """
+    from pathlib import Path
+
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return None
+
+    candidates = [
+        Path(start) / ".env" if start else Path.cwd() / ".env",
+        # The project root, so running from anywhere still finds the
+        # deployment's file.
+        Path(__file__).resolve().parents[1] / ".env",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            load_dotenv(candidate, override=False)
+            return candidate
+    return None
+
+
+def env_file_candidates():
+    """Where load_env_file would look, for error messages that can be acted on."""
+    from pathlib import Path
+
+    return [Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"]
+
+
 def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
 
