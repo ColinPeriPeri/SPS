@@ -706,7 +706,8 @@ def test_no_tier2_restores_the_single_tier_behaviour(tmp_path, tiered_llm):
     status = read_sheet(out / "status.xlsx").iloc[0]
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "disabled by --no-tier2" in status["Reason"]
-    assert not (out / "output.xlsx").exists()
+    # A concluded run, so it still leaves a row -- one that says no solution.
+    assert read_sheet(out / "output.xlsx").iloc[0]["Resolution_Source"] == "NONE"
 
 
 def test_a_tier1_outage_does_not_fall_through_to_tier2(tmp_path, tiered_llm):

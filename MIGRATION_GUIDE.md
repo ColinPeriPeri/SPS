@@ -422,7 +422,9 @@ Within exit 0, branch on `Status_Code`: `SUCCESS_HISTORICAL` and
 a human reviewer, and `INVALID_INPUT` faults the item.
 
 `status.xlsx` is written **always**, including on an early abort or an unhandled
-exception. `output.xlsx` appears only on `PASS`. Both are deleted before work
+exception. `output.xlsx` appears whenever a verdict was reached, including
+"no solution" — so there is one row per ticket to merge, and a missing row means
+the run did not finish rather than that it found nothing. Both are deleted before work
 starts, so a process killed outright leaves neither: "`status.xlsx` missing" is
 unambiguous.
 

@@ -115,7 +115,7 @@ python -m scripts.run_resolver --ticket-file ticket.xlsx \
 | Output | When | Columns |
 | --- | --- | --- |
 | `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason`, `Embedding_Model` |
-| `output.xlsx` | Only when `Status` is PASS | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source` |
+| `output.xlsx` | Whenever the run **reached a conclusion** (exit 0), including "no solution". Never on exit 1 or 2 | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source` |
 
 ### Status codes
 

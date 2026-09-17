@@ -336,11 +336,63 @@ def test_success_writes_both_workbooks(tmp_path, passing_llm):
     assert result.iloc[0]["Confidence_Score"].endswith("%")
 
 
-def test_failure_writes_status_only(tmp_path, passing_llm):
+def test_a_concluded_failure_still_writes_a_result_row(tmp_path, passing_llm):
+    """A caller merges output.xlsx into its own records, so every run that
+    reached a conclusion needs a row. Without one, "nothing matched" and "this
+    ticket was never processed" look identical downstream."""
     code, out = run_cli(tmp_path, part="")
+
     assert code == resolver.EXIT_OK
     assert (out / "status.xlsx").exists()
-    assert not (out / "output.xlsx").exists()
+    assert (out / "output.xlsx").exists()
+
+    row = read_sheet(out / "output.xlsx").iloc[0]
+    assert row["AI_Recommendation"] == "Solution not found."
+    assert row["Resolution_Source"] == "NONE"
+    assert row["Referenced_Sources"] == ""
+
+
+def test_the_unresolved_row_carries_the_reason(tmp_path, passing_llm):
+    """Justification repeats the status Reason, so output.xlsx alone says why."""
+    _, out = run_cli(tmp_path, part="0099-99999")
+
+    row = read_sheet(out / "output.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx").iloc[0]
+    assert "No usable history for part 0099-99999" in row["Justification"]
+    assert row["Justification"] in status["Reason"]
+
+
+def test_nothing_scored_leaves_the_confidence_blank(tmp_path, passing_llm):
+    """An unknown part never reaches the encoder. Reporting 0% would read as a
+    near miss that scored badly, which is a different finding."""
+    _, out = run_cli(tmp_path, part="0099-99999")
+
+    assert read_sheet(out / "output.xlsx").iloc[0]["Confidence_Score"] == ""
+
+
+def test_a_gated_ticket_reports_the_score_it_reached(tmp_path, passing_llm):
+    """The opposite case: something was measured, and how close it came is the
+    whole reason a reviewer would look at the row."""
+    _, out = run_cli(
+        tmp_path,
+        rows=[row("SPS-1001", problem=NEAR_PROBLEM)],
+        threshold=0.99,
+    )
+
+    result = read_sheet(out / "output.xlsx").iloc[0]
+    assert result["AI_Recommendation"] == "Solution not found."
+    assert result["Confidence_Score"].endswith("%")
+    assert result["Confidence_Score"] != "0%"
+
+
+def test_a_success_still_writes_the_real_recommendation(tmp_path, passing_llm):
+    """The row is only synthesised when there is nothing to report."""
+    _, out = run_cli(tmp_path)
+
+    row_ = read_sheet(out / "output.xlsx").iloc[0]
+    assert row_["AI_Recommendation"] != "Solution not found."
+    assert row_["Resolution_Source"] == "HISTORICAL_DATA"
+    assert row_["Referenced_Sources"] == "SPS-1001"
 
 
 def test_unhandled_error_still_writes_status(tmp_path, monkeypatch):
@@ -353,15 +405,40 @@ def test_unhandled_error_still_writes_status(tmp_path, monkeypatch):
     assert status["Status_Code"] == "INFRASTRUCTURE_ERROR"
 
 
-def test_stale_workbooks_are_cleared_before_work(tmp_path, passing_llm):
+def test_a_stale_result_row_is_replaced_not_left(tmp_path, passing_llm):
+    """The previous run's answer must never be read as this one's."""
     out = tmp_path / "out"
     out.mkdir()
     from service.excel_output import RESULT_COLUMNS, write_rows
 
     write_rows(out / "output.xlsx", RESULT_COLUMNS, [{"Part_Number": "STALE"}])
-    run_cli(tmp_path, part="")            # a run that must not produce output.xlsx
+    run_cli(tmp_path, part="")
 
+    row_ = read_sheet(out / "output.xlsx").iloc[0]
+    assert row_["Part_Number"] != "STALE"
+    assert row_["AI_Recommendation"] == "Solution not found."
+
+
+def test_an_infrastructure_fault_leaves_no_result_row(tmp_path, monkeypatch, passing_llm):
+    """It reached no conclusion. Writing "Solution not found." for an Azure
+    outage would record a verdict the pipeline never formed, and the robot is
+    meant to retry it -- so a stale row from a previous run is cleared too."""
+    out = tmp_path / "out"
+    out.mkdir()
+    from service.excel_output import RESULT_COLUMNS, write_rows
+
+    write_rows(out / "output.xlsx", RESULT_COLUMNS, [{"Part_Number": "STALE"}])
+    monkeypatch.setattr(
+        resolver, "resolve",
+        lambda *a: resolver.ResolveOutcome(
+            resolver.CODE_INFRASTRUCTURE, "Azure unreachable", resolver.EXIT_INFRASTRUCTURE
+        ),
+    )
+    code, _ = run_cli(tmp_path)
+
+    assert code == resolver.EXIT_INFRASTRUCTURE
     assert not (out / "output.xlsx").exists()
+    assert (out / "status.xlsx").exists()
 
 
 def test_status_codes_cover_each_outcome(tmp_path, passing_llm):

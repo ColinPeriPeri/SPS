@@ -14,7 +14,9 @@ REM
 REM  Writes into <output-dir>:
 REM    status.xlsx  ALWAYS, including an early abort or an unhandled exception.
 REM                 Execution_Timestamp, Status, Status_Code, Reason.
-REM    output.xlsx  only when Status is PASS.
+REM    output.xlsx  whenever the run reached a conclusion, including "no
+REM                 solution" -- so there is one row per ticket to merge. NOT
+REM                 written on exit 1 or 2, where no verdict was formed.
 REM
 REM  Both are cleared before work starts, so if this process is killed outright
 REM  the caller finds neither: "status.xlsx missing" is unambiguous.

@@ -10,9 +10,17 @@ Writes two workbooks into --output-dir:
                 Embedding_Model. The last names the encoder that actually ran,
                 so support can see how often the Azure fallback fires; it is
                 blank when the run aborted before anything was encoded.
-  output.xlsx   Only when Status is PASS.
-                Part_Number, AI_Recommendation, Justification,
-                Confidence_Score, Referenced_Sources, Resolution_Source.
+  output.xlsx   Whenever the run REACHED A CONCLUSION, which includes
+                concluding that neither tier had an answer. Part_Number,
+                AI_Recommendation, Justification, Confidence_Score,
+                Referenced_Sources, Resolution_Source. On a failure the
+                recommendation is "Solution not found." and Resolution_Source
+                is NONE -- a caller merging this into its own records needs one
+                row per ticket, and a missing row cannot be told apart from a
+                ticket that was never processed.
+
+                NOT written for an infrastructure fault (exit 1 or 2): the run
+                formed no verdict, and the robot is expected to retry it.
 
 Both are written atomically, and both are cleared before any work starts, so a
 process killed outright leaves no stale result to be mistaken for this run's.
@@ -38,7 +46,7 @@ import argparse
 import logging
 import sys
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -214,6 +222,13 @@ class ResolveOutcome:
     tier2_chunks: int = 0
     tier2_cache_state: str = ""
     resolution_source: str = ""
+    # Everything main() needs to write output.xlsx, so that both workbooks are
+    # produced in one place. Blank part number means the run stopped before the
+    # ticket could be read.
+    part_number: str = ""
+    # The PipelineResult on a success; None when there is no recommendation, in
+    # which case main() builds the "Solution not found." row.
+    result: Any = None
 
 
 def _reason_with_marker(reason: str, embedding_model: str) -> str:
@@ -265,6 +280,29 @@ def write_status(output_dir: Path, code: str, reason: str, embedding_model: str 
         ],
     )
     logger.info("status: %s / %s [%s] -- %s", status, code, embedding_model or "none", reason)
+
+
+def unresolved_result(outcome: "ResolveOutcome"):
+    """The result row for a run that concluded without a recommendation.
+
+    A caller merging output.xlsx into its own records needs one row per ticket.
+    Without this, "no historical data for this part" produced no row at all, and
+    a ticket that found nothing was indistinguishable from a ticket that never
+    ran -- which is exactly the case a reviewer most needs to see.
+    """
+    from sps.contracts import SOLUTION_NOT_FOUND, SOURCE_NONE, PipelineResult, score_to_percent
+
+    # Blank, not 0%, when nothing was ever scored. An unknown part and a near
+    # miss at 42% are different findings, and "0%" reads as the second one.
+    # Reason carries both tiers' scores in full either way.
+    confidence = f"{score_to_percent(outcome.top_score)}%" if outcome.top_score > 0 else ""
+    return PipelineResult(
+        ai_recommendation=SOLUTION_NOT_FOUND,
+        justification=outcome.reason,
+        confidence=confidence,
+        referenced_sources=[],
+        resolution_source=SOURCE_NONE,
+    )
 
 
 def write_output(output_dir: Path, part_number: str, result) -> None:
@@ -335,7 +373,9 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     # Gate before anything expensive: no file scan, no model load, no LLM.
     invalid = validate_ticket(ticket.part_number, ticket.problem_description)
     if invalid:
-        return ResolveOutcome(invalid.code, invalid.reason, EXIT_OK)
+        return ResolveOutcome(
+            invalid.code, invalid.reason, EXIT_OK, part_number=part_number
+        )
 
     # An explicit --threshold (or SPS_CONFIDENCE_THRESHOLD) overrides both
     # per-model defaults; otherwise the engine picks the one belonging to
@@ -384,6 +424,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     model = _describe_backend(stats)
 
     measured = dict(
+        part_number=part_number,
         embedding_model=model,
         top_score=stats.top_score,
         threshold_used=stats.threshold_used,
@@ -420,13 +461,13 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
                 top_score=stats.top_score,
                 candidates=candidates,
             )
-            write_output(output_dir, part_number, result)
             return ResolveOutcome(
                 CODE_SUCCESS_HISTORICAL,
                 f"Resolved from {len(candidates)} historical record(s) at "
                 f"{result.confidence} confidence.",
                 EXIT_OK,
                 resolution_source=result.resolution_source,
+                result=result,
                 **measured,
             )
 
@@ -628,13 +669,13 @@ def _resolve_from_docs(
         top_score=tier2_stats.top_score,
         chunks=chunks,
     )
-    write_output(output_dir, part_number, result)
     return ResolveOutcome(
         CODE_SUCCESS_DOC,
         f"{tier1_detail} Resolved instead from {len(chunks)} 0250 section(s) at "
         f"{result.confidence} confidence: {', '.join(result.referenced_sources)}.",
         EXIT_OK,
         resolution_source=result.resolution_source,
+        result=result,
         **measured,
         **tier2_measured,
     )
@@ -672,6 +713,32 @@ def main(argv: list[str] | None = None) -> int:
             "Unhandled error; see stderr for the traceback.",
             EXIT_INFRASTRUCTURE,
         )
+
+    # A run that reached a conclusion always leaves a result row, even when the
+    # conclusion is "no solution": the caller merges output.xlsx into its own
+    # records, and a missing row cannot be told apart from a ticket that was
+    # never processed.
+    #
+    # An infrastructure fault writes none. It reached no conclusion, the robot
+    # is expected to retry it, and recording "Solution not found." for an Azure
+    # outage would enter a verdict the pipeline never actually formed.
+    if outcome.exit_code == EXIT_OK:
+        try:
+            write_output(
+                output_dir,
+                outcome.part_number,
+                outcome.result if outcome.result is not None else unresolved_result(outcome),
+            )
+        except Exception:
+            logger.error("Could not write %s:\n%s", OUTPUT_FILE, traceback.format_exc())
+            # Leave no half-written workbook behind to be merged as a result.
+            (output_dir / OUTPUT_FILE).unlink(missing_ok=True)
+            outcome = replace(
+                outcome,
+                code=CODE_INFRASTRUCTURE,
+                reason=f"Could not write {OUTPUT_FILE}; see stderr for the traceback.",
+                exit_code=EXIT_INFRASTRUCTURE,
+            )
 
     try:
         write_status(output_dir, outcome.code, outcome.reason, outcome.embedding_model)

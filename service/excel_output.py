@@ -1,7 +1,8 @@
 """Excel handoff for the UiPath Performer.
 
-The resolver hands back two workbooks: a status sheet written on every run and
-a result sheet written only on success.
+The resolver hands back two workbooks: a status sheet written on every run, and
+a result sheet written whenever the run reached a conclusion -- including the
+conclusion that neither tier had an answer.
 
 pandas and openpyxl are imported lazily, so importing this module -- and
 therefore the CLI -- costs nothing and requires nothing.
@@ -32,7 +33,7 @@ def _fit_cell(value: str) -> str:
 
 # --------------------------------------------------------------------------
 # Resolver workbooks: a status sheet written on every run, and a result sheet
-# written only on success.
+# written whenever a verdict was reached, "Solution not found." included.
 # --------------------------------------------------------------------------
 
 # Embedding_Model is appended LAST on purpose: a caller reading the first four

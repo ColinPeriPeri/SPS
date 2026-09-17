@@ -119,6 +119,9 @@ def score_to_percent(score: float) -> int:
 # differently from one derived from a written standard.
 SOURCE_HISTORICAL = "HISTORICAL_DATA"
 SOURCE_DOCUMENTATION = "0250_DOCUMENTATION"
+# The run concluded, and the conclusion was that neither tier had an answer.
+# Distinct from a blank cell, which would read as "this field was not filled in".
+SOURCE_NONE = "NONE"
 
 
 @dataclass(frozen=True, slots=True)
