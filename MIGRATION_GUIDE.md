@@ -465,6 +465,7 @@ unambiguous.
 | A 0250 document is ignored | It is a legacy `.doc`, or a `~$` lock file | The warning names it. Re-save as `.docx`; close the document if Word has it open |
 | Every 0250 citation is just the filename | The document's section titles are bold body text, not `Heading 2` | Apply Word's heading styles, then delete `data\0250_docs\0250_cache_*.npz` |
 | Tier 2 finds nothing on a defect you know is covered | 0.35 is a guess derived from another guess | Run the batch evaluator and read `Tier2_Score`, then set `SPS_TIER2_THRESHOLD` |
+| Most tickets come back `LLM_AUDIT_REJECTED` | The transferability gate is rejecting drafts that carry attachments, prior conversations or ticket numbers forward from the history | Expected where history is process boilerplate. Read `Matched_Solutions` in the bulk sheet; extend `KNOWN_TRACKING_PREFIXES` in `sps/generation/transferable.py` with your own systems |
 | `pytest` reports 1 skipped | `tests/test_real_embedder.py`, which exercises the disabled local encoder | Expected. Leave it skipped |
 
 ---

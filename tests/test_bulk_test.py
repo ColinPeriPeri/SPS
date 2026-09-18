@@ -339,3 +339,53 @@ def test_a_sheet_with_no_ticket_rows_is_refused(tmp_path):
         "--tickets", str(tickets), "--history", str(history),
         "--output", str(tmp_path / "out.xlsx"),
     ]) == bulk.EXIT_BAD_INPUT
+
+
+# ------------------------------------------------------- Matched_Solutions
+
+
+def test_the_sheet_shows_what_the_actor_was_looking_at(tmp_path, passing_llm):
+    """The commonest question about a bad answer is "what was it reading?".
+    Answering it from Referenced_Sources alone means a lookup per row."""
+    _, out = run(tmp_path, [ticket_row()])
+
+    matched = read_sheet(out).iloc[0]["Matched_Solutions"]
+    assert "SPS-1001" in matched
+    assert "Rework the weld seam" in matched
+
+
+def test_a_gated_row_shows_nothing_because_nothing_was_shown(tmp_path, passing_llm):
+    """The column means "what the Actor read", not "what nearly matched".
+
+    `retrieve()` returns only candidates that cleared the gate, so on a gated
+    row the Actor was handed nothing and the cell is honestly empty. Tier1_Score
+    still reports how close it came. Surfacing the near-miss *text* would take a
+    change in the retriever to keep the rows it discards.
+    """
+    tickets = write_tickets(tmp_path / "tickets.csv", [ticket_row()])
+    history = write_history(tmp_path / "h.xlsx", [row("SPS-1001", problem=NEAR_PROBLEM)])
+    out = tmp_path / "results.xlsx"
+
+    bulk.main([
+        "--tickets", str(tickets), "--history", str(history),
+        "--output", str(out), "--threshold", "0.99",
+    ])
+
+    result = read_sheet(out).iloc[0]
+    assert result["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
+    assert result["Matched_Solutions"] == ""
+    assert float(result["Tier1_Score"]) > 0.9, "the score still says how close"
+
+
+def test_an_unknown_part_has_nothing_to_show(tmp_path, passing_llm):
+    _, out = run(tmp_path, [ticket_row(part="0099-99999")])
+
+    assert read_sheet(out).iloc[0]["Matched_Solutions"] == ""
+
+
+def test_the_evidence_never_reaches_the_supplier_facing_sheet():
+    """output.xlsx goes to a supplier. The evidence is operational only."""
+    from service.excel_output import RESULT_COLUMNS as OUTPUT_COLUMNS
+
+    assert "Matched_Solutions" not in OUTPUT_COLUMNS
+    assert "Matched_Solutions" in bulk.RESULT_COLUMNS

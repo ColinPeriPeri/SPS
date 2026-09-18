@@ -281,3 +281,100 @@ def test_history_metadata_cannot_reach_the_actor_or_judge():
     user = build_actor_messages(TICKET, [candidate])[1]["content"]
     assert "SPS-100" in user
     assert "Rework the weld seam" in user
+
+
+# --------------------------------------------------------------------------
+# The transferability gate
+#
+# From two live tickets. Both were faithful restatements of historical
+# Solution_Text, both passed the Judge, and both reached a supplier: one citing
+# an internal work request raised for a different issue, both pointing at an
+# attachment that does not exist. The Judge checks provenance, and by that
+# measure they were correct.
+# --------------------------------------------------------------------------
+
+LEAKING_DRAFT = (
+    "1. For the feedback please see the attachment.\n"
+    "2. Per discussed, please rework as attachment shown.\n"
+    "3. After rework, please provide photos and related data.\n"
+    "4. ESW#20033465 is submitted for these issues."
+)
+CLEAN_DRAFT = "1. Rework the weld seam. 2. Provide photos and related data after rework."
+
+
+async def test_a_leaking_draft_never_reaches_the_judge():
+    """The gate runs first because it is local and free, where the Judge is a
+    paid call that had already passed this exact text."""
+    engine, client = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert not result.succeeded
+    # Three Actor calls and no Judge call: a PASS was never scripted, and the
+    # ScriptedChatClient would have raised had one been requested.
+    assert client.call_count == 3
+
+
+async def test_the_leaked_work_request_trips_the_circuit_breaker():
+    engine, _ = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.draft is None, "this must never reach a supplier"
+    assert result.attempts == 3
+    assert "ESW#20033465" in " ".join(result.critiques)
+
+
+async def test_the_failure_reason_says_which_gate_kept_failing():
+    """A reviewer reading Reason needs to tell a hallucination apart from a
+    reference carried forward: they want different follow-ups."""
+    engine, _ = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert "ESW#20033465" in result.failure_reason
+
+
+async def test_the_actor_is_told_exactly_what_to_remove():
+    engine, _ = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
+
+    result = await engine.run(TICKET, CANDIDATES)
+    critique = result.critiques[0]
+
+    assert "attachment" in critique.lower()
+    assert "Per discussed" in critique
+    # The instruction that undoes what CHECK 1 taught it.
+    assert "does not make these transferable" in critique
+
+
+async def test_a_rewrite_that_drops_the_references_passes():
+    """The gate is a rewrite prompt, not only a refusal."""
+    engine, client = loop(actor(LEAKING_DRAFT), actor(CLEAN_DRAFT), PASS)
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.succeeded
+    assert result.attempts == 2
+    assert "ESW" not in result.draft.recommendation
+    assert "attachment" not in result.draft.recommendation.lower()
+
+
+async def test_the_rejected_draft_is_shown_to_the_actor_on_the_retry():
+    engine, client = loop(actor(LEAKING_DRAFT), actor(CLEAN_DRAFT), PASS)
+
+    await engine.run(TICKET, CANDIDATES)
+
+    retry = client.calls[1][-1]["content"]
+    assert "ESW#20033465" in retry, "the actor must see what it wrote"
+    assert "AUDITOR CRITIQUE" in retry
+
+
+async def test_a_clean_draft_is_untouched_by_the_gate():
+    """The gate must not cost a round trip on text that was always fine."""
+    engine, client = loop(actor(CLEAN_DRAFT), PASS)
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.succeeded
+    assert result.attempts == 1
+    assert client.call_count == 2, "one Actor call, one Judge call"

@@ -21,6 +21,7 @@ from .prompts import (
     build_tier2_actor_messages,
     build_tier2_judge_messages,
 )
+from .transferable import critique_for, untransferable_references
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,26 @@ class ActorCriticLoop:
                     tier=grounding.tier,
                 )
 
+            # Deterministic gate, deliberately BEFORE the Judge. It is local and
+            # free where the Judge is a paid network call, and unlike the Judge
+            # it cannot talk itself round: CHECK 1 has just taught the model
+            # that anything drawn from the source is acceptable, which is
+            # precisely why "ESW#20033465 is submitted for these issues" passed
+            # an audit it should have failed. A rewrite is fed back through the
+            # same critique path the Judge uses, so the circuit breaker still
+            # bounds the retries.
+            leaks = untransferable_references(draft.recommendation)
+            if leaks:
+                logger.info(
+                    "Ticket %r attempt %d: untransferable reference(s): %s",
+                    ticket.sps_id, attempt, "; ".join(leaks),
+                )
+                feedback = critique_for(leaks)
+                critiques.append(feedback)
+                critique = feedback
+                previous_draft = draft.recommendation
+                continue
+
             try:
                 verdict = await self._judge(ticket, grounding, draft.recommendation)
             except LLMError as exc:
@@ -204,6 +225,7 @@ class ActorCriticLoop:
             critiques=critiques,
             failure_reason=(
                 f"Draft failed the compliance audit on all {max_attempts} attempts."
+                + (f" Last critique: {critiques[-1]}" if critiques else "")
             ),
             tier=grounding.tier,
         )

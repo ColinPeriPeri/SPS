@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-250 tests in about six seconds, none of which needs a server, an Azure key or
+297 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -83,6 +83,7 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/retrieval/doc_cache.py` | **Tier 2** — hash-keyed vector cache, enriched query, search |
 | `sps/embedding.py` | Azure encoder; the BGE wrapper, disabled but intact |
 | `sps/generation/` | Actor / Judge loop, schema-constrained |
+| `sps/generation/transferable.py` | The deterministic gate on record-specific references |
 | `sps/schemas.py` | Pydantic response schemas for the LLM |
 | `sps/contracts.py` | Ticket and result shapes |
 | `sps/output.py` | Builds the resolved recommendation |
@@ -335,6 +336,76 @@ as one that did not.
 Metadata boosting is gone from this path entirely: part number is an exact
 filter, and the other boosts existed to discriminate within a mixed-part result
 set that no longer occurs. `Confidence_Score` is the cosine alone.
+
+---
+
+## Transferability: the third gate
+
+Grounding answers *"did this text come from the source?"*. It does not answer
+*"is it still true of the ticket in front of us?"*, and those have different
+answers. Two live recommendations made the gap concrete:
+
+```
+1. See the feedback in the attachment.
+2. Per discussed, rework as attachment shown.
+...
+4. ESW#20033465 is submitted for these issues.
+```
+
+Neither is a hallucination. Both restate historical `Solution_Text` accurately,
+so `CHECK 1` passed them. Neither tells the supplier to use an internal system,
+so `CHECK 2` passed them. Both were wrong anyway:
+
+- `ESW#20033465` is an internal work request raised for a **different** issue.
+- There is no attachment — `output.xlsx` is text.
+- No discussion has taken place with this supplier.
+
+A whole class of facts is true of the *record* and false about the *ticket*:
+tracking IDs, attachments, prior conversations, dates, lot and PO numbers, names.
+
+### Two layers
+
+**`CHECK 3 — CONTEXT TRANSFER`** in the Judge, whose load-bearing sentence is
+*"appearing in the historical solutions is not a defence for this check"*.
+`CHECK 1` trains the model toward "in the source ⇒ fine", which is exactly why
+the ESW number survived an audit it should have failed. Tier 2 gets the
+equivalent as `CHECK 5 — ONWARD CROSS-REFERENCES`: citing the extract you used
+is required, sending the supplier to a section they were not given is not.
+
+**`sps/generation/transferable.py`**, a deterministic scan, because an LLM asked
+to catch its own class of error is what just failed. It runs **before** the
+Judge — it is local and free where the Judge is a paid call — and a hit feeds
+back through the same critique path a Judge rejection uses, so the Actor
+rewrites and the existing circuit breaker still bounds the retries. Three
+failures trip it and no supplier-facing text is produced.
+
+### Not flagging good text is the harder half
+
+A scanner that rejects sound drafts costs three Actor round trips and then
+refuses a ticket that deserved an answer. Deliberately untouched:
+
+| Left alone | Why |
+| --- | --- |
+| `0012-43951` | Part numbers are digit-led; the ID rule requires leading letters |
+| `25 mm`, `Ra 1.6`, `12.5 Nm` | Measurements are not identifiers |
+| `within 30 days` | A duration is not a date |
+| "Attach photos to your response" | `attach` the verb is an action the supplier can take; `attachment` the noun is a document they do not have |
+| `Segregate lot 5` | A count, not a lot number — identifiers need three digits or more |
+
+Named individuals are left to the Judge: no pattern separates a person's name
+from a material or a process, and a false rejection costs more than a retry.
+
+`KNOWN_TRACKING_PREFIXES` is a module constant — extend it with your own
+systems rather than editing a regex.
+
+### The consequence to expect
+
+The PASS rate falls. Where the history is process boilerplate rather than
+technical content, constraint 7 now tells the Actor to answer
+`Solution not found.` instead of restating it, and Tier 2 gets its turn. That is
+the honest number: the previous rate counted recommendations a supplier could
+not act on. `Matched_Solutions` in the bulk sheet shows how much of your history
+is like this.
 
 ---
 
@@ -629,8 +700,9 @@ tests/test_resolver.py                 32   validation, part filtering, capping,
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
-tests/test_bulk_test.py                20   column preservation, row alignment, the not-attempted markers
-tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
+tests/test_bulk_test.py                24   column preservation, row alignment, the not-attempted markers
+tests/test_transferable.py             36   the transferability gate, and what it must NOT flag
+tests/test_component_c_actor_critic.py 26   refinement, circuit breaker, fail-closed, the transferability gate
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                    9   env loading, model/threshold single-sourcing
 tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)

@@ -41,10 +41,25 @@ HARD CONSTRAINTS -- these override any instinct to be helpful:
    the historical text shows was carried out by internal staff. If a historical
    step was an internal action, either omit it or state it as an outcome the
    supplier awaits, never as an instruction to the supplier.
-5. Match the house style of historical SPS records: minimal, plain, imperative,
+5. NOTHING THAT EXISTS ONLY IN THE HISTORICAL RECORD. The solutions you are
+   shown were written about a DIFFERENT ticket, and some of what they contain
+   was only ever true there. Never carry forward: a reference to an attachment
+   or enclosure; a prior conversation ("per discussed", "as agreed", "as
+   requested"); a tracking or ticket number (ESW, CAR, SCAR, NCR, MRB and the
+   like); a calendar date; a lot, batch or purchase-order number; or a person's
+   name. These satisfy constraint 1 -- they ARE in the source -- and they are
+   still false about this ticket, and the supplier cannot act on them. Where a
+   step still means something without the reference, state the action alone.
+   Where it does not, drop the step.
+6. Match the house style of historical SPS records: minimal, plain, imperative,
    step-by-step. No preamble, no restatement of the problem, no closing pleasantries.
-6. If the historical solutions do not actually address the incoming problem, set
-   "recommendation" to exactly "{SOLUTION_NOT_FOUND}".
+7. If the historical solutions do not actually address the incoming problem, set
+   "recommendation" to exactly "{SOLUTION_NOT_FOUND}". Apply this AFTER
+   constraint 5: if removing the record-specific references leaves no action the
+   supplier could actually perform -- if what survives is only "rework as
+   agreed" or "see the feedback" -- then the precedent did not address the
+   problem, and "{SOLUTION_NOT_FOUND}" is the honest answer. A correct refusal
+   is a successful outcome; a recommendation the supplier cannot act on is not.
 
 OUTPUT
 Return a single JSON object and nothing else:
@@ -61,7 +76,7 @@ passing a bad draft is far higher than the cost of one more revision.
 You are given the incoming problem, the verbatim HISTORICAL SOLUTIONS that are
 the only permitted source, and the DRAFT.
 
-Run both checks:
+Run all three checks:
 
 CHECK 1 -- DOMAIN HALLUCINATION
 FAIL if the draft contains any step, action, cause, tool, part, measurement,
@@ -78,8 +93,23 @@ belongs to an internal engineer, buyer or quality team rather than the supplier.
 Naming an internal system as the source of an outcome the supplier will receive
 is acceptable; instructing the supplier to go use it is not.
 
-Judge only these two checks. Do not fail a draft for terseness, formatting, tone
-or missing detail. An empty or "Solution not found." draft passes.
+CHECK 3 -- CONTEXT TRANSFER
+FAIL if the draft carries anything that was only ever true of the historical
+record: a reference to an attachment or enclosure, a prior conversation ("per
+discussed", "as agreed"), a tracking or ticket number (ESW, CAR, SCAR, NCR, MRB
+and the like), a calendar date, a lot, batch or purchase-order number, or a
+person's name.
+
+APPEARING IN THE HISTORICAL SOLUTIONS IS NOT A DEFENCE FOR THIS CHECK. Check 1
+asks whether the text came from the source. This one asks whether it is still
+true of the ticket in front of you, and the two have different answers.
+"ESW#20033465 is submitted for these issues" is quoted accurately from a record
+about a different issue, and is false here. "See the feedback in the attachment"
+is quoted accurately too, and there is no attachment -- the supplier receives
+text and nothing else. Both must FAIL.
+
+Judge only these three checks. Do not fail a draft for terseness, formatting,
+tone or missing detail. An empty or "Solution not found." draft passes.
 
 OUTPUT
 Return a single JSON object and nothing else.
@@ -125,7 +155,13 @@ HARD CONSTRAINTS -- these override any instinct to be helpful:
    awaits, never as an instruction to the supplier.
 7. Match the house style of SPS records: minimal, plain, imperative,
    step-by-step. No preamble, no restatement of the problem, no pleasantries.
-8. If the extracts do not address THIS SPECIFIC DEFECT -- including when they
+8. NO ONWARD CROSS-REFERENCES. Citing the extract you used is required
+   (constraint 4). Sending the supplier somewhere they cannot go is not. Where
+   an extract says "in accordance with section 7.1" and 7.1 is not among your
+   extracts, state the requirement if the extract states it and otherwise omit
+   the step -- do not pass the cross-reference along. The supplier receives your
+   text and nothing else: no attachment, no other section, no prior conversation.
+9. If the extracts do not address THIS SPECIFIC DEFECT -- including when they
    cover the general subject area but not this failure mode, or state limits
    without a disposition -- set "recommendation" to exactly "{SOLUTION_NOT_FOUND}".
    A correct refusal is a successful outcome here. A plausible generic
@@ -177,7 +213,18 @@ must be traceable to text that actually says so. This is the most likely way a
 wrong answer reaches a supplier here, because the fabricated step is usually the
 engineering-plausible one.
 
-Judge only these four checks. Do not fail a draft for terseness, formatting,
+CHECK 5 -- ONWARD CROSS-REFERENCES
+FAIL if the draft sends the supplier to something they were not given: another
+section of the standard, a different document, an attachment, or a prior
+conversation. Citing the extract a step was drawn from is required and correct;
+instructing the supplier to go and consult something outside the extracts is
+not, because they receive your text and nothing else.
+
+As with check 3, being quoted accurately from an extract is not a defence. "Re-inspect
+in accordance with section 7.1" may be verbatim and still unusable if 7.1 is not
+among the extracts above.
+
+Judge only these five checks. Do not fail a draft for terseness, formatting,
 tone or missing detail. An empty or "{SOLUTION_NOT_FOUND}" draft passes -- the
 Actor is expected to refuse when the standards do not cover the defect.
 

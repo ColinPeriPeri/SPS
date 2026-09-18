@@ -61,6 +61,11 @@ RESULT_COLUMNS = (
     "Resolution_Source",
     "Tier1_Score",
     "Tier2_Score",
+    # The historical solutions (or 0250 sections) the Actor was actually shown.
+    # Put beside its recommendation because the commonest question about a bad
+    # answer is "what was it looking at?", and answering it from the SPS IDs
+    # alone means a lookup per row.
+    "Matched_Solutions",
     "Embedding_Model",
     "Duration_Seconds",
 )
@@ -152,6 +157,7 @@ def result_for(outcome, duration: float) -> dict[str, str]:
         # reaches the encoder, and 0 reads as a match that scored badly.
         "Tier1_Score": round(outcome.top_score, 4) if outcome.top_score else "",
         "Tier2_Score": round(outcome.tier2_top_score, 4) if outcome.tier2_top_score else "",
+        "Matched_Solutions": "\n\n".join(outcome.evidence + outcome.tier2_evidence),
         "Embedding_Model": outcome.embedding_model,
         "Duration_Seconds": round(duration, 2),
     }

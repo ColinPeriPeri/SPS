@@ -34,6 +34,32 @@ Against `sample_history.csv` the six rows cover a clean match, a paraphrase, a
 different part, a defect nothing in history covers, an unknown part number and a
 blank one -- so one run exercises every `Status_Code` the sheet can report.
 
+## Boilerplate history
+
+`boilerplate_history.csv` + `boilerplate_tickets.csv` reproduce the shape real
+history takes, as opposed to the idealised fixtures everywhere else here. Two of
+its three records defer to an attachment, a prior conversation and an internal
+work request rather than describing a fix:
+
+```
+1. See the feedback in the attachment. 2. Per discussed, rework as attachment
+shown. 3. After rework, provide photos and related data. 4. ESW#20033465 is
+submitted for these issues.
+```
+
+```bat
+scripts\run_bulk_test.cmd samples\boilerplate_tickets.csv samples\boilerplate_history.csv
+```
+
+The weld ticket should come back **without** a recommendation: the
+transferability gate rejects the draft, the circuit breaker trips, and the
+`Reason` names what it found. The packaging ticket, whose record contains an
+actual disposition, resolves normally. `Matched_Solutions` shows the difference
+between the two at a glance.
+
+These fixtures exist because the rest of the samples could never have surfaced
+that bug -- every other `Solution_Text` here is clean, actionable prose.
+
 ## Eval cases
 
 `eval_cases/` is a worked example for `scripts/run_eval_batch.py`. Six cases

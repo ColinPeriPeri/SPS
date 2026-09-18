@@ -229,6 +229,14 @@ class ResolveOutcome:
     # The PipelineResult on a success; None when there is no recommendation, in
     # which case main() builds the "Solution not found." row.
     result: Any = None
+    # The evidence actually shown to the Actor. Operational only -- it never
+    # reaches output.xlsx, which is supplier-facing -- but it is what lets a
+    # reviewer see WHY a recommendation says what it does, in the same glance
+    # that shows what it said. Two fields rather than one because the tiers are
+    # populated from different call frames and a single key would collide in
+    # the shared **measured expansion.
+    evidence: tuple[str, ...] = ()
+    tier2_evidence: tuple[str, ...] = ()
 
 
 def _reason_with_marker(reason: str, embedding_model: str) -> str:
@@ -280,6 +288,19 @@ def write_status(output_dir: Path, code: str, reason: str, embedding_model: str 
         ],
     )
     logger.info("status: %s / %s [%s] -- %s", status, code, embedding_model or "none", reason)
+
+
+# Long enough to tell boilerplate from a real disposition, short enough that
+# fifteen candidates stay readable in one cell. The workbook writer truncates at
+# Excel's hard limit anyway; this keeps it from getting that far.
+EVIDENCE_CHARS = 500
+
+
+def _evidence(label: str, text: str) -> str:
+    flat = " ".join(str(text or "").split())
+    if len(flat) > EVIDENCE_CHARS:
+        flat = flat[: EVIDENCE_CHARS - 1] + "\u2026"
+    return f"{label}: {flat}"
 
 
 def unresolved_result(outcome: "ResolveOutcome"):
@@ -425,6 +446,9 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
 
     measured = dict(
         part_number=part_number,
+        # What the Actor was shown, or would have been. Present even on the
+        # gated path, where seeing the near-miss text is the whole point.
+        evidence=tuple(_evidence(c.sps_id, c.actual_solution) for c in candidates),
         embedding_model=model,
         top_score=stats.top_score,
         threshold_used=stats.threshold_used,
@@ -640,6 +664,10 @@ def _resolve_from_docs(
             STAGE_GATED,
             **tier2_measured,
         )
+
+    tier2_measured["tier2_evidence"] = tuple(
+        _evidence(c.citation, c.chunk.text) for c in chunks
+    )
 
     outcome = asyncio.run(loop.run_grounded(ticket, documentation_grounding(chunks)))
 
