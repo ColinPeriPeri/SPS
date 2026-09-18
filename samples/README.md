@@ -20,6 +20,20 @@ It does need a working `AZURE_EMBEDDING_*` configuration: the local encoder is
 out of the pipeline, so there is no offline path. The top score depends on your
 deployment.
 
+## Bulk test sheet
+
+`bulk_tickets.csv` is six tickets in one sheet, for `scripts/run_bulk_test.py`.
+It carries a `Supplier` column the pipeline never reads, which is the point:
+whatever columns you put in come back untouched alongside the answers.
+
+```bat
+scripts\run_bulk_test.cmd samples\bulk_tickets.csv samples\sample_history.csv
+```
+
+Against `sample_history.csv` the six rows cover a clean match, a paraphrase, a
+different part, a defect nothing in history covers, an unknown part number and a
+blank one -- so one run exercises every `Status_Code` the sheet can report.
+
 ## Eval cases
 
 `eval_cases/` is a worked example for `scripts/run_eval_batch.py`. Six cases

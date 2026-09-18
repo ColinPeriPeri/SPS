@@ -296,6 +296,19 @@ That still costs one embedding call per case — embeddings are what you are
 measuring — but no generation, so it is the cheap way to collect the
 distribution.
 
+### Reviewing the answers rather than the scores
+
+`run_eval_batch` reports scores. To read what the system actually recommended
+across a batch, put the tickets in one sheet and use the bulk runner instead:
+
+```bat
+scripts\run_bulk_test.cmd samples\bulk_tickets.csv samples\sample_history.csv
+```
+
+It writes a copy of your sheet with the recommendation, justification, status
+and scores appended to each row, leaving the input untouched. `--limit N` prices
+a trial before you commit to a few hundred tickets.
+
 ### Your own test set
 
 Drop files into a directory, named in pairs:

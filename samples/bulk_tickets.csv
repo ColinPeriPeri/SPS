@@ -1,0 +1,7 @@
+SPS_ID,Part_Number,Issue_Type,Problem_Description,Supplier
+T-1001,0012-43951,Quality,Bracket weld seam cracking observed during incoming inspection,Acme Fabrication
+T-1002,0012-43951,Quality,Cracks found in the weld seam of the mounting bracket at goods-in,Acme Fabrication
+T-1003,0034-11020,Packaging,Outer carton label misprinted on the shipment packaging,Northgate Packaging
+T-1004,0012-43951,Quality,Hydraulic pump pressure fluctuating during the acceptance run,Acme Fabrication
+T-1005,0099-99999,Quality,Bracket weld seam cracking observed during incoming inspection,Unknown Supplier
+T-1006,,Quality,Bracket weld seam cracking observed during incoming inspection,Acme Fabrication

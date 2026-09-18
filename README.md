@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-219 tests in about five seconds, none of which needs a server, an Azure key or
+250 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -73,7 +73,9 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | --- | --- |
 | `scripts/run_resolver.py` | **Entry point** — ticket in, two workbooks out |
 | `scripts/run_resolver.cmd` | UiPath wrapper; propagates the exit code |
-| `scripts/run_eval_batch.py` | Batch evaluator — many tickets, one results workbook |
+| `scripts/run_bulk_test.py` | **Bulk test** — a sheet of tickets in, the same sheet plus answers out |
+| `scripts/run_bulk_test.cmd` | Wrapper for the above |
+| `scripts/run_eval_batch.py` | Batch evaluator — threshold calibration from a directory of cases |
 | `scripts/run_eval.cmd` | Wrapper for the above |
 | `sps/validators.py` | Part-number canonicalisation + ticket gatekeeping |
 | `sps/retrieval/in_memory.py` | **Tier 1** — filter by part, embed via Azure, rank, gate |
@@ -88,7 +90,7 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `service/excel_output.py` | Atomic workbook writer |
 | `scripts/verify_embedder.py` | Acceptance checks + threshold reading against the live encoder |
 | `scripts/make_sample_docs.py` | Regenerates the demo 0250 documents |
-| `samples/` | A ticket + history for smoke tests, six eval cases, three demo standards |
+| `samples/` | A ticket + history for smoke tests, a bulk sheet, six eval cases, three demo standards |
 | `data/0250_docs/` | Where the real 0250 standards go (ships empty) |
 
 
@@ -447,6 +449,65 @@ measurement in Tier 1. A model asked to author its own citation can invent one.
 
 ---
 
+## Bulk test runs
+
+`scripts/run_bulk_test.py` resolves a **sheet of tickets, one per row**, and
+writes a copy carrying every original column plus the answers.
+
+```bash
+python -m scripts.run_bulk_test --tickets tickets.xlsx --history history.csv
+scripts\run_bulk_test.cmd tickets.xlsx history.csv
+```
+
+The input is never modified. It stays a clean, re-runnable fixture, a crashed
+run cannot destroy the test set, and two runs can be diffed against each other.
+Output defaults to `<tickets>_results.xlsx` beside the input.
+
+| | |
+| --- | --- |
+| **Original columns** | Preserved verbatim, in order, including ones the pipeline never reads |
+| **Appended** | `Status`, `Status_Code`, `Reason`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Tier1_Score`, `Tier2_Score`, `Embedding_Model`, `Duration_Seconds` |
+| **Rows** | Exactly one per input row, in the same order — a ticket that resolved nothing still has a row saying why |
+
+Nothing here reimplements the pipeline. Each row goes through the same
+`resolve()` the UiPath wrapper calls, so a result in this sheet is the result
+production would have produced for that ticket. The "Solution not found." row is
+built by the same function that writes `output.xlsx`, so the two cannot disagree
+about what a refusal looks like.
+
+A column that clashes with an existing heading is suffixed `_AI` rather than
+duplicated — a sheet that already has `Status` would otherwise end up with two,
+and which one survived would be down to pandas.
+
+### Two bulk tools, different jobs
+
+| | `run_bulk_test.py` | `run_eval_batch.py` |
+| --- | --- | --- |
+| Input | One sheet, a ticket per row | A directory of `<id>_ticket.*` files |
+| Output | Your sheet plus the answers | A fixed results workbook |
+| Carries | The recommendation prose | Scores and gate decisions |
+| For | Reading what the system recommended | Deciding where a threshold belongs |
+
+### Cost and time
+
+Sequential by design, one ticket at a time. Two things dominate a large run:
+
+- **The history is re-scanned per ticket**, because that is what `resolve()`
+  does per invocation and this deliberately does not work around it. Prefer a
+  CSV history: the same 300k rows take ~1.5 s as CSV against ~40 s as `.xlsx`,
+  *per ticket*.
+- **Each resolved ticket costs an embedding call and up to six LLM calls**
+  (three Actor/Judge rounds, twice if Tier 2 runs).
+
+`--limit N` resolves only the first N rows so you can price a trial before
+committing to 500; the rest still appear, marked `NOT RUN`, so the sheet stays
+aligned with the input. `--stop-after-errors N` (default 5) abandons the run
+after that many **consecutive** infrastructure errors — wrong credentials would
+otherwise burn one failing call per row for the whole sheet, and every row would
+carry the same useless message.
+
+---
+
 ## The batch evaluator
 
 `scripts/run_eval_batch.py` runs a directory of test tickets and writes one
@@ -568,6 +629,7 @@ tests/test_resolver.py                 32   validation, part filtering, capping,
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
+tests/test_bulk_test.py                20   column preservation, row alignment, the not-attempted markers
 tests/test_component_c_actor_critic.py 19   refinement, circuit breaker, fail-closed, prompt isolation
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                    9   env loading, model/threshold single-sourcing

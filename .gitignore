@@ -20,3 +20,8 @@ test_output.xlsx
 # whenever its SHA-256 changes, so committing them would only ever ship a stale
 # copy of something the next run regenerates.
 0250_cache_*.npz
+
+# Bulk-test and evaluation output. Derived from inputs that are committed, and
+# the bulk runner writes <tickets>_results.xlsx beside its input by default.
+*_results.xlsx
+eval_results.xlsx
