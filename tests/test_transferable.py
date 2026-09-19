@@ -178,3 +178,137 @@ def test_one_fragment_is_reported_once_under_its_best_category():
 
     assert len(findings) == 1
     assert findings[0].startswith("internal tracking identifier")
+
+
+# ------------------------------------------------------- misattributed actions
+#
+# From two NTK tickets about an ESC whose engraved revision did not match its
+# spec. Both requested an ESW; both came back telling the supplier to issue one.
+# Issuance is the customer's action, and the historical Solution_Text was an
+# internal engineer's own note, so its imperatives address the wrong party.
+
+NTK_RECOMMENDATION = (
+    "1. Issue an ESW.\n"
+    "2. Do not ship the parts until the ESW is fully approved."
+)
+
+
+def test_the_live_esw_recommendation_is_rejected():
+    from sps.generation.transferable import misattributed_actions
+
+    assert misattributed_actions(NTK_RECOMMENDATION)
+
+
+def test_the_correctly_addressed_step_survives():
+    """Step 2 was right: the supplier controls shipment. A gate that eats it is
+    worse than no gate at all."""
+    from sps.generation.transferable import misattributed_actions
+
+    assert misattributed_actions(
+        "Do not ship the parts until the ESW is fully approved."
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1. Issue an ESW.",
+        "1. Issue ESW.",
+        "Please issue an ESW for this unit.",
+        "Rework the part and issue an ESW.",
+        "Approve the deviation before shipment.",
+        "Waive the requirement for this lot.",
+        "Grant an MRB disposition.",
+    ],
+)
+def test_customer_actions_stated_as_instructions_are_caught(text):
+    from sps.generation.transferable import misattributed_actions
+
+    assert misattributed_actions(text), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The outcome, not the instruction. Base-form verbs are what make an
+        # imperative, so these must all survive.
+        "Do not ship the parts until the ESW is fully approved.",
+        "An ESW has been requested; await approval before shipping.",
+        "An ESW will be issued once the review completes.",
+        "Hold the shipment until the deviation is granted.",
+        # Requesting is the supplier's own action -- the tickets show them doing
+        # exactly this.
+        "Request an ESW before shipment.",
+        "Submit a waiver request with the inspection data.",
+        # Ordinary supplier work, no internal instrument in sight.
+        "Re-engrave the unit with the correct marking prior to shipment.",
+        "Re-inspect each unit and provide the measurement data.",
+    ],
+)
+def test_outcomes_and_supplier_actions_are_left_alone(text):
+    from sps.generation.transferable import misattributed_actions
+
+    assert misattributed_actions(text) == [], text
+
+
+def test_the_instrument_list_is_extendable():
+    from sps.generation.transferable import INTERNAL_ACTION_VERBS, INTERNAL_INSTRUMENTS
+
+    assert "ESW" in INTERNAL_INSTRUMENTS
+    assert "issue" in INTERNAL_ACTION_VERBS
+    # Requesting is the supplier's to do.
+    assert "request" not in INTERNAL_ACTION_VERBS
+
+
+def test_the_critique_gives_the_rephrasing_not_only_the_rejection():
+    from sps.generation.transferable import misattributed_actions
+
+    critique = critique_for([], misattributed_actions(NTK_RECOMMENDATION))
+
+    assert "cannot grant them" in critique
+    assert "An ESW has been requested" in critique, "show the required wording"
+    assert "internal engineer's own note" in critique, "explain why it read that way"
+
+
+def test_both_kinds_arrive_in_one_critique():
+    """A draft with both problems is rewritten once, not twice -- it only gets
+    three attempts."""
+    from sps.generation.transferable import misattributed_actions
+
+    combined = "1. Issue an ESW.\n2. Per discussed, see the attachment."
+    critique = critique_for(
+        untransferable_references(combined), misattributed_actions(combined)
+    )
+
+    assert "attachment" in critique.lower()
+    assert "Issue an ESW" in critique
+    assert critique.count("Solution not found.") == 1, "one way out, stated once"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Straight from live history. The customer stating an outcome the
+        # supplier can expect is useful text, and an earlier version of the
+        # bare-verb rule ate it.
+        "we will waive it if the result is ok",
+        "it will be waived if the result is ok",
+        "3. After rework, provide photos; we will waive it if the result is ok.",
+    ],
+)
+def test_a_stated_outcome_is_not_an_instruction(text):
+    from sps.generation.transferable import misattributed_actions
+
+    assert misattributed_actions(text) == [], text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Waive the requirement for this lot.", "1. Waive the requirement.", "Please waive it."],
+)
+def test_a_bare_customer_verb_is_caught_in_imperative_position(text):
+    """Position is the only thing separating "Waive the requirement" from
+    "we will waive it": both are the base form."""
+    from sps.generation.transferable import misattributed_actions
+
+    assert misattributed_actions(text), text

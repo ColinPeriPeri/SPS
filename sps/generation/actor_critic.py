@@ -21,7 +21,11 @@ from .prompts import (
     build_tier2_actor_messages,
     build_tier2_judge_messages,
 )
-from .transferable import critique_for, untransferable_references
+from .transferable import (
+    critique_for,
+    misattributed_actions,
+    untransferable_references,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -175,12 +179,15 @@ class ActorCriticLoop:
             # same critique path the Judge uses, so the circuit breaker still
             # bounds the retries.
             leaks = untransferable_references(draft.recommendation)
-            if leaks:
+            misattributed = misattributed_actions(draft.recommendation)
+            if leaks or misattributed:
                 logger.info(
-                    "Ticket %r attempt %d: untransferable reference(s): %s",
-                    ticket.sps_id, attempt, "; ".join(leaks),
+                    "Ticket %r attempt %d rejected locally: %s",
+                    ticket.sps_id, attempt, "; ".join(leaks + misattributed),
                 )
-                feedback = critique_for(leaks)
+                # One critique covering both, so a draft with both problems is
+                # rewritten once rather than burning two of its three attempts.
+                feedback = critique_for(leaks, misattributed)
                 critiques.append(feedback)
                 critique = feedback
                 previous_draft = draft.recommendation

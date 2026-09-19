@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-297 tests in about six seconds, none of which needs a server, an Azure key or
+327 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -83,7 +83,7 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/retrieval/doc_cache.py` | **Tier 2** — hash-keyed vector cache, enriched query, search |
 | `sps/embedding.py` | Azure encoder; the BGE wrapper, disabled but intact |
 | `sps/generation/` | Actor / Judge loop, schema-constrained |
-| `sps/generation/transferable.py` | The deterministic gate on record-specific references |
+| `sps/generation/transferable.py` | The two deterministic gates: record-specific references, and misattributed actions |
 | `sps/schemas.py` | Pydantic response schemas for the LLM |
 | `sps/contracts.py` | Ticket and result shapes |
 | `sps/output.py` | Builds the resolved recommendation |
@@ -339,7 +339,7 @@ set that no longer occurs. `Confidence_Score` is the cosine alone.
 
 ---
 
-## Transferability: the third gate
+## What must never reach a supplier
 
 Grounding answers *"did this text come from the source?"*. It does not answer
 *"is it still true of the ticket in front of us?"*, and those have different
@@ -397,6 +397,64 @@ from a material or a process, and a false rejection costs more than a retry.
 
 `KNOWN_TRACKING_PREFIXES` is a module constant — extend it with your own
 systems rather than editing a regex.
+
+### The second gate: who is being told to act
+
+A later pair of tickets showed the same shape of failure with a different cause.
+Both asked AMAT to issue an ESW; both answers came back at 99% and 96%:
+
+```
+1. Issue an ESW.
+2. Do not ship the parts until the ESW is fully approved.
+```
+
+Step 2 is right — the supplier controls shipment. **Step 1 tells the supplier to
+perform the customer's action.** ESW issuance is internal; the supplier may
+request one, and in both tickets that is exactly what they did.
+
+Actor constraint 4 and Judge `CHECK 2` already forbade this in prose. Neither
+fired, because **nothing in the system knew who issues an ESW.** The historical
+`Solution_Text` is an internal engineer's own to-do note, carrying no actor, and
+the Judge has no domain knowledge to supply one. `INTERNAL_INSTRUMENTS` and
+`INTERNAL_ACTION_VERBS` supply it as data.
+
+The rule is a **base-form verb directly governing an internal instrument**, and
+the base form is the whole trick — it is what separates an imperative from an
+outcome:
+
+| Rejected | Kept |
+| --- | --- |
+| `Issue an ESW.` | `Do not ship until the ESW is fully approved.` |
+| `Please issue an ESW for this unit.` | `An ESW will be issued once review completes.` |
+| `Rework the part and issue an ESW.` | `Request an ESW before shipment.` |
+| `1. Waive the requirement.` | `we will waive it if the result is ok` |
+
+`request` is deliberately absent from the verb list: the tickets themselves show
+suppliers requesting ESWs. Only granting is internal.
+
+That last row cost a redesign. A bare `waive` initially flagged *"we will waive
+it if the result is ok"* — real history, and legitimate supplier-facing text
+where the customer states an outcome. Bare verbs now fire only in imperative
+position, at the start of a step, because position is the only thing separating
+the two.
+
+The critique names the required rewrite rather than only the rejection:
+*"An ESW has been requested; do not ship until it is approved."* Both gates share
+one critique, so a draft with both problems is rewritten once rather than
+spending two of its three attempts.
+
+### Responsiveness
+
+The same pair exposed something the gates cannot catch. The two tickets asked
+for **different dispositions** — one "we will re-engrave, please issue an ESW",
+the other "we have no experience with that rework, please approve shipping
+as-is" — and got identical answers. `CHECK 4` (and `CHECK 6` in Tier 2) fails a
+draft that does not address what the ticket actually asks.
+
+This turns a confident non-answer into an honest refusal. It does **not** make
+the answer responsive: that needs retrieval to match on the request rather than
+the narrative, and today the request is one sentence buried in a long free-text
+blob. Deferred deliberately.
 
 ### The consequence to expect
 
@@ -701,8 +759,8 @@ tests/test_eval_batch.py               32   case discovery, per-case isolation, 
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
 tests/test_bulk_test.py                24   column preservation, row alignment, the not-attempted markers
-tests/test_transferable.py             36   the transferability gate, and what it must NOT flag
-tests/test_component_c_actor_critic.py 26   refinement, circuit breaker, fail-closed, the transferability gate
+tests/test_transferable.py             62   the two local gates, and what they must NOT flag
+tests/test_component_c_actor_critic.py 30   refinement, circuit breaker, fail-closed, both local gates
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                    9   env loading, model/threshold single-sourcing
 tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)

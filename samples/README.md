@@ -51,11 +51,17 @@ submitted for these issues.
 scripts\run_bulk_test.cmd samples\boilerplate_tickets.csv samples\boilerplate_history.csv
 ```
 
-The weld ticket should come back **without** a recommendation: the
-transferability gate rejects the draft, the circuit breaker trips, and the
-`Reason` names what it found. The packaging ticket, whose record contains an
-actual disposition, resolves normally. `Matched_Solutions` shows the difference
-between the two at a glance.
+`SPS-5004` covers the other failure mode -- an internal engineer's own to-do
+note, `"1. Issue an ESW. 2. Do not ship the parts until the ESW is fully
+approved."`, whose first imperative addresses the customer rather than the
+supplier.
+
+Two of the three tickets should come back **without** a recommendation: `T-9001`
+because the draft carries an attachment and a prior conversation forward,
+`T-9003` because it tells the supplier to issue an ESW. The circuit breaker
+trips in both cases and the `Reason` names what was found. `T-9002`, whose
+record contains an actual disposition, resolves normally.
+`Matched_Solutions` shows the difference at a glance.
 
 These fixtures exist because the rest of the samples could never have surfaced
 that bug -- every other `Solution_Text` here is clean, actionable prose.

@@ -1,3 +1,4 @@
 SPS_ID,Part_Number,Issue_Type,Problem_Description,Supplier
 T-9001,0012-43951,Quality,Bracket weld seam cracking observed during incoming inspection,Acme Fabrication
 T-9002,0034-11020,Packaging,Outer carton label misprinted on the shipment packaging,Northgate Packaging
+T-9003,0010-50850,Quality,NTK holds one ESC unit whose marked revision does not match its actual product specification. We confirmed it satisfies the Rev 02 specification and plan to re-engrave before shipment. We request the issuance of an ESW.,NTK

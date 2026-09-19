@@ -90,6 +90,84 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+# Instruments only the customer can issue. A supplier may well REQUEST one --
+# the live tickets show exactly that -- but cannot grant one, so a recommendation
+# that tells them to is instructing them to do the customer's job.
+#
+# Site-specific. Extend this rather than the pattern below.
+INTERNAL_INSTRUMENTS = (
+    "ESW",       # engineering specification waiver
+    "waiver",
+    "deviation",
+    "MRB",       # material review board disposition
+)
+
+# Base forms only, and that is the whole trick. A base-form verb is what makes
+# an imperative, so it separates the instruction ("Issue an ESW") from the
+# outcome ("the ESW is approved", "an ESW will be issued"), which is legitimate
+# and must survive. "request" is deliberately absent: requesting is the
+# supplier's own action.
+INTERNAL_ACTION_VERBS = (
+    "issue",
+    "approve",
+    "waive",
+    "authorise",
+    "authorize",
+    "grant",
+)
+
+# Verbs that are the customer's prerogative whatever the object. "Waive the
+# requirement" names no instrument and is still the customer deciding. Kept
+# deliberately small: "approve" and "issue" are NOT here, because a supplier can
+# legitimately approve their own rework or issue replacement parts, and those
+# need an instrument to disambiguate.
+ALWAYS_CUSTOMER_VERBS = ("waive",)
+
+_MISATTRIBUTED = re.compile(
+    rf"\b({'|'.join(INTERNAL_ACTION_VERBS)})\s+(?:an?\s+|the\s+)?"
+    rf"({'|'.join(re.escape(i) for i in INTERNAL_INSTRUMENTS)})\b",
+    re.IGNORECASE,
+)
+
+# The bare-verb rule only fires at the start of a step, because that is what
+# makes it an imperative. Real history contains "we will waive it if the result
+# is ok" -- the customer stating an outcome the supplier can expect, which is
+# useful text and must survive. Only "1. Waive the requirement." is an
+# instruction, and only position tells the two apart.
+_MISATTRIBUTED_IMPERATIVE = re.compile(
+    rf"(?:^|\n)\s*(?:\d+[.)]\s*)?(?:please\s+)?"
+    rf"({'|'.join(ALWAYS_CUSTOMER_VERBS)})\b",
+    re.IGNORECASE,
+)
+
+
+def misattributed_actions(text: str) -> list[str]:
+    """Instructions telling the supplier to perform the customer's action.
+
+    The Actor's constraints and the Judge's second check both forbid this
+    already, in prose. Neither fired on "1. Issue an ESW." because nothing in
+    the system knows who issues an ESW: the historical Solution_Text is an
+    internal engineer's own to-do note, carrying no actor, and the Judge has no
+    domain knowledge to supply one. This supplies it, as data.
+
+    Returns findings naming the fragment, empty when the text is clean.
+    """
+    if not text:
+        return []
+
+    findings: list[str] = []
+    seen: set[str] = set()
+    for pattern in (_MISATTRIBUTED, _MISATTRIBUTED_IMPERATIVE):
+        for match in pattern.finditer(text):
+            fragment = " ".join(match.group(0).split())
+            key = fragment.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(f"instruction to perform an internal action: {fragment!r}")
+    return findings
+
+
 def untransferable_references(text: str) -> list[str]:
     """Fragments in `text` that belong to the source record, not this ticket.
 
@@ -123,16 +201,39 @@ def untransferable_references(text: str) -> list[str]:
     return findings
 
 
-def critique_for(findings: list[str]) -> str:
-    """Turn findings into an instruction the Actor can act on."""
-    listed = "; ".join(findings)
-    return (
-        f"The draft carries {len(findings)} reference(s) that exist only in the "
-        f"historical record and are not true of this ticket: {listed}. "
-        "Remove each one. State the action without the reference where the step "
-        "is still meaningful on its own, and drop the step entirely where it is "
-        "not. Being present in the historical solutions does not make these "
-        "transferable -- they describe a different ticket. If removing them "
-        "leaves no action the supplier could actually perform, answer "
-        "'Solution not found.' instead."
+def critique_for(findings: list[str], misattributed: list[str] | None = None) -> str:
+    """Turn findings into an instruction the Actor can act on.
+
+    Both kinds arrive in one critique rather than two, so a draft carrying both
+    problems is rewritten once instead of burning two of its three attempts.
+    """
+    parts: list[str] = []
+
+    if findings:
+        parts.append(
+            f"The draft carries {len(findings)} reference(s) that exist only in "
+            f"the historical record and are not true of this ticket: "
+            f"{'; '.join(findings)}. "
+            "Remove each one. State the action without the reference where the "
+            "step is still meaningful on its own, and drop the step entirely "
+            "where it is not. Being present in the historical solutions does "
+            "not make these transferable -- they describe a different ticket."
+        )
+
+    if misattributed:
+        parts.append(
+            f"The draft tells the supplier to perform {len(misattributed)} "
+            f"action(s) that only the customer can perform: "
+            f"{'; '.join(misattributed)}. "
+            "The supplier may request these; they cannot grant them. Rewrite "
+            "each as an outcome the supplier awaits -- 'An ESW has been "
+            "requested; do not ship until it is approved' -- or drop the step. "
+            "The historical text is an internal engineer's own note, so it "
+            "reads as an instruction to themselves, not to the supplier."
+        )
+
+    parts.append(
+        "If what remains is no action the supplier could actually perform, "
+        "answer 'Solution not found.' instead."
     )
+    return " ".join(parts)

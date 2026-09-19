@@ -41,6 +41,16 @@ HARD CONSTRAINTS -- these override any instinct to be helpful:
    the historical text shows was carried out by internal staff. If a historical
    step was an internal action, either omit it or state it as an outcome the
    supplier awaits, never as an instruction to the supplier.
+
+   THE HISTORICAL TEXT IS AN INTERNAL ENGINEER'S OWN NOTE. It reads as a
+   to-do list they wrote for themselves, so its imperatives are addressed to
+   the customer, not to the supplier, and copying them across inverts who does
+   what. Issuing, approving, waiving or granting an ESW, a waiver, a deviation
+   or an MRB disposition is the CUSTOMER'S action. The supplier may request one
+   -- they often do, in the ticket itself -- but cannot grant one.
+
+   WRONG: "1. Issue an ESW."
+   RIGHT: "1. An ESW has been requested. Do not ship until it is approved."
 5. NOTHING THAT EXISTS ONLY IN THE HISTORICAL RECORD. The solutions you are
    shown were written about a DIFFERENT ticket, and some of what they contain
    was only ever true there. Never carry forward: a reference to an attachment
@@ -55,11 +65,20 @@ HARD CONSTRAINTS -- these override any instinct to be helpful:
    step-by-step. No preamble, no restatement of the problem, no closing pleasantries.
 7. If the historical solutions do not actually address the incoming problem, set
    "recommendation" to exactly "{SOLUTION_NOT_FOUND}". Apply this AFTER
-   constraint 5: if removing the record-specific references leaves no action the
-   supplier could actually perform -- if what survives is only "rework as
-   agreed" or "see the feedback" -- then the precedent did not address the
-   problem, and "{SOLUTION_NOT_FOUND}" is the honest answer. A correct refusal
-   is a successful outcome; a recommendation the supplier cannot act on is not.
+   constraints 4 and 5: if removing the record-specific references and the
+   customer's own actions leaves no action the supplier could actually perform
+   -- if what survives is only "rework as agreed" or "see the feedback" -- then
+   the precedent did not address the problem, and "{SOLUTION_NOT_FOUND}" is the
+   honest answer. A correct refusal is a successful outcome; a recommendation
+   the supplier cannot act on is not.
+
+   ANSWER THE QUESTION THAT WAS ASKED. Where the ticket requests a DECISION --
+   accept as-is, rework then ship, scrap, return -- a recommendation that
+   restates the process without addressing that request is not an answer to it.
+   Two tickets describing the same defect can ask for different dispositions,
+   and the same reply cannot serve both. If the historical solutions do not
+   answer the question this ticket asks, say "{SOLUTION_NOT_FOUND}" rather than
+   a generic step that looks responsive and is not.
 
 OUTPUT
 Return a single JSON object and nothing else:
@@ -85,13 +104,23 @@ does not appear in the HISTORICAL SOLUTIONS text. Paraphrase and condensation
 are acceptable; new substance is not. Added "best practice", added verification
 or safety steps, and filled-in details the source left blank are all hallucination.
 
-CHECK 2 -- INTERNAL TOOL LEAKAGE
+CHECK 2 -- INTERNAL TOOL LEAKAGE AND MISATTRIBUTED ACTIONS
 FAIL if the draft directs the supplier to access an internal system or database,
 use an internal-only tool or portal, consult internal documentation, contact
 parties on the supplier's behalf using internal routing, or perform any task that
 belongs to an internal engineer, buyer or quality team rather than the supplier.
 Naming an internal system as the source of an outcome the supplier will receive
 is acceptable; instructing the supplier to go use it is not.
+
+WATCH THE VERBS. The historical solutions are an internal engineer's own notes,
+so their imperatives are addressed to the customer. Issuing, approving, waiving
+or granting an ESW, a waiver, a deviation or an MRB disposition is the
+CUSTOMER'S action. A supplier may request one; they cannot grant one.
+
+FAIL: "1. Issue an ESW."
+PASS: "1. An ESW has been requested. Do not ship until it is approved."
+PASS: "Do not ship the parts until the ESW is fully approved."  (the supplier
+      controls shipment, so this one is correctly addressed)
 
 CHECK 3 -- CONTEXT TRANSFER
 FAIL if the draft carries anything that was only ever true of the historical
@@ -108,7 +137,18 @@ about a different issue, and is false here. "See the feedback in the attachment"
 is quoted accurately too, and there is no attachment -- the supplier receives
 text and nothing else. Both must FAIL.
 
-Judge only these three checks. Do not fail a draft for terseness, formatting,
+CHECK 4 -- RESPONSIVENESS
+FAIL if the draft does not answer what the ticket actually asks. Where the
+incoming problem requests a DECISION -- accept as-is, rework then ship, scrap,
+return -- a draft that restates the process without addressing that request is
+not an answer to it, however well grounded it is.
+
+Two tickets describing the same defect can ask for different dispositions: one
+saying "we will re-engrave, please issue an ESW" and one saying "we have no
+experience with that rework, please approve shipping as-is" are different
+questions. A reply that would serve both equally well has answered neither.
+
+Judge only these four checks. Do not fail a draft for terseness, formatting,
 tone or missing detail. An empty or "Solution not found." draft passes.
 
 OUTPUT
@@ -224,7 +264,13 @@ As with check 3, being quoted accurately from an extract is not a defence. "Re-i
 in accordance with section 7.1" may be verbatim and still unusable if 7.1 is not
 among the extracts above.
 
-Judge only these five checks. Do not fail a draft for terseness, formatting,
+CHECK 6 -- RESPONSIVENESS
+FAIL if the draft does not answer what the ticket actually asks. Where the
+incoming problem requests a DECISION -- accept as-is, rework then ship, scrap,
+return -- a draft that restates a requirement without addressing that request is
+not an answer to it, however well cited it is.
+
+Judge only these six checks. Do not fail a draft for terseness, formatting,
 tone or missing detail. An empty or "{SOLUTION_NOT_FOUND}" draft passes -- the
 Actor is expected to refuse when the standards do not cover the defect.
 

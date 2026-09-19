@@ -378,3 +378,67 @@ async def test_a_clean_draft_is_untouched_by_the_gate():
     assert result.succeeded
     assert result.attempts == 1
     assert client.call_count == 2, "one Actor call, one Judge call"
+
+
+# --------------------------------------------------------------------------
+# Misattributed actions
+#
+# Two NTK tickets requested an ESW; both answers told the supplier to issue one.
+# Issuance is the customer's action. The historical Solution_Text is an internal
+# engineer's own to-do note, so its imperatives address the wrong party.
+# --------------------------------------------------------------------------
+
+MISATTRIBUTED_DRAFT = (
+    "1. Issue an ESW.\n2. Do not ship the parts until the ESW is fully approved."
+)
+REPHRASED_DRAFT = (
+    "1. An ESW has been requested.\n"
+    "2. Do not ship the parts until the ESW is fully approved."
+)
+
+
+async def test_telling_the_supplier_to_issue_an_esw_is_rejected():
+    engine, client = loop(
+        actor(MISATTRIBUTED_DRAFT), actor(MISATTRIBUTED_DRAFT), actor(MISATTRIBUTED_DRAFT)
+    )
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.draft is None
+    # No Judge call was scripted, and none was needed: the gate is local.
+    assert client.call_count == 3
+
+
+async def test_the_critique_shows_the_required_rephrasing():
+    engine, _ = loop(actor(MISATTRIBUTED_DRAFT), actor(REPHRASED_DRAFT), PASS)
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.succeeded
+    assert "An ESW has been requested" in result.critiques[0]
+    assert "cannot grant them" in result.critiques[0]
+
+
+async def test_rephrasing_as_an_awaited_outcome_passes():
+    """The fix is a rewrite, not only a refusal -- and step 2 was always fine."""
+    engine, _ = loop(actor(MISATTRIBUTED_DRAFT), actor(REPHRASED_DRAFT), PASS)
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.succeeded
+    assert "Do not ship the parts" in result.draft.recommendation
+    assert "Issue an ESW" not in result.draft.recommendation
+
+
+async def test_both_kinds_of_problem_cost_one_attempt_not_two():
+    """A draft that leaks a reference AND misattributes an action gets one
+    combined critique. Three attempts is not many to spend."""
+    both = "1. Issue an ESW.\n2. Per discussed, see the attachment."
+    engine, _ = loop(actor(both), actor(REPHRASED_DRAFT), PASS)
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.succeeded
+    assert result.attempts == 2
+    assert "attachment" in result.critiques[0].lower()
+    assert "Issue an ESW" in result.critiques[0]
