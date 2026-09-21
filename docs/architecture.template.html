@@ -1,0 +1,251 @@
+<meta charset="utf-8">
+<title>SPS Recommendation Pipeline — Architecture</title>
+<style>
+  :root {
+    --ink: #16202b; --body: #33414f; --muted: #66768a; --rule: #dfe5ec;
+    --accent: #2d6a9f; --warn: #a86a12; --good: #2f8a4e; --paper: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #eef1f5; color: var(--body);
+    font: 16px/1.62 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  .sheet {
+    max-width: 1300px; margin: 32px auto; background: var(--paper);
+    padding: 56px 60px 72px; border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(20,32,44,.10), 0 8px 28px rgba(20,32,44,.07);
+  }
+  /* narrow text column, full-width figures */
+  .sheet > *:not(figure) { max-width: 900px; }
+  header { border-bottom: 3px solid var(--ink); padding-bottom: 22px; margin-bottom: 34px; }
+  h1 { font-size: 31px; line-height: 1.22; margin: 0 0 10px; color: var(--ink); letter-spacing: -.01em; }
+  .standfirst { font-size: 17.5px; color: var(--muted); margin: 0; max-width: 60em; }
+  .meta { margin-top: 18px; font-size: 13px; color: var(--muted); }
+  h2 {
+    font-size: 21px; color: var(--ink); margin: 46px 0 14px;
+    padding-top: 22px; border-top: 1px solid var(--rule);
+  }
+  h3 { font-size: 16.5px; color: var(--ink); margin: 30px 0 8px; }
+  p { margin: 0 0 15px; }
+  strong { color: var(--ink); }
+  figure { margin: 26px 0 30px; }
+  figure svg { display: block; width: 100%; height: auto; }
+  .frame { border: 1px solid var(--rule); border-radius: 8px; padding: 10px; background: #fff; overflow-x: auto; }
+  figcaption { font-size: 13.5px; color: var(--muted); margin-top: 11px; }
+  .lead-in {
+    background: #f5f8fb; border-left: 4px solid var(--accent);
+    padding: 16px 22px; margin: 0 0 26px; border-radius: 0 6px 6px 0;
+  }
+  .lead-in p:last-child { margin-bottom: 0; }
+  .callout {
+    background: #fffaf0; border: 1px solid #ecd9b0; border-radius: 8px;
+    padding: 18px 24px; margin: 24px 0;
+  }
+  .callout h3 { margin-top: 0; color: var(--warn); }
+  .callout p:last-child { margin-bottom: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 20px 0 26px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--ink); font-weight: 600; background: #f6f8fa; border-bottom: 2px solid #ccd6e0; }
+  td:first-child { white-space: nowrap; font-weight: 600; color: var(--ink); }
+  .wide td:first-child { white-space: normal; }
+  ol.checks { counter-reset: c; list-style: none; padding: 0; margin: 18px 0 26px; }
+  ol.checks li {
+    counter-increment: c; position: relative; padding: 0 0 0 46px; margin-bottom: 18px;
+  }
+  ol.checks li::before {
+    content: counter(c); position: absolute; left: 0; top: 1px;
+    width: 27px; height: 27px; border-radius: 50%; background: var(--warn); color: #fff;
+    font-size: 13px; font-weight: 700; display: grid; place-items: center;
+  }
+  ol.checks b { display: block; color: var(--ink); }
+  .quote {
+    font-family: "Consolas", "SF Mono", ui-monospace, monospace; font-size: 13.5px;
+    background: #f6f8fa; border: 1px solid var(--rule); border-radius: 6px;
+    padding: 12px 16px; margin: 12px 0 16px; white-space: pre-wrap; color: #2c3a49;
+  }
+  .verdict { display: inline-block; font-size: 12.5px; font-weight: 700; padding: 2px 9px;
+             border-radius: 11px; margin-right: 8px; }
+  .v-bad  { background: #fdecec; color: #a32020; }
+  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--rule);
+           font-size: 13px; color: var(--muted); }
+  @media (max-width: 760px) {
+    body { background: #fff; }
+    .sheet { margin: 0; padding: 28px 20px 40px; border-radius: 0; box-shadow: none; }
+    h1 { font-size: 25px; }
+    .standfirst { font-size: 16px; }
+    .lead-in, .callout { padding-left: 16px; padding-right: 16px; }
+    th, td { padding: 9px 10px; }
+    .frame { padding: 6px; }
+    /* a 3-column table cannot compress this far -- let it scroll, not the page */
+    table { display: block; overflow-x: auto; }
+  }
+  /* long words must never force a horizontal page scroll */
+  h1, h2, h3, p, td, th, li { overflow-wrap: break-word; }
+  @media print {
+    body { background: #fff; }
+    .sheet { box-shadow: none; margin: 0; max-width: none; padding: 0; }
+    h2 { break-after: avoid; }
+    figure, .callout, table, ol.checks li { break-inside: avoid; }
+  }
+</style>
+
+<div class="sheet">
+<header>
+  <h1>Supplier Problem Sheet — how the recommendation pipeline works</h1>
+  <p class="standfirst">An AI assistant that answers supplier problem sheets strictly from the company's own
+  records. It holds no opinion of its own, and when it cannot ground an answer it says so rather than
+  guessing.</p>
+  <p class="meta">Architecture overview &middot; for reviewers and stakeholders &middot; accompanies
+  <code>architecture-runtime.svg</code> and <code>architecture-tooling.svg</code></p>
+</header>
+
+<div class="lead-in">
+  <p><strong>The one idea worth taking away.</strong> A general AI assistant answers from everything it has
+  ever read. This one is deliberately prevented from doing that. It is shown a small, filtered set of company
+  records and told to restate what those records say — nothing more. Every sentence it produces must be
+  traceable to one of them, and four separate checks run before anything can be sent.</p>
+  <p>The consequence is a system that refuses more often than a chatbot would, and that is the intended
+  trade. A refusal costs someone ten minutes. A confident, wrong instruction sent to a supplier costs
+  considerably more.</p>
+</div>
+
+<h2>How one problem sheet is answered</h2>
+
+<figure>
+  <div class="frame"><!--RUNTIME_SVG--></div>
+  <figcaption>The runtime path. Every ticket ends in one of two places — a recommendation with its sources,
+  or a refusal with its reason — and a person sees both.</figcaption>
+</figure>
+
+<h3>Two sources, tried in order</h3>
+
+<p>The system is allowed exactly two sources of truth, and it prefers the first.</p>
+
+<table class="wide">
+  <tr><th>Source</th><th>What it is</th><th>Why it comes in this order</th></tr>
+  <tr>
+    <td>1 · What we did before</td>
+    <td>Past problem sheets for <em>the same part number</em>, narrowed to those describing a genuinely
+        similar problem.</td>
+    <td>A fix that worked on this part before is the strongest evidence available, and it is already
+        written in the company's own voice.</td>
+  </tr>
+  <tr>
+    <td>2 · What the standards require</td>
+    <td>The 0250 engineering standards, searched by section, each passage cited by document and heading.</td>
+    <td>Only consulted when precedent gives nothing. A standard states a requirement; it does not always
+        say what to do about a part that misses it, which makes it the weaker source.</td>
+  </tr>
+</table>
+
+<p>The part number is an exact filter, not a suggestion. A ticket for one part is never answered from
+another part's history, however similar the wording.</p>
+
+<h3>The four checks</h3>
+
+<p>Every draft passes through all four before it can leave. A failure sends it back to be rewritten, up to
+three attempts, after which the ticket is refused outright. <strong>An unverified draft is never sent.</strong></p>
+
+<ol class="checks">
+  <li><b>Nothing invented.</b> Every action, measurement, tolerance and specification must appear in the
+      source text. Adding a sensible-sounding safety step is treated as an error, because the system has no
+      way to know whether it is correct here.</li>
+  <li><b>Nothing carried over from the old record.</b> Past solutions refer to attachments, prior phone
+      calls and internal ticket numbers. All of those were true of a <em>different</em> problem sheet and are
+      meaningless — or false — on this one.</li>
+  <li><b>The right party is being asked to act.</b> Historical solutions are an engineer's own notes, so
+      their instructions are addressed to the customer. Copied across unchanged, they end up telling the
+      supplier to do the customer's job.</li>
+  <li><b>It answers what this ticket actually asked.</b> Two suppliers can report the same defect and ask
+      for different outcomes. A reply that would suit both equally well has answered neither.</li>
+</ol>
+
+<div class="callout">
+  <h3>Checks 2 and 3 exist because real answers failed</h3>
+  <p>Both were added after reviewing live output, not anticipated in design. Two recommendations that had
+  passed every check at the time read:</p>
+  <div class="quote"><span class="verdict v-bad">was sent</span>1. See the feedback in the attachment.
+2. Per discussed, rework as attachment shown.
+3. After rework, provide photos and related data.
+4. ESW#2003&hellip; is submitted for these issues.</div>
+  <p>Nothing there is invented — every line is a faithful quotation from a past record, which is exactly why
+  the original checks passed it. But the supplier receives text and nothing else: there is no attachment, no
+  discussion took place, and that work-request number belongs to somebody else's problem. A later pair told a
+  supplier to <em>issue</em> a waiver &mdash; an instrument only the customer can grant, and the very thing
+  that supplier had written in to request.</p>
+  <p>Both classes are now caught by a fixed rule that runs before the AI reviewer, because an AI asked to
+  catch its own blind spot is what failed in the first place. The fixed rule is also carefully bounded: part
+  numbers, tolerances, durations and the supplier's own legitimate actions must pass it untouched, and rather
+  more of the testing went into that than into the catching.</p>
+</div>
+
+<h3>Why a refusal is a result</h3>
+
+<p>"No solution found" is recorded as a normal outcome with the reason attached, not as a failure. It means
+the archive genuinely did not contain an answer to this question — which is worth knowing, and is information
+the reviewer can act on immediately.</p>
+
+<p>Two situations produce it most often, and they mean quite different things. Either nothing similar enough
+exists, in which case this is a genuinely novel problem; or something was found but could not be turned into
+anything the supplier could act on, which usually says more about how the original record was written than
+about the defect.</p>
+
+<h3>A person reviews everything</h3>
+
+<p>No recommendation reaches a supplier unread, and this is a permanent feature of the design rather than a
+caution to be relaxed once confidence grows. The system's job is to find the precedent, draft the reply and
+show its sources; deciding whether to send it stays with the reviewer.</p>
+
+<h2>The supporting tools</h2>
+
+<figure>
+  <div class="frame"><!--TOOLING_SVG--></div>
+  <figcaption>Four ways to drive the same pipeline. None is a separate system, so a test result is what a
+  supplier would genuinely have received.</figcaption>
+</figure>
+
+<p>The tool that matters most day to day is the bulk test: a sheet of tickets goes in, and the same sheet
+comes back with the recommendation, the reason and the source records set beside each original row. It is how
+quality gets judged across a batch rather than one ticket at a time, and the source column is usually what
+explains a surprising answer.</p>
+
+<h2>What it cannot do</h2>
+
+<table class="wide">
+  <tr><th>Limitation</th><th>What it means in practice</th></tr>
+  <tr>
+    <td>The confidence gates are not yet calibrated</td>
+    <td>The thresholds deciding "similar enough" are provisional and have not been measured against the live
+        service. They may currently be too strict or too loose. The batch evaluator exists to settle them, and
+        that should happen before anyone reads much into a pass rate.</td>
+  </tr>
+  <tr>
+    <td>Answer quality is bounded by record quality</td>
+    <td>Where past solutions are process boilerplate — "rework as discussed", "see the attachment" — there is
+        no technical content to restate, and the system correctly refuses. The pass rate therefore measures the
+        archive at least as much as it measures the AI.</td>
+  </tr>
+  <tr>
+    <td>It does not make dispositions</td>
+    <td>Asked "may we ship this as-is?", it can only report what was done in similar cases before. It will not
+        make the accept, rework or scrap decision, and where precedent does not answer that question it
+        refuses rather than implying one.</td>
+  </tr>
+  <tr>
+    <td>Near-identical tickets can attract the same answer</td>
+    <td>Matching is on the whole problem description. When two tickets share a long background passage and
+        differ in one sentence, that sentence can be outweighed. Check 4 turns the resulting non-answer into a
+        refusal, but does not yet produce the right answer.</td>
+  </tr>
+</table>
+
+<footer>
+  Diagrams: <code>docs/architecture-runtime.svg</code>, <code>docs/architecture-tooling.svg</code> — both
+  vector, so they scale cleanly and can be inserted directly into Word or PowerPoint.
+  Technical detail, including exit codes, status codes and thresholds, is in <code>README.md</code>;
+  installation is in <code>MIGRATION_GUIDE.md</code>.
+  <br>This page embeds a copy of each diagram so it stands alone. After editing an <code>.svg</code>,
+  regenerate it with <code>python docs/build_architecture_html.py</code> — do not hand-edit
+  <code>ARCHITECTURE.html</code>, it is generated from <code>architecture.template.html</code>.
+</footer>
+</div>

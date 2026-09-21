@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 620" width="1080" height="620" role="img" aria-label="The supporting tools and the question each one answers">
+  <title>SPS supporting tools — and the question each one answers</title>
+  <style>
+    .bg    { fill: #ffffff; }
+    .h1    { font: 700 24px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #16202b; }
+    .h2    { font: 400 14.5px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #5b6b7c; }
+    .card  { rx: 10; ry: 10; fill: #fbfcfd; stroke: #c3cedb; stroke-width: 1.4; }
+    .kick  { font: 700 11px "Segoe UI", system-ui, -apple-system, sans-serif; letter-spacing: .09em; }
+    .q     { font: 600 15.5px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #16202b; }
+    .a     { font: 400 12.5px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #5b6b7c; }
+    .bnr   { font: 600 15px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #1d4d36; }
+    .bnrs  { font: 400 13px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #3d6b55; }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="1080" height="620"/>
+
+  <text class="h1" x="48" y="48">The supporting tools, and the question each answers</text>
+  <text class="h2" x="48" y="74">None of these is a separate system. Each drives the very same pipeline, from a different direction.</text>
+
+  <!-- 1 -->
+  <rect class="card" x="48" y="106" width="480" height="152"/>
+  <rect x="53" y="106" width="4" height="152" fill="#2d6a9f"/>
+  <text class="kick" x="76" y="136" fill="#2d6a9f">BEFORE YOU START · DEPLOYMENT CHECK</text>
+  <text class="q" x="76" y="164">Is the service reachable, and its scores sensible?</text>
+  <text class="a" x="76" y="192">Runs in seconds. Scores sample problem text so you can see</text>
+  <text class="a" x="76" y="210">whether the confidence gates are anywhere near right for</text>
+  <text class="a" x="76" y="228">this deployment, before a single ticket is processed.</text>
+
+  <!-- 2 -->
+  <rect class="card" x="552" y="106" width="480" height="152"/>
+  <rect x="557" y="106" width="4" height="152" fill="#2f8a4e"/>
+  <text class="kick" x="580" y="136" fill="#2f8a4e">REVIEWING QUALITY · BULK TEST</text>
+  <text class="q" x="580" y="164">Across many tickets, what is it recommending?</text>
+  <text class="a" x="580" y="192">Your own sheet of tickets comes back with the recommendation,</text>
+  <text class="a" x="580" y="210">the reason and the source records beside each row. Your input</text>
+  <text class="a" x="580" y="228">file is never modified, so a run can be repeated and compared.</text>
+
+  <!-- 3 -->
+  <rect class="card" x="48" y="284" width="480" height="152"/>
+  <rect x="53" y="284" width="4" height="152" fill="#b7791f"/>
+  <text class="kick" x="76" y="314" fill="#a86a12">SETTING THE GATES · BATCH EVALUATOR</text>
+  <text class="q" x="76" y="342">Where should the confidence threshold sit?</text>
+  <text class="a" x="76" y="370">Reports the score of every case, including the ones that were</text>
+  <text class="a" x="76" y="388">rejected — those are precisely the ones that say whether the</text>
+  <text class="a" x="76" y="406">gate is in the right place. A pass-only report would hide them.</text>
+
+  <!-- 4 -->
+  <rect class="card" x="552" y="284" width="480" height="152"/>
+  <rect x="557" y="284" width="4" height="152" fill="#7b52a0"/>
+  <text class="kick" x="580" y="314" fill="#7b52a0">STANDING DATA · THE STANDARDS LIBRARY</text>
+  <text class="q" x="580" y="342">How are the 0250 documents kept current?</text>
+  <text class="a" x="580" y="370">Copy the documents into one folder; there is nothing to run.</text>
+  <text class="a" x="580" y="388">They are read once and reused. Editing, adding or renaming</text>
+  <text class="a" x="580" y="406">one rebuilds the index by itself on the next ticket.</text>
+
+  <!-- banner -->
+  <rect x="48" y="474" width="984" height="94" rx="10" ry="10" fill="#e9f5ec" stroke="#2f8a4e" stroke-width="1.4"/>
+  <text class="bnr" x="76" y="512">All four drive the same pipeline production uses.</text>
+  <text class="bnrs" x="76" y="537">What a test shows you is what a supplier would actually have received — there is no separate</text>
+  <text class="bnrs" x="76" y="556">"test mode" whose results might differ from the real thing.</text>
+</svg>

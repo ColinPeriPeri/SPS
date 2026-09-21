@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1230" width="1200" height="1230" role="img" aria-label="How one supplier problem sheet becomes a recommendation or an honest refusal">
+  <title>SPS recommendation pipeline — runtime flow</title>
+  <style>
+    .bg    { fill: #ffffff; }
+    .h1    { font: 700 26px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #16202b; }
+    .h2    { font: 400 15px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #5b6b7c; }
+    .box   { rx: 10; ry: 10; stroke-width: 1.6; }
+    .lbl   { font: 600 15px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #16202b; }
+    .sub   { font: 400 12.5px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #5b6b7c; }
+    .kick  { font: 700 11px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #2d6a9f; letter-spacing: .09em; }
+    .kickg { font: 700 11px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #a86a12; letter-spacing: .09em; }
+    .edge  { stroke: #94a3b2; stroke-width: 1.8; fill: none; }
+    .edged { stroke: #94a3b2; stroke-width: 1.8; fill: none; stroke-dasharray: 6 5; }
+    .etxt  { font: 600 12px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #5b6b7c; }
+    .chk   { font: 600 13.5px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #16202b; }
+    .chks  { font: 400 11.5px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #6b7a8b; }
+    .num   { font: 700 12px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #ffffff; }
+    .foot  { font: 400 13px "Segoe UI", system-ui, -apple-system, sans-serif; fill: #46586b; }
+  </style>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b2"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="1230"/>
+
+  <text class="h1" x="48" y="50">How a supplier problem sheet becomes an answer</text>
+  <text class="h2" x="48" y="76">Every recommendation is traced to a source. When it cannot be, the system refuses rather than guesses.</text>
+
+  <!-- 1. arrival -->
+  <rect class="box" x="385" y="110" width="350" height="58" fill="#f2f6fa" stroke="#7d93a8"/>
+  <text class="lbl" x="560" y="135" text-anchor="middle">A supplier problem sheet arrives</text>
+  <text class="sub" x="560" y="154" text-anchor="middle">Part number, problem description, and the historical records</text>
+
+  <path class="edge" d="M 560 168 L 560 186" marker-end="url(#a)"/>
+
+  <!-- 2. usable? -->
+  <polygon points="430,224 560,186 690,224 560,262" fill="#fff8ec" stroke="#c99a3e" stroke-width="1.6"/>
+  <text class="lbl" x="560" y="229" text-anchor="middle">Is the ticket usable?</text>
+
+  <path class="edge" d="M 690 224 L 828 224" marker-end="url(#a)"/>
+  <text class="etxt" x="759" y="215" text-anchor="middle">no</text>
+
+  <rect class="box" x="830" y="192" width="320" height="64" fill="#f4f5f6" stroke="#9aa5b1"/>
+  <text class="lbl" x="990" y="218" text-anchor="middle">Not processed</text>
+  <text class="sub" x="990" y="238" text-anchor="middle">The reason is recorded — a missing part</text>
+  <text class="sub" x="990" y="252" text-anchor="middle">number, an unreadable file</text>
+
+  <!-- down into source 1 -->
+  <path class="edge" d="M 560 262 L 560 288 L 345 288 L 345 314" marker-end="url(#a)"/>
+  <text class="etxt" x="590" y="281">yes</text>
+
+  <!-- SOURCE 1 -->
+  <rect class="box" x="120" y="316" width="450" height="116" fill="#eaf2f9" stroke="#2d6a9f"/>
+  <text class="kick" x="144" y="341">SOURCE 1 — WHAT WE DID BEFORE</text>
+  <text class="lbl" x="144" y="366">Past problem sheets for the same part</text>
+  <text class="sub" x="144" y="388">Only records describing a genuinely similar problem are</text>
+  <text class="sub" x="144" y="405">kept. Everything else is discarded before the AI sees it.</text>
+
+  <!-- SOURCE 2 -->
+  <rect class="box" x="630" y="316" width="450" height="116" fill="#eaf2f9" stroke="#2d6a9f"/>
+  <text class="kick" x="654" y="341">SOURCE 2 — WHAT THE STANDARDS REQUIRE</text>
+  <text class="lbl" x="654" y="366">The 0250 engineering standards</text>
+  <text class="sub" x="654" y="388">Searched only when precedent gives nothing. Each passage</text>
+  <text class="sub" x="654" y="405">is cited by document and section.</text>
+
+  <path class="edge" d="M 570 374 L 624 374" marker-end="url(#a)"/>
+  <text class="etxt" x="597" y="364" text-anchor="middle">if</text>
+  <text class="etxt" x="597" y="393" text-anchor="middle">empty</text>
+
+  <!-- nothing relevant anywhere -->
+  <path class="edged" d="M 1080 374 L 1150 374 L 1150 952 L 1096 952" marker-end="url(#a)"/>
+  <text class="etxt" x="1146" y="400" text-anchor="end">nothing relevant</text>
+
+  <!-- converge into draft -->
+  <path class="edge" d="M 345 432 L 345 462 L 560 462 L 560 494" marker-end="url(#a)"/>
+  <path class="edge" d="M 855 432 L 855 462 L 560 462"/>
+
+  <!-- draft -->
+  <rect class="box" x="385" y="496" width="350" height="66" fill="#f2f6fa" stroke="#7d93a8"/>
+  <text class="lbl" x="560" y="522" text-anchor="middle">Draft a recommendation</text>
+  <text class="sub" x="560" y="542" text-anchor="middle">Using only the source above — never from</text>
+  <text class="sub" x="560" y="556" text-anchor="middle">the AI's own general knowledge</text>
+
+  <path class="edge" d="M 560 562 L 560 612" marker-end="url(#a)"/>
+
+  <!-- THE GATES -->
+  <rect class="box" x="270" y="614" width="580" height="232" fill="#fff8ec" stroke="#c99a3e"/>
+  <text class="kickg" x="296" y="640">FOUR CHECKS BEFORE ANYTHING CAN BE SENT</text>
+
+  <circle cx="310" cy="670" r="11" fill="#b7791f"/>
+  <text class="num" x="310" y="674" text-anchor="middle">1</text>
+  <text class="chk" x="332" y="667">Nothing invented</text>
+  <text class="chks" x="332" y="684">Every statement must trace back to the source text</text>
+
+  <circle cx="310" cy="716" r="11" fill="#b7791f"/>
+  <text class="num" x="310" y="720" text-anchor="middle">2</text>
+  <text class="chk" x="332" y="713">Nothing carried over from the old record</text>
+  <text class="chks" x="332" y="730">No attachments, ticket numbers or past conversations</text>
+
+  <circle cx="310" cy="762" r="11" fill="#b7791f"/>
+  <text class="num" x="310" y="766" text-anchor="middle">3</text>
+  <text class="chk" x="332" y="759">The right party is being asked to act</text>
+  <text class="chks" x="332" y="776">The supplier is never told to do the customer's job</text>
+
+  <circle cx="310" cy="808" r="11" fill="#b7791f"/>
+  <text class="num" x="310" y="812" text-anchor="middle">4</text>
+  <text class="chk" x="332" y="805">It answers what this ticket actually asked</text>
+  <text class="chks" x="332" y="822">A generic process step is not an answer to a specific request</text>
+
+  <!-- rewrite loop -->
+  <path class="edge" d="M 270 730 L 196 730 L 196 529 L 379 529" marker-end="url(#a)"/>
+  <text class="etxt" x="188" y="646" text-anchor="end">a check fails:</text>
+  <text class="etxt" x="188" y="662" text-anchor="end">rewrite and try again,</text>
+  <text class="etxt" x="188" y="678" text-anchor="end">up to three attempts</text>
+
+  <!-- outcomes -->
+  <path class="edge" d="M 560 846 L 560 876 L 370 876 L 370 910" marker-end="url(#a)"/>
+  <text class="etxt" x="424" y="869" text-anchor="middle">all four pass</text>
+
+  <path class="edge" d="M 560 846 L 560 876 L 876 876 L 876 910" marker-end="url(#a)"/>
+  <text class="etxt" x="726" y="869" text-anchor="middle">still failing after three attempts</text>
+
+  <rect class="box" x="150" y="912" width="440" height="80" fill="#e9f5ec" stroke="#2f8a4e"/>
+  <text class="lbl" x="370" y="941" text-anchor="middle">A recommendation</text>
+  <text class="sub" x="370" y="961" text-anchor="middle">Together with the records or standards</text>
+  <text class="sub" x="370" y="976" text-anchor="middle">sections it was drawn from</text>
+
+  <rect class="box" x="656" y="912" width="440" height="80" fill="#f4f5f6" stroke="#9aa5b1"/>
+  <text class="lbl" x="876" y="941" text-anchor="middle">No solution found</text>
+  <text class="sub" x="876" y="961" text-anchor="middle">With the reason why. A refusal is a valid,</text>
+  <text class="sub" x="876" y="976" text-anchor="middle">expected outcome — not a malfunction.</text>
+
+  <!-- human review -->
+  <path class="edge" d="M 370 992 L 370 1026 L 560 1026 L 560 1058" marker-end="url(#a)"/>
+  <path class="edge" d="M 876 992 L 876 1026 L 560 1026"/>
+
+  <rect class="box" x="385" y="1060" width="350" height="62" fill="#f4eefb" stroke="#7b52a0"/>
+  <text class="lbl" x="560" y="1086" text-anchor="middle">A person reviews every outcome</text>
+  <text class="sub" x="560" y="1106" text-anchor="middle">Nothing reaches a supplier unread</text>
+
+  <path class="edge" d="M 560 1122 L 560 1146" marker-end="url(#a)"/>
+  <rect class="box" x="450" y="1148" width="220" height="44" fill="#f2f6fa" stroke="#7d93a8"/>
+  <text class="lbl" x="560" y="1176" text-anchor="middle">Sent to the supplier</text>
+
+  <text class="foot" x="48" y="1216">The system holds no opinion of its own. Both sources are company records, and an answer it cannot ground in one of them is never sent.</text>
+</svg>
