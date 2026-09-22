@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-327 tests in about six seconds, none of which needs a server, an Azure key or
+353 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -89,9 +89,9 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/output.py` | Builds the resolved recommendation |
 | `sps/file_reader.py` | .csv / .xlsx dispatch + strict type gate |
 | `service/excel_output.py` | Atomic workbook writer |
-| `scripts/verify_embedder.py` | Acceptance checks + threshold reading against the live encoder |
+| `scripts/verify_embedder.py` | Acceptance checks, and `--probe` to set the gates from labelled pairs |
 | `scripts/make_sample_docs.py` | Regenerates the demo 0250 documents |
-| `samples/` | A ticket + history for smoke tests, a bulk sheet, six eval cases, three demo standards |
+| `samples/` | A ticket + history for smoke tests, a bulk sheet, six eval cases, twelve similarity pairs, three demo standards |
 | `data/0250_docs/` | Where the real 0250 standards go (ships empty) |
 
 
@@ -754,15 +754,16 @@ Stated explicitly rather than buried:
 
 ```
 tests/test_tier2_docs.py               62   docx parsing, cache invalidation, Tier-2 gating, the routing matrix
-tests/test_resolver.py                 32   validation, part filtering, capping, dual workbooks, threshold
+tests/test_resolver.py                 37   validation, part filtering, capping, dual workbooks, threshold
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
 tests/test_bulk_test.py                24   column preservation, row alignment, the not-attempted markers
 tests/test_transferable.py             62   the two local gates, and what they must NOT flag
 tests/test_component_c_actor_critic.py 30   refinement, circuit breaker, fail-closed, both local gates
+tests/test_similarity_probe.py         26   pair parsing, the margin maths, both margin verdicts, the file gate
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
-tests/test_config.py                    9   env loading, model/threshold single-sourcing
+tests/test_config.py                   15   env loading, model/threshold single-sourcing
 tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)
 ```
 
@@ -785,3 +786,44 @@ It ends by suggesting a range for each. That is the fastest way to find out
 whether 0.50 and 0.35 are anywhere near right on a new deployment — both are
 guesses until it has been run. `--local` runs the original bge-small checks
 instead, and reports what to install if torch is absent.
+
+Four fixtures are scored, and all four are now asserted on. Two of those
+assertions were missing for a migration:
+
+| Check | Catches |
+| --- | --- |
+| `paraphrase clears the gate` | The gate is too **high**: real precedent exists and is silently gated out, indistinguishable downstream from there being none |
+| `a different defect on the same part is blocked` | The gate is too **low**: weld porosity answers a weld cracking ticket |
+
+The second is the harder one. `unrelated` is a packaging defect against a weld
+defect and any encoder separates those, so a gate that clears it can still be
+useless. Porosity against cracking is the real test — same part, same
+inspection, same vocabulary, different fix — and it is the shape that produced
+two wrong recommendations on live tickets.
+
+### Setting the gate, rather than sanity-checking it
+
+Four fixtures cannot calibrate a threshold. A threshold lives in the gap
+between what you judged similar and what you did not, and one sample of each
+gives no gap — just two points.
+
+```bat
+python -m scripts.verify_embedder --probe
+python -m scripts.verify_embedder --probe my_pairs.xlsx --out probe.xlsx
+```
+
+`--probe` scores labelled pairs and reports that gap. Each pair in
+[`samples/similarity_pairs.csv`](samples/similarity_pairs.csv) changes exactly
+one property — word order, vocabulary, abbreviation, length, negation, the
+request — so a bad number identifies *which* property the encoder missed rather
+than just that something is wrong.
+
+The suggested gate sits **just above the strongest pair you called a no-match**,
+not at the midpoint. The two errors are not symmetric: a missed match is a
+refusal a reviewer sees and can act on, while a false match is a wrong
+instruction that looks exactly like a right one. The report then says how much
+recall that precision costs, by name.
+
+If the gap is **negative** the probe suggests nothing, names every overlapping
+pair, and says so — that is the evidence that retrieval itself has to change,
+because moving the number can then only trade one error for the other.

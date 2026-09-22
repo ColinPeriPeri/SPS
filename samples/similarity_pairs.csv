@@ -1,0 +1,13 @@
+Class,Text_A,Text_B,Expect
+identical,Bracket weld seam cracking observed during incoming inspection,Bracket weld seam cracking observed during incoming inspection,match
+reorder,Bracket weld seam cracking observed during incoming inspection,During incoming inspection we observed cracking in the bracket weld seam,match
+lexical,Bracket weld seam cracking observed during incoming inspection,Cracks found in the weld seam of the mounting bracket at goods-in,match
+abbreviation,Bracket weld seam cracking observed during incoming inspection,Crack in brkt weld seam fnd at IQC,match
+verbose,Bracket weld seam cracking observed during incoming inspection,"Lot received 14 March against PO 4500123987, 40 pieces, unpacked and staged for inspection in receiving bay 3. During the standard incoming check the operator observed cracking along the bracket weld seam. Photographs were taken and the lot was moved to the hold area pending review.",match
+passive,Bracket weld seam cracking observed during incoming inspection,A crack was reported in the weld seam of the bracket by the receiving inspector,match
+different-defect,Bracket weld seam cracking observed during incoming inspection,Weld porosity detected on the bracket joint during inspection,no-match
+different-location,Bracket weld seam cracking observed during incoming inspection,Bracket weld seam cracking observed after final assembly at the customer site,no-match
+negation,Bracket weld seam cracking observed during incoming inspection,Bracket weld seam inspected at goods-in with no cracking observed,no-match
+severity,Bracket weld seam cracking observed during incoming inspection,Minor surface scratching observed on the bracket weld seam during incoming inspection,no-match
+changed-ask,"Part was engraved with revision C but the drawing released to us is revision D. The engraving was applied at our subcontractor before the revision change reached them. We plan to re-engrave the affected units to revision D and request an ESW to cover the units already produced.","Part was engraved with revision C but the drawing released to us is revision D. The engraving was applied at our subcontractor before the revision change reached them. We have no prior experience with removing and reapplying engraving on this finish and request approval for acceptance of these units as-is.",no-match
+unrelated,Bracket weld seam cracking observed during incoming inspection,Outer carton label misprinted on the shipment packaging,no-match

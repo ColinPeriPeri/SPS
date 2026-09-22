@@ -89,6 +89,51 @@ scripts\run_eval.cmd samples\eval_cases eval_out samples\sample_history.csv
 between the scores of cases you judged wrong and the scores of cases you judged
 right, so a set with no `case04` in it cannot calibrate anything.
 
+## Similarity pairs
+
+`similarity_pairs.csv` is twelve labelled pairs for
+`python -m scripts.verify_embedder --probe`. Where `eval_cases/` measures the
+whole pipeline, this measures the encoder alone: each pair changes exactly one
+thing about the text, so a bad number says *which* property the encoder could
+not see.
+
+| Class | Expect | What it isolates |
+| --- | --- | --- |
+| `identical` | match | Sanity. Must be 1.0 |
+| `reorder` | match | Same words, rearranged clauses — the easiest case for a dense encoder |
+| `lexical` | match | Same meaning, different vocabulary (`goods-in` / `incoming inspection`) |
+| `abbreviation` | match | `brkt`, `fnd`, `IQC` — how a rushed goods-in note is actually written |
+| `passive` | match | Voice change, and an actor named who was implicit before |
+| `verbose` | match | One terse, one buried in 60 words of PO and bay numbers |
+| `different-defect` | no-match | Porosity against cracking. Same part, same words, different fix |
+| `different-location` | no-match | Same defect found at goods-in against at the customer site |
+| `negation` | no-match | Cracking **observed** against **no cracking observed** |
+| `severity` | no-match | Scratching against cracking — same sentence shape, different problem |
+| `changed-ask` | no-match | Identical background paragraph; one requests an ESW, one requests use-as-is |
+| `unrelated` | no-match | A packaging defect. The floor |
+
+```bat
+python -m scripts.verify_embedder --probe
+python -m scripts.verify_embedder --probe samples\similarity_pairs.csv --out probe.xlsx
+```
+
+The report ends in the only figure that decides anything: the gap between the
+weakest pair you called a match and the strongest you did not. **If that gap is
+negative, no threshold works** and the probe names the overlapping pairs rather
+than suggesting a number.
+
+`negation` and `changed-ask` are the load-bearing rows, and both are expected to
+score high. `changed-ask` is the shape that produced two wrong recommendations
+on real tickets: the two texts share a long background paragraph and differ only
+in the sentence that says what the supplier wants.
+
+**These twelve are invented, and invented pairs cannot calibrate anything** —
+both sides were written by the same hand, so they separate more cleanly than
+reality does. They are here to prove the instrument works and to make the
+negation and changed-ask effects visible without waiting for data. Replace them
+with 20–30 real ticket pairs you have labelled yourself, and calibrate from that
+run. Same point as `case04` above, for the same reason.
+
 ## Demo 0250 standards
 
 `0250_docs/` holds three invented engineering standards, so Tier 2 can be
