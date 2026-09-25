@@ -237,6 +237,13 @@ class ResolveOutcome:
     # the shared **measured expansion.
     evidence: tuple[str, ...] = ()
     tier2_evidence: tuple[str, ...] = ()
+    # The single best precedent, banner and all, ready to write. Unlike
+    # `evidence` above this DOES reach output.xlsx -- a reviewer looking at a
+    # refusal asked to see what we found, not merely that we found nothing.
+    closest_match: str = ""
+    # Which check ran out of road, as a value rather than as prose, so a batch
+    # can be tallied by cause instead of read one row at a time.
+    stop_reason: str = ""
 
 
 def _reason_with_marker(reason: str, embedding_model: str) -> str:
@@ -303,6 +310,85 @@ def _evidence(label: str, text: str) -> str:
     return f"{label}: {flat}"
 
 
+# DEA copies the recommendation into the SPS portal by hand. A field holding
+# raw archive text therefore has to announce itself in the first few words, or
+# it gets pasted too -- which is precisely how "ESW#20033465 is submitted for
+# these issues" would reach a supplier. The banner is a control, not a caption.
+RAW_BANNER = "[RAW HISTORY - not checked for supplier use]"
+WEAK_BANNER = "[RAW HISTORY - WEAK MATCH, below the confidence gate]"
+
+
+def _closest_match(label: str, text: str, score: float, gated: bool) -> str:
+    """The best precedent found, banner-prefixed, or '' if there was none."""
+    if not label and not text:
+        return ""
+    from sps.contracts import score_to_percent
+
+    banner = WEAK_BANNER if gated else RAW_BANNER
+    return f"{banner} {_evidence(f'{label} ({score_to_percent(score)}%)', text)}"
+
+
+# Resolver-level stops, alongside the loop's own STOP_* values. These two
+# happen before the Actor is ever called, so the loop cannot report them.
+STOP_NO_HISTORY = "NO_HISTORY_FOR_PART"
+STOP_BELOW_THRESHOLD = "BELOW_THRESHOLD"
+
+
+def _business_justification(outcome: "ResolveOutcome") -> str:
+    """Why there is no recommendation, for the person who reads the portal.
+
+    The diagnostic prose -- scores, thresholds, row counts -- stays in
+    status.xlsx's Reason, where the robot and support already read it. It was
+    being shown to DEA as well, which is what "please say it in softer words"
+    was about. The closest precedent leads, because a reviewer would rather see
+    the near-miss first and the explanation second.
+    """
+    from sps.generation.actor_critic import (
+        STOP_ACTOR_ABSTAINED,
+        STOP_GATE_MISATTRIBUTED,
+        STOP_GATE_UNTRANSFERABLE,
+        STOP_JUDGE_REFUSED,
+    )
+
+    WHY = {
+        STOP_BELOW_THRESHOLD: (
+            "This is the closest past problem we found, but it is not similar "
+            "enough to rely on. Not much historical data to infer the solution "
+            "or recommendation."
+        ),
+        STOP_ACTOR_ABSTAINED: (
+            "This is the closest past solution we found. We are not "
+            "recommending it because it does not answer what this ticket asks."
+        ),
+        STOP_GATE_UNTRANSFERABLE: (
+            "This is the closest past solution we found. We are not "
+            "recommending it as it stands because it refers to an attachment, "
+            "a prior conversation or a work request belonging to a different "
+            "ticket, none of which the supplier can act on."
+        ),
+        STOP_GATE_MISATTRIBUTED: (
+            "This is the closest past solution we found. We are not "
+            "recommending it as it stands because it asks the supplier to "
+            "perform an action only AMAT can perform."
+        ),
+        STOP_JUDGE_REFUSED: (
+            "This is the closest past solution we found. We are not "
+            "recommending it as it stands because it did not pass review."
+        ),
+    }
+
+    if not outcome.closest_match:
+        return "Not much historical data to infer the solution or recommendation."
+
+    why = WHY.get(
+        outcome.stop_reason,
+        "This is the closest past solution we found. We are not recommending "
+        "it as it stands.",
+    )
+    # Precedent first, explanation second -- the order the reviewer asked for.
+    return outcome.closest_match + "\n\n" + why
+
+
 def unresolved_result(outcome: "ResolveOutcome"):
     """The result row for a run that concluded without a recommendation.
 
@@ -311,18 +397,23 @@ def unresolved_result(outcome: "ResolveOutcome"):
     a ticket that found nothing was indistinguishable from a ticket that never
     ran -- which is exactly the case a reviewer most needs to see.
     """
-    from sps.contracts import SOLUTION_NOT_FOUND, SOURCE_NONE, PipelineResult, score_to_percent
+    from sps.contracts import NO_RECOMMENDATION, SOURCE_NONE, PipelineResult, score_to_percent
 
     # Blank, not 0%, when nothing was ever scored. An unknown part and a near
     # miss at 42% are different findings, and "0%" reads as the second one.
     # Reason carries both tiers' scores in full either way.
-    confidence = f"{score_to_percent(outcome.top_score)}%" if outcome.top_score > 0 else ""
+    #
+    # Tier 2's score is used when Tier 1 scored nothing: reporting a flat 0%
+    # for a run where the standards matched at 0.41 described the wrong tier.
+    score = outcome.top_score or outcome.tier2_top_score
+    confidence = f"{score_to_percent(score)}%" if score > 0 else ""
     return PipelineResult(
-        ai_recommendation=SOLUTION_NOT_FOUND,
-        justification=outcome.reason,
+        ai_recommendation=NO_RECOMMENDATION,
+        justification=_business_justification(outcome),
         confidence=confidence,
         referenced_sources=[],
         resolution_source=SOURCE_NONE,
+        closest_matching_solution=outcome.closest_match,
     )
 
 
@@ -342,6 +433,7 @@ def write_output(output_dir: Path, part_number: str, result) -> None:
                 # Resolution_Source alongside says which kind these are.
                 "Referenced_Sources": ", ".join(result.referenced_sources),
                 "Resolution_Source": result.resolution_source,
+                "Closest_Matching_Solution": result.closest_matching_solution,
             }
         ],
     )
@@ -449,6 +541,19 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         # What the Actor was shown, or would have been. Present even on the
         # gated path, where seeing the near-miss text is the whole point.
         evidence=tuple(_evidence(c.sps_id, c.actual_solution) for c in candidates),
+        # The single best row, gate or no gate. `candidates` is empty on a
+        # gated run, which is exactly when a reviewer most wants to see what
+        # was almost good enough -- so this reads stats, not candidates.
+        closest_match=(
+            _closest_match(
+                stats.best_candidate.sps_id,
+                stats.best_candidate.actual_solution,
+                stats.best_candidate.composite_score,
+                gated=not candidates,
+            )
+            if stats.best_candidate is not None
+            else ""
+        ),
         embedding_model=model,
         top_score=stats.top_score,
         threshold_used=stats.threshold_used,
@@ -461,12 +566,14 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
 
     if stats.usable == 0:
         tier1_stage = STAGE_NOTHING
+        tier1_stop = STOP_NO_HISTORY
         tier1_detail = (
             f"No usable history for part {part_number}: {stats.part_matches} row(s) "
             f"matched the part out of {stats.rows_scanned} scanned."
         )
     elif not candidates:
         tier1_stage = STAGE_GATED
+        tier1_stop = STOP_BELOW_THRESHOLD
         tier1_detail = (
             f"Best historical match {stats.top_score:.4f} is below the "
             f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s)."
@@ -484,6 +591,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
                 f"for part {part_number}.",
                 top_score=stats.top_score,
                 candidates=candidates,
+                closest_matching_solution=measured["closest_match"],
             )
             return ResolveOutcome(
                 CODE_SUCCESS_HISTORICAL,
@@ -509,6 +617,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         # an abstention and a tripped circuit breaker are both the Judge's
         # side of the pipeline declining, not a retrieval shortfall.
         tier1_stage = STAGE_REJECTED
+        tier1_stop = outcome.stop_reason
         tier1_detail = outcome.failure_reason
 
     logger.info("Tier 1 produced no resolution: %s", tier1_detail)
@@ -523,6 +632,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         loop=loop,
         tier1_detail=tier1_detail,
         tier1_stage=tier1_stage,
+        tier1_stop=tier1_stop,
         measured=measured,
     )
 
@@ -535,6 +645,7 @@ def _resolve_from_docs(
     loop,
     tier1_detail: str,
     tier1_stage: int,
+    tier1_stop: str,
     measured: dict,
 ) -> ResolveOutcome:
     """Tier 2. Reached only once Tier 1 has produced nothing usable."""
@@ -554,12 +665,21 @@ def _resolve_from_docs(
         tells a human whether this was a near miss worth a threshold change or
         a genuine absence of evidence.
         """
+        # Merged rather than double-splatted: Tier 2 may supply a
+        # closest_match when Tier 1 had none, and two **expansions carrying the
+        # same key is a TypeError.
+        merged = {**measured, **fields}
+        # The furthest stage wins for the code, so the stop reason has to agree
+        # with it -- reporting Tier 1's cause beside Tier 2's code would send a
+        # reader looking in the wrong tier.
+        merged.setdefault(
+            "stop_reason", tier1_stop if tier1_stage >= tier2_stage else merged.get("stop_reason", "")
+        )
         return ResolveOutcome(
             STAGE_CODES[max(tier1_stage, tier2_stage)],
             f"{tier1_detail} {extra}".strip(),
             EXIT_OK,
-            **measured,
-            **fields,
+            **merged,
         )
 
     if args.no_tier2:
@@ -647,6 +767,17 @@ def _resolve_from_docs(
         tier2_cache_state=tier2_stats.cache_state,
     )
 
+    # Only when Tier 1 found nothing at all. A part's own history outranks a
+    # general standard as the thing to show a reviewer, so a Tier-1 near-miss
+    # is never displaced by a Tier-2 one.
+    if tier2_stats.best_chunk is not None and not measured.get("closest_match"):
+        tier2_measured["closest_match"] = _closest_match(
+            tier2_stats.best_chunk.citation,
+            tier2_stats.best_chunk.chunk.text,
+            tier2_stats.best_chunk.score,
+            gated=not chunks,
+        )
+
     if not chunks:
         if not tier2_stats.chunks:
             # Documents were present but yielded no usable text at all -- every
@@ -662,6 +793,7 @@ def _resolve_from_docs(
             f"{tier2_stats.threshold_used:.2f} threshold across "
             f"{tier2_stats.chunks} chunk(s).",
             STAGE_GATED,
+            stop_reason=STOP_BELOW_THRESHOLD,
             **tier2_measured,
         )
 
@@ -685,6 +817,7 @@ def _resolve_from_docs(
             f"{outcome.failure_reason} Best 0250 match "
             f"{tier2_stats.top_score:.4f}.",
             STAGE_REJECTED,
+            stop_reason=outcome.stop_reason,
             **tier2_measured,
         )
 
@@ -696,6 +829,8 @@ def _resolve_from_docs(
         or f"Derived from {len(chunks)} 0250 standard section(s).",
         top_score=tier2_stats.top_score,
         chunks=chunks,
+        closest_matching_solution=tier2_measured.get("closest_match")
+        or measured.get("closest_match", ""),
     )
     return ResolveOutcome(
         CODE_SUCCESS_DOC,

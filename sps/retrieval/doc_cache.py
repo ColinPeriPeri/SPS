@@ -122,6 +122,9 @@ class Tier2Stats:
     qualified: int = 0
     build_seconds: float = 0.0
     query_seconds: float = 0.0
+    # The best-scoring chunk, gate or no gate. Tier 1's `best_candidate` twin,
+    # and kept out of `as_dict()` for the same reason.
+    best_chunk: "ScoredChunk | None" = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -345,6 +348,7 @@ class DocRetriever:
             for i in order[: max(self.top_k, 1)]
         ]
         self.stats.top_score = scored[0].score if scored else 0.0
+        self.stats.best_chunk = scored[0] if scored else None
         qualified = [s for s in scored if s.score >= threshold]
         self.stats.qualified = len(qualified)
 

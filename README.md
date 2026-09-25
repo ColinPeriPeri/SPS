@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-353 tests in about six seconds, none of which needs a server, an Azure key or
+371 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -118,7 +118,7 @@ python -m scripts.run_resolver --ticket-file ticket.xlsx \
 | Output | When | Columns |
 | --- | --- | --- |
 | `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason`, `Embedding_Model` |
-| `output.xlsx` | Whenever the run **reached a conclusion** (exit 0), including "no solution". Never on exit 1 or 2 | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source` |
+| `output.xlsx` | Whenever the run **reached a conclusion** (exit 0), including "no recommendation". Never on exit 1 or 2 | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Closest_Matching_Solution` |
 
 ### Status codes
 
@@ -150,6 +150,71 @@ human who has to act on it.
 
 `Status` itself is still PASS or FAIL for both success codes, so a caller
 branching on `Status` is unaffected by the second tier.
+
+### When there is no recommendation
+
+DEA copies `AI_Recommendation` into the SPS portal by hand, and it reaches the
+supplier from there essentially unedited. Everything below follows from that one
+fact.
+
+`AI_Recommendation` reads **"No recommendation available."** and `Justification`
+explains it in the reviewer's language. The diagnostics — cosines, thresholds,
+row counts — stay in `status.xlsx`'s `Reason`, where the robot and support
+already read them. They used to be shown to DEA as well.
+
+`Closest_Matching_Solution` carries the best precedent found **whether or not it
+was recommended, and whether or not it cleared the gate**:
+
+```
+[RAW HISTORY - WEAK MATCH, below the confidence gate] SPS-5002 (47%): 1. For
+the feedback please see the attachment. 2. Per discussed, rework as attachment
+shown. 4. ESW#20033465 is submitted for these issues.
+```
+
+The banner is a control, not a caption. That text names an attachment that does
+not exist, a conversation the supplier was not party to, and another supplier's
+work request — it is genuinely useful to a reviewer and genuinely unsafe to
+paste, and the only thing standing between those two facts is the label.
+
+This is the answer to *"if we can provide the solution as is from matching SPS
+we are almost there"*. The precedent is shown in full; what it is not allowed to
+do is bypass the checks on its way to a supplier.
+
+> Retaining the below-gate row needed a change in the retriever: `retrieve()`
+> returns only what qualified, so on a gated run the near-miss text existed
+> nowhere at all. `RetrievalStats.best_candidate` is captured beside
+> `top_score`, before the filter, and deliberately kept out of `as_dict()` —
+> that feeds the log line, which does not want 500 characters of solution text.
+
+### Why there was no recommendation
+
+`Status_Code` says how far the pipeline got. `No_Recommendation_Reason`, in the
+bulk sheet, says what stopped it — a different question, and the one worth
+arguing from:
+
+| Value | Constraint it points at |
+| --- | --- |
+| `NO_HISTORY_FOR_PART` | The archive — this part is new |
+| `BELOW_THRESHOLD` | The gate, or the encoder |
+| `ACTOR_ABSTAINED` | The archive — precedent found, but it answers a different question |
+| `GATE_UNTRANSFERABLE` | **Our checks** — attachment, ticket number, prior conversation |
+| `GATE_MISATTRIBUTED` | **Our checks** — the supplier was told to do the customer's job |
+| `JUDGE_REFUSED` | **Our checks** — failed the compliance audit |
+
+`scripts/run_bulk_test.py` tallies these at the end of a run and prints the
+split:
+
+```
+  of those without one, why:
+      14  ACTOR_ABSTAINED
+       6  BELOW_THRESHOLD
+       3  GATE_UNTRANSFERABLE
+    -> 3 of 23 were stopped by a supplier-safety check; 20 by the data.
+```
+
+That last line exists because "your checks are too strict" and "the archive has
+no answer" lead to opposite fixes, and the difference between them is countable
+rather than arguable. Run it before changing a guard.
 
 `Resolution_Source` is `HISTORICAL_DATA` or `0250_DOCUMENTATION`, and
 `Referenced_Sources` holds SPS IDs or document citations to match. Both replace
@@ -595,7 +660,7 @@ Output defaults to `<tickets>_results.xlsx` beside the input.
 | | |
 | --- | --- |
 | **Original columns** | Preserved verbatim, in order, including ones the pipeline never reads |
-| **Appended** | `Status`, `Status_Code`, `Reason`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Tier1_Score`, `Tier2_Score`, `Embedding_Model`, `Duration_Seconds` |
+| **Appended** | `Status`, `Status_Code`, `Reason`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Tier1_Score`, `Tier2_Score`, `No_Recommendation_Reason`, `Closest_Matching_Solution`, `Matched_Solutions`, `Embedding_Model`, `Duration_Seconds` |
 | **Rows** | Exactly one per input row, in the same order — a ticket that resolved nothing still has a row saying why |
 
 Nothing here reimplements the pipeline. Each row goes through the same
@@ -760,8 +825,9 @@ tests/test_file_reader.py              31   format dispatch, strict type gate, f
 tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
 tests/test_bulk_test.py                24   column preservation, row alignment, the not-attempted markers
 tests/test_transferable.py             62   the two local gates, and what they must NOT flag
-tests/test_component_c_actor_critic.py 30   refinement, circuit breaker, fail-closed, both local gates
+tests/test_component_c_actor_critic.py 37   refinement, circuit breaker, fail-closed, both local gates, stop_reason
 tests/test_similarity_probe.py         26   pair parsing, the margin maths, both margin verdicts, the file gate
+tests/test_cascade_and_wording.py       11   the raw-history banner, the copy-paste line, the business wording
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                   15   env loading, model/threshold single-sourcing
 tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)

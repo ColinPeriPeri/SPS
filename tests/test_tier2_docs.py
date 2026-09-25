@@ -568,12 +568,19 @@ class _Draft:
 
 
 class _Outcome:
-    def __init__(self, draft=None, failure_reason="", infrastructure_failure=False):
+    def __init__(
+        self,
+        draft=None,
+        failure_reason="",
+        infrastructure_failure=False,
+        stop_reason="JUDGE_REFUSED",
+    ):
         self.draft = draft
         self.attempts = 1
         self.critiques = []
         self.failure_reason = failure_reason
         self.infrastructure_failure = infrastructure_failure
+        self.stop_reason = stop_reason
         self.tier = "0250"
 
     @property

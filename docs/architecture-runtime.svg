@@ -129,7 +129,7 @@
   <text class="sub" x="370" y="976" text-anchor="middle">sections it was drawn from</text>
 
   <rect class="box" x="656" y="912" width="440" height="80" fill="#f4f5f6" stroke="#9aa5b1"/>
-  <text class="lbl" x="876" y="941" text-anchor="middle">No solution found</text>
+  <text class="lbl" x="876" y="941" text-anchor="middle">No recommendation available</text>
   <text class="sub" x="876" y="961" text-anchor="middle">With the reason why. A refusal is a valid,</text>
   <text class="sub" x="876" y="976" text-anchor="middle">expected outcome — not a malfunction.</text>
 

@@ -24,6 +24,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .contracts import SOLUTION_NOT_FOUND
+
 
 # ---------------------------------------------------------------- LLM schemas
 
@@ -41,7 +43,7 @@ class ActorDraft(BaseModel):
         description=(
             "Numbered, minimal, step-by-step recommendation for the supplier, "
             "drawn only from the historical solutions provided. "
-            "Exactly 'Solution not found.' if they do not address the problem."
+            f"Exactly '{SOLUTION_NOT_FOUND}' if they do not address the problem."
         )
     )
     justification: str = Field(

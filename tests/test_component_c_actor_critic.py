@@ -442,3 +442,81 @@ async def test_both_kinds_of_problem_cost_one_attempt_not_two():
     assert result.attempts == 2
     assert "attachment" in result.critiques[0].lower()
     assert "Issue an ESW" in result.critiques[0]
+
+
+# --------------------------------------------------------------------------
+# stop_reason -- why the loop gave up, as a value rather than as prose
+#
+# `failure_reason` is written for a person and reads differently for every
+# cause, so counting causes across a batch meant pattern-matching English.
+# These pin one value per exit, because the whole use of the field is a tally
+# that has to mean the same thing every time.
+# --------------------------------------------------------------------------
+
+
+async def test_abstention_reports_its_own_stop_reason():
+    engine, _ = loop(actor("Solution not found."))
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.stop_reason == "ACTOR_ABSTAINED"
+
+
+async def test_a_leaked_reference_is_attributed_to_the_transferability_gate():
+    """Not JUDGE_REFUSED. The Judge never ran -- the local gate stopped it
+    first -- and recording the wrong gate would point a fix at the prompts."""
+    leaky = "1. Per discussed, see the attachment. 2. ESW#20033465 is submitted."
+    engine, client = loop(actor(leaky), actor(leaky), actor(leaky))
+
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.stop_reason == "GATE_UNTRANSFERABLE"
+    assert client.call_count == 3  # three Actor calls, zero Judge calls
+
+
+async def test_telling_the_supplier_to_act_is_attributed_to_the_other_gate():
+    engine, _ = loop(*[actor("1. Issue an ESW.")] * 3)
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.stop_reason == "GATE_MISATTRIBUTED"
+
+
+async def test_a_judge_rejection_is_attributed_to_the_judge():
+    engine, _ = loop(
+        actor("draft one"), fail("c1"),
+        actor("draft two"), fail("c2"),
+        actor("draft three"), fail("c3"),
+    )
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.stop_reason == "JUDGE_REFUSED"
+
+
+async def test_an_outage_is_not_recorded_as_a_content_refusal():
+    """The tally exists to say whether our checks or the data are the
+    constraint. An Azure failure is neither, and must not inflate either."""
+    engine, _ = loop(actor("1. Rework the seam."), "not json at all")
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.stop_reason == "INFRASTRUCTURE"
+    assert result.infrastructure_failure
+
+
+async def test_a_success_records_no_stop_reason():
+    engine, _ = loop(actor("1. Rework the weld seam."), PASS)
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.succeeded
+    assert result.stop_reason == ""
+
+
+async def test_the_last_gate_to_fire_is_the_one_reported():
+    """Mixed rejections across three attempts: the breaker reports what
+    actually stopped the final draft, not the first thing that ever failed."""
+    engine, _ = loop(
+        actor("1. Per discussed, see the attachment."),   # gate
+        actor("1. Rework the seam."), fail("c2"),          # judge
+        actor("1. Re-inspect the seam."), fail("c3"),      # judge
+    )
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.stop_reason == "JUDGE_REFUSED"

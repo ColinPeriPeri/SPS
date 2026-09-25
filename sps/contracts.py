@@ -12,8 +12,18 @@ from typing import Any
 
 from .validators import normalize_part_number
 
-# Sentinel string used whenever no recommendation is produced.
+# Two strings, deliberately separate, because they serve different readers.
+#
+# SOLUTION_NOT_FOUND is a PROTOCOL TOKEN between us and the model. The Actor is
+# instructed to emit it verbatim and `Draft.is_abstention` matches on it. It is
+# not business copy and should not be reworded to suit a reader who never sees
+# it -- doing so silently changes what the model is asked to produce.
+#
+# NO_RECOMMENDATION is the only one a person reads. It reaches
+# AI_Recommendation, which DEA copies into the SPS portal, so it is phrased for
+# a supplier rather than for an engineer reading a log.
 SOLUTION_NOT_FOUND = "Solution not found."
+NO_RECOMMENDATION = "No recommendation available."
 
 
 def _clean(value: Any) -> str:
@@ -137,6 +147,12 @@ class PipelineResult:
     # which kind of thing they are looking at.
     referenced_sources: list[str] = field(default_factory=list)
     resolution_source: str = SOURCE_HISTORICAL
+    # The best precedent we found, verbatim, whether or not we recommended it.
+    # DEA asked to see this even on a refusal: a near-miss they can judge for
+    # themselves beats a bare "no". It is raw archive text that has passed none
+    # of the supplier-facing checks, which is why it carries its own banner and
+    # its own column rather than being blended into the recommendation.
+    closest_matching_solution: str = ""
     # Operational signals only, never written to output.xlsx. They let the
     # caller separate a dependency outage, which is worth retrying, from a
     # legitimate refusal, which is not.
@@ -145,4 +161,7 @@ class PipelineResult:
 
     @property
     def succeeded(self) -> bool:
-        return self.ai_recommendation != SOLUTION_NOT_FOUND
+        # Both strings, not just the one we write. The sentinel should never
+        # reach this field now that NO_RECOMMENDATION exists, but if some path
+        # regresses and lets it through, a refusal must not read as a success.
+        return self.ai_recommendation not in (NO_RECOMMENDATION, SOLUTION_NOT_FOUND)

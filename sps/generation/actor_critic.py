@@ -94,6 +94,20 @@ def documentation_grounding(chunks: Sequence[Any]) -> Grounding:
     )
 
 
+# Why the loop stopped, as a value rather than as prose.
+#
+# `failure_reason` is written for a person and reads differently for every
+# cause, so counting causes across a batch meant pattern-matching English. The
+# business question behind that count -- "are your checks the reason we get so
+# few recommendations, or is it the archive?" -- deserves an answer that is
+# tallied rather than argued, and these are what make it tallyable.
+STOP_ACTOR_ABSTAINED = "ACTOR_ABSTAINED"
+STOP_GATE_UNTRANSFERABLE = "GATE_UNTRANSFERABLE"
+STOP_GATE_MISATTRIBUTED = "GATE_MISATTRIBUTED"
+STOP_JUDGE_REFUSED = "JUDGE_REFUSED"
+STOP_INFRASTRUCTURE = "INFRASTRUCTURE"
+
+
 @dataclass(slots=True)
 class LoopOutcome:
     """Result plus the audit trail an admin reviewer may need to see."""
@@ -102,6 +116,8 @@ class LoopOutcome:
     attempts: int
     critiques: list[str] = field(default_factory=list)
     failure_reason: str = ""
+    # One of the STOP_* values above, or "" on success.
+    stop_reason: str = ""
     # True when the loop stopped because a dependency was unavailable rather
     # than because the content failed review. The caller needs this to tell an
     # Azure outage apart from a legitimate refusal.
@@ -143,6 +159,10 @@ class ActorCriticLoop:
         critique: str | None = None
         previous_draft: str | None = None
         critiques: list[str] = []
+        # What rejected the most recent draft. The circuit breaker reports it,
+        # because "failed the audit three times" does not say whether a regex
+        # or the Judge was doing the failing, and those lead to different fixes.
+        last_stop = ""
 
         for attempt in range(1, max_attempts + 1):
             try:
@@ -154,6 +174,7 @@ class ActorCriticLoop:
                     attempts=attempt,
                     critiques=critiques,
                     failure_reason=f"Generation failed: {exc}",
+                    stop_reason=STOP_INFRASTRUCTURE,
                     infrastructure_failure=True,
                     tier=grounding.tier,
                 )
@@ -167,6 +188,7 @@ class ActorCriticLoop:
                     attempts=attempt,
                     critiques=critiques,
                     failure_reason=grounding.abstention_reason,
+                    stop_reason=STOP_ACTOR_ABSTAINED,
                     tier=grounding.tier,
                 )
 
@@ -188,6 +210,11 @@ class ActorCriticLoop:
                 # One critique covering both, so a draft with both problems is
                 # rewritten once rather than burning two of its three attempts.
                 feedback = critique_for(leaks, misattributed)
+                # Leaks win when both fired. Arbitrary but fixed, so the tally
+                # is stable; `failure_reason` still names every fragment found.
+                last_stop = (
+                    STOP_GATE_UNTRANSFERABLE if leaks else STOP_GATE_MISATTRIBUTED
+                )
                 critiques.append(feedback)
                 critique = feedback
                 previous_draft = draft.recommendation
@@ -203,6 +230,7 @@ class ActorCriticLoop:
                     attempts=attempt,
                     critiques=critiques,
                     failure_reason=f"Compliance audit unavailable: {exc}",
+                    stop_reason=STOP_INFRASTRUCTURE,
                     infrastructure_failure=True,
                     tier=grounding.tier,
                 )
@@ -219,6 +247,7 @@ class ActorCriticLoop:
             logger.info(
                 "Ticket %r attempt %d rejected: %s", ticket.sps_id, attempt, verdict.critique
             )
+            last_stop = STOP_JUDGE_REFUSED
             critiques.append(verdict.critique)
             critique = verdict.critique
             previous_draft = draft.recommendation
@@ -234,6 +263,7 @@ class ActorCriticLoop:
                 f"Draft failed the compliance audit on all {max_attempts} attempts."
                 + (f" Last critique: {critiques[-1]}" if critiques else "")
             ),
+            stop_reason=last_stop or STOP_JUDGE_REFUSED,
             tier=grounding.tier,
         )
 

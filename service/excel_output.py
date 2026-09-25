@@ -48,6 +48,11 @@ STATUS_COLUMNS = (
 # Referenced_Sources replaces the former Referenced_SPS_IDs: with two tiers the
 # column holds SPS IDs or document citations, and Resolution_Source says which.
 # Both are a BREAKING change for a caller that reads this sheet by column name.
+# Closest_Matching_Solution is appended LAST, like Embedding_Model above and for
+# the same reason. It is raw archive text that has passed none of the
+# supplier-facing checks -- it carries its own banner saying so -- and it exists
+# because a reviewer looking at a refusal asked to see what we found rather than
+# only that we found nothing.
 RESULT_COLUMNS = (
     "Part_Number",
     "AI_Recommendation",
@@ -55,6 +60,7 @@ RESULT_COLUMNS = (
     "Confidence_Score",
     "Referenced_Sources",
     "Resolution_Source",
+    "Closest_Matching_Solution",
 )
 
 

@@ -38,14 +38,22 @@ def success(
     justification: str,
     top_score: float,
     candidates: Sequence[Candidate],
+    closest_matching_solution: str = "",
 ) -> PipelineResult:
-    """Tier 1: audited recommendation plus the precedent it came from."""
+    """Tier 1: audited recommendation plus the precedent it came from.
+
+    The raw precedent rides along even on a success. Referenced_Sources names
+    the SPS IDs, which tells a reviewer where to look but not what it said, and
+    the whole point of showing the source is to let them check the
+    recommendation against it without opening another system.
+    """
     return PipelineResult(
         ai_recommendation=recommendation,
         justification=justification,
         confidence=f"{score_to_percent(top_score)}%",
         referenced_sources=_dedupe([c.sps_id for c in candidates]),
         resolution_source=SOURCE_HISTORICAL,
+        closest_matching_solution=closest_matching_solution,
     )
 
 
@@ -54,6 +62,7 @@ def success_from_docs(
     justification: str,
     top_score: float,
     chunks: Sequence,
+    closest_matching_solution: str = "",
 ) -> PipelineResult:
     """Tier 2: audited recommendation plus the standards sections it came from.
 
@@ -68,4 +77,5 @@ def success_from_docs(
         confidence=f"{score_to_percent(top_score)}%",
         referenced_sources=_dedupe([c.citation for c in chunks]),
         resolution_source=SOURCE_DOCUMENTATION,
+        closest_matching_solution=closest_matching_solution,
     )

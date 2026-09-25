@@ -25,6 +25,11 @@ from __future__ import annotations
 
 import re
 
+# The abstention token the Actor must emit. Imported rather than spelled out so
+# the critique cannot drift from what the prompts ask for. `contracts` is itself
+# stdlib-only, so this keeps the module's no-dependency property.
+from ..contracts import SOLUTION_NOT_FOUND
+
 # Internal tracking systems whose identifiers must never reach a supplier. Site
 # specific, so extend this rather than the patterns below. Matched with or
 # without a separator, because the house style varies: ESW#20033465, CAR-1234,
@@ -234,6 +239,6 @@ def critique_for(findings: list[str], misattributed: list[str] | None = None) ->
 
     parts.append(
         "If what remains is no action the supplier could actually perform, "
-        "answer 'Solution not found.' instead."
+        f"answer '{SOLUTION_NOT_FOUND}' instead."
     )
     return " ".join(parts)

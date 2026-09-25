@@ -10,7 +10,8 @@ pytest.importorskip("pandas")
 pytest.importorskip("openpyxl")
 pytest.importorskip("numpy")
 
-import scripts.run_resolver as resolver  # noqa: E402
+import scripts.run_resolver as resolver
+import sps.contracts as resolver_contracts  # noqa: E402
 from sps.contracts import IncomingTicket  # noqa: E402
 from sps.retrieval.in_memory import (  # noqa: E402
     HistoryError,
@@ -329,6 +330,7 @@ def test_success_writes_both_workbooks(tmp_path, passing_llm):
     assert list(result.columns) == [
         "Part_Number", "AI_Recommendation", "Justification",
         "Confidence_Score", "Referenced_Sources", "Resolution_Source",
+        "Closest_Matching_Solution",
     ]
     assert result.iloc[0]["Part_Number"] == PART
     assert result.iloc[0]["Referenced_Sources"] == "SPS-1001"
@@ -347,19 +349,31 @@ def test_a_concluded_failure_still_writes_a_result_row(tmp_path, passing_llm):
     assert (out / "output.xlsx").exists()
 
     row = read_sheet(out / "output.xlsx").iloc[0]
-    assert row["AI_Recommendation"] == "Solution not found."
+    assert row["AI_Recommendation"] == resolver_contracts.NO_RECOMMENDATION
     assert row["Resolution_Source"] == "NONE"
     assert row["Referenced_Sources"] == ""
 
 
 def test_the_unresolved_row_carries_the_reason(tmp_path, passing_llm):
-    """Justification repeats the status Reason, so output.xlsx alone says why."""
+    """Justification is for the reviewer; the diagnostics stay in status.xlsx.
+
+    These were the same string, so a DEA reviewer opening the portal read
+    "Best historical match 0.8234 is below the 0.50 threshold across 12
+    candidate(s)". The numbers did not go away -- the robot and support still
+    read them in Reason -- they stopped being the business-facing text.
+    """
     _, out = run_cli(tmp_path, part="0099-99999")
 
     row = read_sheet(out / "output.xlsx").iloc[0]
     status = read_sheet(out / "status.xlsx").iloc[0]
-    assert "No usable history for part 0099-99999" in row["Justification"]
-    assert row["Justification"] in status["Reason"]
+
+    assert row["Justification"] == (
+        "Not much historical data to infer the solution or recommendation."
+    )
+    # The diagnostic is still recorded, just not here.
+    assert "No usable history for part 0099-99999" in status["Reason"]
+    assert "No usable history" not in row["Justification"]
+    assert "threshold" not in row["Justification"]
 
 
 def test_nothing_scored_leaves_the_confidence_blank(tmp_path, passing_llm):
@@ -380,7 +394,7 @@ def test_a_gated_ticket_reports_the_score_it_reached(tmp_path, passing_llm):
     )
 
     result = read_sheet(out / "output.xlsx").iloc[0]
-    assert result["AI_Recommendation"] == "Solution not found."
+    assert result["AI_Recommendation"] == resolver_contracts.NO_RECOMMENDATION
     assert result["Confidence_Score"].endswith("%")
     assert result["Confidence_Score"] != "0%"
 
@@ -390,7 +404,7 @@ def test_a_success_still_writes_the_real_recommendation(tmp_path, passing_llm):
     _, out = run_cli(tmp_path)
 
     row_ = read_sheet(out / "output.xlsx").iloc[0]
-    assert row_["AI_Recommendation"] != "Solution not found."
+    assert row_["AI_Recommendation"] != resolver_contracts.NO_RECOMMENDATION
     assert row_["Resolution_Source"] == "HISTORICAL_DATA"
     assert row_["Referenced_Sources"] == "SPS-1001"
 
@@ -416,7 +430,7 @@ def test_a_stale_result_row_is_replaced_not_left(tmp_path, passing_llm):
 
     row_ = read_sheet(out / "output.xlsx").iloc[0]
     assert row_["Part_Number"] != "STALE"
-    assert row_["AI_Recommendation"] == "Solution not found."
+    assert row_["AI_Recommendation"] == resolver_contracts.NO_RECOMMENDATION
 
 
 def test_an_infrastructure_fault_leaves_no_result_row(tmp_path, monkeypatch, passing_llm):

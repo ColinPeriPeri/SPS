@@ -86,7 +86,7 @@ Return a single JSON object and nothing else:
   "justification": "<one or two sentences on which historical records this is drawn from and why they apply, citing SPS IDs>"}}
 """
 
-JUDGE_SYSTEM_PROMPT = """\
+JUDGE_SYSTEM_PROMPT = f"""\
 You are a strict compliance auditor for a Supplier Problem Sheet (SPS) system.
 You audit a DRAFT recommendation that will be sent to an EXTERNAL SUPPLIER.
 You are the last gate before a human admin sees it. Be adversarial; the cost of
@@ -149,12 +149,12 @@ experience with that rework, please approve shipping as-is" are different
 questions. A reply that would serve both equally well has answered neither.
 
 Judge only these four checks. Do not fail a draft for terseness, formatting,
-tone or missing detail. An empty or "Solution not found." draft passes.
+tone or missing detail. An empty or "{SOLUTION_NOT_FOUND}" draft passes.
 
 OUTPUT
 Return a single JSON object and nothing else.
-On pass: {"status": "PASS"}
-On fail: {"status": "FAIL", "critique": "<specific, actionable instruction naming the exact offending text and what to do about it>"}
+On pass: {{"status": "PASS"}}
+On fail: {{"status": "FAIL", "critique": "<specific, actionable instruction naming the exact offending text and what to do about it>"}}
 """
 
 

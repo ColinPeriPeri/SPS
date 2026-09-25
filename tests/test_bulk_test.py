@@ -16,7 +16,8 @@ import pytest
 pytest.importorskip("pandas")
 pytest.importorskip("openpyxl")
 
-import scripts.run_bulk_test as bulk  # noqa: E402
+import scripts.run_bulk_test as bulk
+from sps.contracts import NO_RECOMMENDATION  # noqa: E402
 import scripts.run_resolver as resolver  # noqa: E402
 from tests.test_resolver import (  # noqa: E402
     NEAR_PROBLEM, PART, PROBLEM, read_sheet, row, write_history,
@@ -198,8 +199,9 @@ def test_an_unresolved_row_says_so_rather_than_going_blank(tmp_path, passing_llm
     result = read_sheet(out).iloc[0]
     assert result["Status"] == "FAIL"
     assert result["Status_Code"] == "NO_MATCHES"
-    assert result["AI_Recommendation"] == "Solution not found."
+    assert result["AI_Recommendation"] == NO_RECOMMENDATION
     assert result["Resolution_Source"] == "NONE"
+    assert result["No_Recommendation_Reason"] == "NO_HISTORY_FOR_PART"
 
 
 def test_nothing_scored_leaves_the_score_blank(tmp_path, passing_llm):
@@ -224,7 +226,12 @@ def test_a_gated_row_reports_how_close_it_came(tmp_path, passing_llm):
     result = read_sheet(out).iloc[0]
     assert result["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert float(result["Tier1_Score"]) > 0.9
-    assert result["AI_Recommendation"] == "Solution not found."
+    assert result["AI_Recommendation"] == NO_RECOMMENDATION
+    assert result["No_Recommendation_Reason"] == "BELOW_THRESHOLD"
+    # The near-miss text now survives the gate that rejected it. Before this,
+    # the one row a reviewer most wanted to read was the one row discarded.
+    assert "SPS-1001" in result["Closest_Matching_Solution"]
+    assert "WEAK MATCH" in result["Closest_Matching_Solution"]
 
 
 def test_each_row_is_resolved_independently(tmp_path, passing_llm):

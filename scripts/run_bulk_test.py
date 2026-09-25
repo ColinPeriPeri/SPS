@@ -61,6 +61,14 @@ RESULT_COLUMNS = (
     "Resolution_Source",
     "Tier1_Score",
     "Tier2_Score",
+    # Why this row produced nothing, as one of a fixed set of values rather
+    # than as prose. Reason says it in English already; this is the column you
+    # can group by, which is what turns "your checks are too strict" from an
+    # argument into a count.
+    "No_Recommendation_Reason",
+    # The single best precedent, gate or no gate, exactly as output.xlsx shows
+    # it to the reviewer.
+    "Closest_Matching_Solution",
     # The historical solutions (or 0250 sections) the Actor was actually shown.
     # Put beside its recommendation because the commonest question about a bad
     # answer is "what was it looking at?", and answering it from the SPS IDs
@@ -147,6 +155,8 @@ def result_for(outcome, duration: float) -> dict[str, str]:
     return {
         "Status": "PASS" if passed else "FAIL",
         "Status_Code": outcome.code,
+        "No_Recommendation_Reason": "" if passed else (outcome.stop_reason or outcome.code),
+        "Closest_Matching_Solution": outcome.closest_match,
         "Reason": " ".join(str(outcome.reason).split()),
         "AI_Recommendation": result.ai_recommendation if result else "",
         "Justification": result.justification if result else "",
@@ -217,6 +227,26 @@ def summarise(results: Sequence[dict[str, str]]) -> str:
 
     recommended = sum(1 for r in results if r.get("Status") == "PASS")
     lines.append(f"  {recommended} of {len(results)} produced a recommendation")
+
+    # The breakdown that answers "why not more?". Status_Code above says how far
+    # the pipeline got; this says what stopped it, which is a different question
+    # and the one worth arguing from. GUARD/JUDGE rows mean our checks are the
+    # binding constraint; the rest mean the archive is.
+    reasons = Counter(
+        r["No_Recommendation_Reason"]
+        for r in results
+        if str(r.get("No_Recommendation_Reason", "")) != ""
+    )
+    if reasons:
+        blocked = sum(v for k, v in reasons.items() if k.startswith(("GATE_", "JUDGE_")))
+        lines.append("  of those without one, why:")
+        for key, count in reasons.most_common():
+            lines.append(f"    {count:5d}  {key}")
+        total = sum(reasons.values())
+        lines.append(
+            f"    -> {blocked} of {total} were stopped by a supplier-safety check; "
+            f"{total - blocked} by the data."
+        )
 
     scored = sorted(
         float(r["Tier1_Score"]) for r in results if str(r.get("Tier1_Score", "")) != ""
