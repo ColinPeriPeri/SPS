@@ -51,6 +51,12 @@ REQUIRED = ("sps_id", "part_number", "problem_description", "actual_solution")
 # second even for a part with thousands of records.
 MAX_CANDIDATES = 300
 
+# How many records the reviewer is shown when there is no recommendation.
+# Three is a judgement, not a measurement: enough that a near-miss is not
+# hidden behind a marginally better one, few enough that the cell stays
+# readable in Excel.
+CASCADE_LIMIT = 3
+
 # A threshold is a property of one embedding space and does not survive a change
 # of model. Two encoders means two thresholds, and the gate must apply whichever
 # one actually produced the vectors.
@@ -131,14 +137,16 @@ class RetrievalStats:
     backend_detail: str = ""
     fallback_reason: str = ""
     threshold_used: float = 0.0
-    # The best-scoring candidate, whether or not it cleared the gate.
+    # The best-scoring candidates, whether or not they cleared the gate.
     #
     # `retrieve()` returns only what qualified, so on a gated run the near-miss
     # text was discarded and a reviewer asking "what was the closest thing you
-    # found?" had no answer anywhere. Kept off `as_dict()` on purpose: that
-    # feeds the log line and the status sheet, and neither wants 500 characters
-    # of solution text.
-    best_candidate: "Candidate | None" = None
+    # found?" had no answer anywhere. Several rather than one: a reviewer who
+    # now has to answer the ticket by hand is reading these as options, and the
+    # second-best is not obviously the wrong one to reach for. Kept off
+    # `as_dict()` on purpose: that feeds the log line and the status sheet, and
+    # neither wants 500 characters of solution text.
+    top_candidates: tuple["Candidate", ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -391,9 +399,9 @@ class InMemoryRetriever:
         scored.sort(key=lambda c: (c.composite_score, c.cosine_similarity, c.sps_id), reverse=True)
 
         self.stats.top_score = scored[0].composite_score if scored else 0.0
-        # Captured before the gate, for the same reason top_score is: the row
-        # we rejected is exactly the one a reviewer wants to see.
-        self.stats.best_candidate = scored[0] if scored else None
+        # Captured before the gate, for the same reason top_score is: the rows
+        # we rejected are exactly the ones a reviewer wants to see.
+        self.stats.top_candidates = tuple(scored[:CASCADE_LIMIT])
         qualified = [c for c in scored if c.composite_score >= threshold]
         self.stats.qualified = len(qualified)
 

@@ -56,6 +56,10 @@ LOCAL_BACKEND = "local"
 # few enough that the Actor cannot quietly blend four unrelated standards.
 TIER2_TOP_K = 5
 
+# Mirrors Tier 1's. Imported rather than redefined would couple the two
+# retrievers; they are separate numbers that happen to agree today.
+CASCADE_LIMIT = 3
+
 # Tier-2 thresholds are NOT Tier-1's, and the gap is not a detail.
 #
 # Measured with bge-small on a representative 0250 section: the enriched query
@@ -122,9 +126,9 @@ class Tier2Stats:
     qualified: int = 0
     build_seconds: float = 0.0
     query_seconds: float = 0.0
-    # The best-scoring chunk, gate or no gate. Tier 1's `best_candidate` twin,
-    # and kept out of `as_dict()` for the same reason.
-    best_chunk: "ScoredChunk | None" = None
+    # The best-scoring chunks, gate or no gate. Tier 1's `top_candidates`
+    # twin, and kept out of `as_dict()` for the same reason.
+    top_chunks: tuple["ScoredChunk", ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -348,7 +352,7 @@ class DocRetriever:
             for i in order[: max(self.top_k, 1)]
         ]
         self.stats.top_score = scored[0].score if scored else 0.0
-        self.stats.best_chunk = scored[0] if scored else None
+        self.stats.top_chunks = tuple(scored[:CASCADE_LIMIT])
         qualified = [s for s in scored if s.score >= threshold]
         self.stats.qualified = len(qualified)
 

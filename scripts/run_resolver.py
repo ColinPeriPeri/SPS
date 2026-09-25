@@ -49,7 +49,7 @@ import traceback
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 # A threshold is a property of the embedding space, defined once beside the
 # code that owns it. The LOCAL_* pair is dormant while the local encoder is out
@@ -241,6 +241,8 @@ class ResolveOutcome:
     # `evidence` above this DOES reach output.xlsx -- a reviewer looking at a
     # refusal asked to see what we found, not merely that we found nothing.
     closest_match: str = ""
+    # The scored source list, used on a success where closest_match is not.
+    source_list: str = ""
     # Which check ran out of road, as a value rather than as prose, so a batch
     # can be tallied by cause instead of read one row at a time.
     stop_reason: str = ""
@@ -318,14 +320,46 @@ RAW_BANNER = "[RAW HISTORY - not checked for supplier use]"
 WEAK_BANNER = "[RAW HISTORY - WEAK MATCH, below the confidence gate]"
 
 
-def _closest_match(label: str, text: str, score: float, gated: bool) -> str:
-    """The best precedent found, banner-prefixed, or '' if there was none."""
-    if not label and not text:
+def _closest_match(records: Sequence[tuple[str, str, float]], gated: bool) -> str:
+    """The closest precedents found, banner-prefixed, or '' if there were none.
+
+    `records` is (label, text, score), best first. Several rather than one: a
+    reviewer with no recommendation is reading these as options to answer the
+    ticket from, and the top-scoring record is not always the one that happens
+    to describe the fix.
+    """
+    if not records:
         return ""
     from sps.contracts import score_to_percent
 
     banner = WEAK_BANNER if gated else RAW_BANNER
-    return f"{banner} {_evidence(f'{label} ({score_to_percent(score)}%)', text)}"
+    header = f"{banner} {len(records)} closest record(s):"
+    blocks = [
+        _evidence(f"{label} ({score_to_percent(score)}%)", text)
+        for label, text, score in records
+    ]
+    return header + "\n\n" + "\n\n".join(blocks)
+
+
+def _source_list(records: Sequence[tuple[str, float]]) -> str:
+    """Where a recommendation came from, without reproducing it.
+
+    On a success the answer is already written; repeating the archive text
+    underneath it adds length without adding information. Worse, up to fifteen
+    records reach the Actor and a recommendation may combine several, so
+    showing one record's text would read as THE source and invite a reviewer to
+    check a step against a record it did not come from.
+
+    What is missing from `Referenced_Sources` is the per-record score -- it
+    lists the ids and cannot say which matched at 94% and which at 71%, which
+    is the one thing that says where to look first.
+    """
+    if not records:
+        return ""
+    from sps.contracts import score_to_percent
+
+    listed = ", ".join(f"{label} ({score_to_percent(score)}%)" for label, score in records)
+    return f"Synthesized from {len(records)} record(s): {listed}"
 
 
 # Resolver-level stops, alongside the loop's own STOP_* values. These two
@@ -541,19 +575,20 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         # What the Actor was shown, or would have been. Present even on the
         # gated path, where seeing the near-miss text is the whole point.
         evidence=tuple(_evidence(c.sps_id, c.actual_solution) for c in candidates),
-        # The single best row, gate or no gate. `candidates` is empty on a
-        # gated run, which is exactly when a reviewer most wants to see what
-        # was almost good enough -- so this reads stats, not candidates.
-        closest_match=(
-            _closest_match(
-                stats.best_candidate.sps_id,
-                stats.best_candidate.actual_solution,
-                stats.best_candidate.composite_score,
-                gated=not candidates,
-            )
-            if stats.best_candidate is not None
-            else ""
+        # The closest rows, gate or no gate. `candidates` is empty on a gated
+        # run, which is exactly when a reviewer most wants to see what was
+        # almost good enough -- so this reads stats, not candidates.
+        #
+        # Only ever shown when there is NO recommendation. On a success the
+        # source list below replaces it: see `_source_list`.
+        closest_match=_closest_match(
+            [(c.sps_id, c.actual_solution, c.composite_score) for c in stats.top_candidates],
+            gated=not candidates,
         ),
+        # Every record the Actor was given, with its score. All of them, not
+        # the top three: a recommendation may draw on any of them, and naming
+        # only some would misreport where the answer came from.
+        source_list=_source_list([(c.sps_id, c.composite_score) for c in candidates]),
         embedding_model=model,
         top_score=stats.top_score,
         threshold_used=stats.threshold_used,
@@ -591,7 +626,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
                 f"for part {part_number}.",
                 top_score=stats.top_score,
                 candidates=candidates,
-                closest_matching_solution=measured["closest_match"],
+                closest_matching_solution=measured["source_list"],
             )
             return ResolveOutcome(
                 CODE_SUCCESS_HISTORICAL,
@@ -770,11 +805,9 @@ def _resolve_from_docs(
     # Only when Tier 1 found nothing at all. A part's own history outranks a
     # general standard as the thing to show a reviewer, so a Tier-1 near-miss
     # is never displaced by a Tier-2 one.
-    if tier2_stats.best_chunk is not None and not measured.get("closest_match"):
+    if tier2_stats.top_chunks and not measured.get("closest_match"):
         tier2_measured["closest_match"] = _closest_match(
-            tier2_stats.best_chunk.citation,
-            tier2_stats.best_chunk.chunk.text,
-            tier2_stats.best_chunk.score,
+            [(c.citation, c.chunk.text, c.score) for c in tier2_stats.top_chunks],
             gated=not chunks,
         )
 
@@ -829,8 +862,7 @@ def _resolve_from_docs(
         or f"Derived from {len(chunks)} 0250 standard section(s).",
         top_score=tier2_stats.top_score,
         chunks=chunks,
-        closest_matching_solution=tier2_measured.get("closest_match")
-        or measured.get("closest_match", ""),
+        closest_matching_solution=_source_list([(c.citation, c.score) for c in chunks]),
     )
     return ResolveOutcome(
         CODE_SUCCESS_DOC,

@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-381 tests in about six seconds, none of which needs a server, an Azure key or
+387 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -162,16 +162,37 @@ explains it in the reviewer's language. The diagnostics — cosines, thresholds,
 row counts — stay in `status.xlsx`'s `Reason`, where the robot and support
 already read them. They used to be shown to DEA as well.
 
-The precedent appears in **two** places, deliberately. `Justification` is the
-field a reviewer is already reading, so the source sits there next to the
-reasoning; `Closest_Matching_Solution` holds the same text on its own for
-anyone filtering or diffing a batch. The order differs by outcome, because the
-two answer different questions:
+What `Closest_Matching_Solution` holds depends on whether there is an answer,
+because the two cases need different things:
 
-| Outcome | Justification reads |
-| --- | --- |
-| No recommendation | the precedent **first**, then why we will not use it &mdash; the precedent *is* the finding |
-| Resolved | the rationale first, then the precedent as evidence for it |
+| Outcome | The column holds | Why |
+| --- | --- | --- |
+| No recommendation | the **3 closest records**, in full, banner-prefixed | There is no answer, so the raw records *are* the deliverable &mdash; a reviewer now writing the reply themselves is reading these as options |
+| Resolved | a **scored source list**, no archive text | The recommendation is already the distilled answer |
+
+Both also appear at the end of `Justification`, which is the field a reviewer is
+already reading. On a refusal the records lead and the explanation follows; on a
+success the rationale leads and the sources follow it.
+
+### Why a resolved row does not quote its source
+
+Up to **15** qualified records reach the Actor, each tagged with its own match
+score, and a recommendation may combine steps from several of them. Quoting the
+top record would read as *the* source and invite a reviewer to check a step
+against a record that step did not come from &mdash; worse than showing nothing.
+
+So a resolved row names them all instead, with their scores:
+
+```
+Synthesized from 5 record(s): SPS-1001 (93%), SPS-1002 (74%), SPS-1004 (49%), SPS-1003 (49%), SPS-1005 (35%)
+```
+
+`Referenced_Sources` already lists those ids. What it cannot say is which
+matched at 93% and which at 35%, and that is the one thing telling a reviewer
+where to look first.
+
+On a refusal the limit is **3**, not all of them: enough that a near-miss is not
+hidden behind a marginally better one, few enough that the cell stays readable.
 
 `Closest_Matching_Solution` carries the best precedent found **whether or not it
 was recommended, and whether or not it cleared the gate**:
@@ -862,7 +883,7 @@ tests/test_bulk_test.py                24   column preservation, row alignment, 
 tests/test_transferable.py             62   the two local gates, and what they must NOT flag
 tests/test_component_c_actor_critic.py 43   refinement, breaker, fail-closed, both gates, stop_reason, justification
 tests/test_similarity_probe.py         26   pair parsing, the margin maths, both margin verdicts, the file gate
-tests/test_cascade_and_wording.py       15   the raw-history banner, the copy-paste line, the business wording
+tests/test_cascade_and_wording.py       21   the banner, the copy-paste line, the wording, multi-record sources
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                   15   env loading, model/threshold single-sourcing
 tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)
