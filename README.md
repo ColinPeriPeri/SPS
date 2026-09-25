@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-371 tests in about six seconds, none of which needs a server, an Azure key or
+377 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -405,6 +405,30 @@ set that no longer occurs. `Confidence_Score` is the cosine alone.
 ---
 
 ## What must never reach a supplier
+
+### Both fields, not just the recommendation
+
+Every gate and the Judge read `recommendation`. For a long time nothing read
+`justification` -- which is written to `output.xlsx` and read by the reviewer.
+So this passed every check:
+
+```
+recommendation : 1. Rework the weld seam. 2. Re-inspect under 10x magnification.
+justification  : Based on SPS-100, for which ESW#20033465 was submitted; see the attachment.
+```
+
+The gate rejects that text the moment it is handed it; it was simply never
+handed it. `_sanitised()` in `actor_critic.py` now scans the justification on
+the way out of a PASS and **blanks it on a finding rather than rejecting the
+draft**. Both tiers already substitute generated text for an empty
+justification, so there is no new path, no second model call and no retry.
+
+That asymmetry is deliberate. The recommendation is already clean by then;
+discarding it over its rationale would spend a retry -- often the whole ticket
+-- to fix prose that is context for the reviewer rather than the text DEA sends
+on. A careless explanation is not worth a lost answer.
+
+### The gap the gates exist to close
 
 Grounding answers *"did this text come from the source?"*. It does not answer
 *"is it still true of the ticket in front of us?"*, and those have different
@@ -825,7 +849,7 @@ tests/test_file_reader.py              31   format dispatch, strict type gate, f
 tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
 tests/test_bulk_test.py                24   column preservation, row alignment, the not-attempted markers
 tests/test_transferable.py             62   the two local gates, and what they must NOT flag
-tests/test_component_c_actor_critic.py 37   refinement, circuit breaker, fail-closed, both local gates, stop_reason
+tests/test_component_c_actor_critic.py 43   refinement, breaker, fail-closed, both gates, stop_reason, justification
 tests/test_similarity_probe.py         26   pair parsing, the margin maths, both margin verdicts, the file gate
 tests/test_cascade_and_wording.py       11   the raw-history banner, the copy-paste line, the business wording
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries

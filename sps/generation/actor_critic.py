@@ -9,7 +9,7 @@ text to a supplier.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
 from ..config import LLMSettings
@@ -106,6 +106,38 @@ STOP_GATE_UNTRANSFERABLE = "GATE_UNTRANSFERABLE"
 STOP_GATE_MISATTRIBUTED = "GATE_MISATTRIBUTED"
 STOP_JUDGE_REFUSED = "JUDGE_REFUSED"
 STOP_INFRASTRUCTURE = "INFRASTRUCTURE"
+
+
+def _sanitised(draft: Draft, sps_id: str) -> Draft:
+    """Drop a justification that carries the record's own baggage.
+
+    Everything above audits `recommendation`; nothing audited `justification`,
+    and that field is written to the workbook a reviewer reads. So a spotless
+    recommendation could ship beside "Based on SPS-100, for which ESW#20033465
+    was submitted; see the attachment" -- text the very same gate rejects when
+    it is handed it.
+
+    Blanked rather than rewritten, because both tiers already substitute a
+    generated sentence for an empty justification. Blanking therefore needs no
+    new code path, no second model call and no retry.
+
+    And blanked rather than treated as a rejection, because the costs are not
+    symmetric. The recommendation is already clean by this point; throwing it
+    away over its rationale would spend a retry, and often the whole ticket, to
+    fix prose that is context for the reviewer rather than the text sent on.
+    """
+    findings = untransferable_references(draft.justification) + misattributed_actions(
+        draft.justification
+    )
+    if not findings:
+        return draft
+
+    logger.warning(
+        "Ticket %r: justification discarded, it carried %s",
+        sps_id,
+        "; ".join(findings),
+    )
+    return replace(draft, justification="")
 
 
 @dataclass(slots=True)
@@ -238,7 +270,7 @@ class ActorCriticLoop:
             if verdict.passed:
                 logger.info("Ticket %r: draft passed audit on attempt %d", ticket.sps_id, attempt)
                 return LoopOutcome(
-                    draft=draft,
+                    draft=_sanitised(draft, ticket.sps_id),
                     attempts=attempt,
                     critiques=critiques,
                     tier=grounding.tier,

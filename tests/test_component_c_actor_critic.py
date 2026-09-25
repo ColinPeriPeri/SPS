@@ -520,3 +520,86 @@ async def test_the_last_gate_to_fire_is_the_one_reported():
     result = await engine.run(TICKET, CANDIDATES)
 
     assert result.stop_reason == "JUDGE_REFUSED"
+
+
+# --------------------------------------------------------------------------
+# The justification is audited too
+#
+# It was not, for a long time. Every gate and the Judge read `recommendation`;
+# `justification` went straight to the workbook a reviewer reads, so a spotless
+# recommendation could ship beside a rationale naming another ticket's work
+# request. These pin the fix and, more importantly, its limits.
+# --------------------------------------------------------------------------
+
+CLEAN_REC = "1. Rework the weld seam. 2. Re-inspect under 10x magnification."
+
+
+def draft_with(justification: str) -> str:
+    return json.dumps({"recommendation": CLEAN_REC, "justification": justification})
+
+
+async def test_a_leaking_justification_is_discarded():
+    """Verbatim from the case that exposed this."""
+    engine, _ = loop(
+        draft_with("Based on SPS-100, for which ESW#20033465 was submitted; see the attachment."),
+        PASS,
+    )
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.succeeded
+    assert result.draft.justification == ""
+
+
+async def test_the_recommendation_survives_a_dirty_justification():
+    """The trade this design makes. A clean answer is not thrown away because
+    its rationale was careless -- the resolver substitutes generated text for
+    the empty justification and the recommendation ships untouched."""
+    engine, client = loop(draft_with("Per discussed, see ESW#20033465."), PASS)
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.draft.recommendation == CLEAN_REC
+    assert result.attempts == 1
+    assert client.call_count == 2  # no retry was spent on this
+
+
+async def test_a_clean_justification_is_left_alone():
+    """The failure mode worth guarding: an over-eager scan silently costs the
+    reviewer the one sentence explaining where the answer came from."""
+    reason = "Drawn from SPS-100, which records the same weld seam defect on this part."
+    engine, _ = loop(draft_with(reason), PASS)
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.draft.justification == reason
+
+
+async def test_an_esw_stated_as_an_outcome_survives_in_a_justification():
+    """Base form is what separates an instruction from a fact. "was issued"
+    describes what happened; only "Issue an ESW" tells someone to do it."""
+    reason = "The record notes an ESW was issued before shipment was released."
+    engine, _ = loop(draft_with(reason), PASS)
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.draft.justification == reason
+
+
+async def test_a_misattributed_action_in_a_justification_is_discarded():
+    engine, _ = loop(draft_with("The supplier should issue an ESW for this unit."), PASS)
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.draft.justification == ""
+    assert result.draft.recommendation == CLEAN_REC
+
+
+async def test_a_refused_draft_is_unaffected():
+    """Sanitising happens on the way out of a PASS. A draft that never passes
+    is discarded whole, so there is nothing to sanitise and no behaviour to
+    change on that path."""
+    engine, _ = loop(
+        draft_with("ESW#20033465."), fail("c1"),
+        draft_with("ESW#20033465."), fail("c2"),
+        draft_with("ESW#20033465."), fail("c3"),
+    )
+    result = await engine.run(TICKET, CANDIDATES)
+
+    assert result.draft is None
+    assert result.stop_reason == "JUDGE_REFUSED"
