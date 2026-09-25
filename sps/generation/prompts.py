@@ -18,6 +18,19 @@ from ..contracts import SOLUTION_NOT_FOUND, Candidate, IncomingTicket
 # all three have to agree for a citation check to mean anything.
 SECTION_MARK = chr(0x00A7)
 
+# ---- DORMANT: the Tier-1 Actor and Judge ---------------------------------
+#
+# Tier 1 no longer drafts or audits anything. It scores intent and, above the
+# gate, sends the matched record's solution exactly as recorded -- so
+# ACTOR_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, build_actor_messages and
+# build_judge_messages are unreachable from the historical path.
+#
+# Kept rather than deleted, the same way the bge encoder was. Re-enabling means
+# calling historical_grounding() from resolve() again instead of score_intent;
+# nothing here has to change. The Tier-2 equivalents below are live and are
+# NOT dormant -- the 0250 path keeps every check it had.
+# ---------------------------------------------------------------------------
+
 ACTOR_SYSTEM_PROMPT = f"""\
 You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.
 
@@ -422,5 +435,96 @@ def build_judge_messages(
     )
     return [
         {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+# ===========================================================================
+# Intent scoring -- the Tier-1 decision
+# ===========================================================================
+#
+# This replaces the Actor and Judge on the Tier-1 path. It does not write a
+# recommendation: when a record scores highly enough its solution is sent
+# exactly as recorded. So this prompt's only job is to decide WHICH record,
+# and its only lever on the outcome is the number it returns.
+#
+# Which makes the distinction it has to draw a narrow one. It is scoring
+# whether two PROBLEMS share an intent -- not whether they are worded alike,
+# and not whether the solution attached to the record looks useful. A record
+# whose problem matches perfectly and whose solution is useless must still
+# score high, because "the archive has no good answer for this" is a finding
+# the reviewer needs, and burying it inside a low match score hides it.
+
+INTENT_SYSTEM_PROMPT = """\
+You assess whether past Supplier Problem Sheet (SPS) records address the same
+INTENT as an incoming ticket. You do not write recommendations and you do not
+judge solutions. You answer one question per record: is this past problem the
+same request as the new one?
+
+FIRST, state the incoming ticket's intent in one sentence.
+
+The intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.
+Most tickets are mostly background -- lot numbers, dates, how the defect was
+found -- and the request is often a single sentence near the end. Two tickets
+can describe an identical defect and ask for opposite things:
+
+  "we will re-engrave the units, and request an ESW to cover those already
+   produced"                                    -> asks to REWORK, then ship
+  "we have no experience with that rework, and request approval to ship these
+   units as-is"                                 -> asks to USE AS-IS
+
+Those are different intents. A record answering one does not answer the other,
+however similar the two tickets read.
+
+THEN, score each record 0-100 on how well ITS problem shares that intent.
+
+  90-100  The same request about the same kind of defect.
+  75-89   The same request; the defect differs in detail but not in kind.
+  50-74   Related, but the request differs -- a different disposition asked
+          for, or a different stage of the process.
+  0-49    A different problem, or the same words about a different request.
+
+RULES
+
+1. Score the PROBLEM, never the solution. If a record's problem matches the
+   ticket exactly, it scores high even when its recorded solution is unusable
+   boilerplate. Someone downstream needs to see that the closest precedent is
+   empty; scoring it low would hide that behind "no match found".
+2. Wording is not intent. Identical phrasing asking for a different outcome is
+   a low score. Completely different phrasing asking for the same outcome is a
+   high score. That distinction is the whole reason you are being asked.
+3. Judge only what is written. Do not assume an unstated request because it is
+   the usual one for this kind of defect.
+4. Where a ticket states no clear request, say so in ticket_intent and score on
+   the defect alone. Do not invent a request to score against.
+5. Return exactly one entry per record supplied, with its SPS ID copied
+   verbatim. Never invent, merge or omit a record.
+"""
+
+
+def build_intent_messages(
+    ticket: IncomingTicket,
+    candidates: Sequence[Candidate],
+) -> list[dict[str, str]]:
+    """One call: read the ticket's intent, then score every candidate against it.
+
+    The candidates are rendered with their PROBLEM text, not their solutions.
+    The scorer is deciding which past problem is the same request, and showing
+    it the solutions would invite it to score the answer's usefulness instead
+    -- which is rule 1, and the rule most worth enforcing structurally rather
+    than by asking.
+    """
+    blocks = "\n\n".join(
+        f"[SPS_ID: {c.sps_id}]\n{c.problem_description}" for c in candidates
+    ) or "(none)"
+
+    user = (
+        "INCOMING TICKET\n"
+        f"{ticket.problem_description.strip()}\n\n"
+        "PAST RECORDS TO SCORE\n"
+        f"{blocks}\n"
+    )
+    return [
+        {"role": "system", "content": INTENT_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]

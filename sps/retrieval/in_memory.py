@@ -66,12 +66,20 @@ CASCADE_LIMIT = 3
 # 0.7831 there, so carrying bge-large's 0.82 across would loosen the gate.
 LOCAL_EMBEDDING_THRESHOLD = 0.89
 
-# Azure: PROVISIONAL. This has not been measured against a real deployment, and
-# the right value depends heavily on which model backs it -- text-embedding-3-*
-# put unrelated text near 0.1-0.3, while ada-002 is notorious for keeping even
-# unrelated pairs above 0.7, where 0.50 would admit essentially everything.
-# Measure before trusting it: `python -m scripts.verify_embedder --azure`.
-AZURE_EMBEDDING_THRESHOLD = 0.50
+# Azure: a RECALL filter, not a decision.
+#
+# This number used to decide whether a ticket got an answer. It no longer does
+# -- the intent scorer decides -- so it was lowered from 0.50, and the reason
+# matters more than the value. Two gates in series, a cosine at 0.50 and an
+# intent score at 0.75, means the cosine quietly does half the deciding: a
+# record whose intent matches perfectly but whose wording scores 0.49 is
+# discarded before the scorer ever sees it, and nothing reports that it
+# happened. Wording similarity is exactly the judgement this design moved away
+# from making.
+#
+# So it is set to admit generously and let the scorer reject. Too low costs a
+# slightly longer prompt; too high costs answers, silently.
+AZURE_EMBEDDING_THRESHOLD = 0.30
 
 # Retained under the old name so existing callers keep working.
 DEFAULT_CONFIDENCE_THRESHOLD = LOCAL_EMBEDDING_THRESHOLD
@@ -346,7 +354,12 @@ class InMemoryRetriever:
     # backend that happened to answer.
     confidence_threshold: float | None = None
     max_candidates: int = MAX_CANDIDATES
-    max_context_records: int = 15
+    # How many candidates leave the retriever. Was 15, when they were context
+    # for an Actor writing prose and more of it was more grounding. They are
+    # now a shortlist for the intent scorer, which reads every one of them in a
+    # single prompt and has to tell them apart -- so a shorter list is a
+    # sharper judgement, not a weaker one. Overridden from IntentSettings.
+    max_context_records: int = 5
     min_text_length: int = 15
     stats: RetrievalStats = field(default_factory=RetrievalStats)
     # Injection seam for tests, and where a locally-hosted encoder would be
@@ -492,6 +505,7 @@ def _to_candidate(row: HistoryRow, similarity: float) -> Candidate:
     return Candidate(
         sps_id=row.sps_id,
         actual_solution=row.actual_solution,
+        problem_description=row.problem_description,
         part_number=row.part_number,
         part_description=row.part_description,
         item_status=row.item_status,

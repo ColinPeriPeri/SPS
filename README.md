@@ -5,9 +5,18 @@ supplier-submitted problem sheets **strictly from historical precedent**. It nev
 introduces external domain knowledge, never exposes internal tooling to suppliers,
 and always emits a status workbook for human admin review.
 
-Two tiers of evidence. **Tier 1** answers from the part's own historical SPS
-records. When those produce nothing usable, **Tier 2** answers from the company's
-0250 engineering standards instead and cites the document and section it used.
+Two tiers of evidence, and they work differently.
+
+**Tier 1** answers from the part's own historical SPS records. It does not
+write anything: an LLM reads the shortlisted records, decides which is making
+the same *request* as the ticket, and above a confidence gate the pipeline
+sends that record's solution **exactly as recorded** — no rewrite, no audit.
+
+**Tier 2** answers from the company's 0250 engineering standards, for a
+configured set of reason codes only, and it keeps the full Actor/Judge
+apparatus: a model drafts, a compliance auditor and two deterministic gates
+review, and an unverified draft is never sent.
+
 Neither tier is allowed to answer from the model's own knowledge.
 
 Embeddings and generation both run on **Azure OpenAI**, at `temperature=0.0`,
@@ -57,7 +66,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-387 tests in about six seconds, none of which needs a server, an Azure key or
+417 tests in about seven seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -82,7 +91,8 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 | `sps/retrieval/docx_parser.py` | **Tier 2** — parse 0250 .docx into citable, section-bounded chunks |
 | `sps/retrieval/doc_cache.py` | **Tier 2** — hash-keyed vector cache, enriched query, search |
 | `sps/embedding.py` | Azure encoder; the BGE wrapper, disabled but intact |
-| `sps/generation/` | Actor / Judge loop, schema-constrained |
+| `sps/generation/intent.py` | **Tier 1** — scores which past record asks the same question |
+| `sps/generation/` | Actor / Judge loop, schema-constrained — **Tier 2 only** |
 | `sps/generation/transferable.py` | The two deterministic gates: record-specific references, and misattributed actions |
 | `sps/schemas.py` | Pydantic response schemas for the LLM |
 | `sps/contracts.py` | Ticket and result shapes |
@@ -150,6 +160,33 @@ human who has to act on it.
 
 `Status` itself is still PASS or FAIL for both success codes, so a caller
 branching on `Status` is unaffected by the second tier.
+
+### When Tier 1 finds a match
+
+The matched record's `Solution_Text` becomes `AI_Recommendation` **character for
+character**. Nothing is reworded, renumbered or reformatted; the one thing that
+changes is that the history reader trims each cell at load, as it does for every
+field. A reviewer can diff the cell against the source record and expect it to
+match.
+
+`Referenced_Sources` names the single record the solution came from — not the
+whole shortlist, because one record's solution was sent.
+`Closest_Matching_Solution` carries the scored shortlist so the rejected
+candidates stay visible.
+
+**`Cascade_Warnings` is the only thing standing between the archive and the
+supplier.** It runs the same two scanners that *block* a draft in Tier 2, and
+here they only annotate:
+
+```
+Contains: internal tracking identifier: 'ESW#20033465'; reference to an
+attachment: 'attachment'; reference to a prior conversation: 'Per discussed'
+```
+
+The asymmetry is deliberate. Tier-2 text is written by a model, so rejecting it
+costs a retry. Tier-1 text is the archive's own and is sent as recorded —
+rejecting it would mean refusing a precedent the business asked to be sent. So
+the risk is named and the decision sits with the reviewer.
 
 ### When there is no recommendation
 
@@ -875,7 +912,7 @@ Stated explicitly rather than buried:
 
 ```
 tests/test_tier2_docs.py               62   docx parsing, cache invalidation, Tier-2 gating, the routing matrix
-tests/test_resolver.py                 37   validation, part filtering, capping, dual workbooks, threshold
+tests/test_resolver.py                 39   validation, part filtering, capping, dual workbooks, threshold
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
 tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
@@ -883,7 +920,8 @@ tests/test_bulk_test.py                24   column preservation, row alignment, 
 tests/test_transferable.py             62   the two local gates, and what they must NOT flag
 tests/test_component_c_actor_critic.py 43   refinement, breaker, fail-closed, both gates, stop_reason, justification
 tests/test_similarity_probe.py         26   pair parsing, the margin maths, both margin verdicts, the file gate
-tests/test_cascade_and_wording.py       21   the banner, the copy-paste line, the wording, multi-record sources
+tests/test_cascade_and_wording.py       24   verbatim cascade, the warning column, the refusal wording
+tests/test_intent_matching.py          25   intent scoring, failing closed, the reason-code gate
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                   15   env loading, model/threshold single-sourcing
 tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)

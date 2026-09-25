@@ -607,22 +607,59 @@ def tiered_llm(monkeypatch):
                 seen["tier2"] = list(grounding.items)
                 return tier2
 
+        # Tier 1 no longer runs the Actor/Judge loop -- it scores intent and
+        # cascades. The tier1 _Outcome is still how these tests say "Tier 1
+        # succeeds" or "Tier 1 fails", so it is translated into the intent
+        # verdict that produces the same outcome.
+        async def fake_score_intent(client, ticket, candidates):
+            from sps.generation.intent import IntentOutcome, ScoredCandidate
+
+            seen["tier1"] = list(candidates)
+            if tier1.infrastructure_failure:
+                return IntentOutcome(failure_reason=tier1.failure_reason)
+            # Comfortably either side of any threshold these tests set, so a
+            # change to the default gate does not silently flip them.
+            top = 0.95 if tier1.draft is not None else 0.10
+            return IntentOutcome(
+                ticket_intent="stubbed ticket intent",
+                scored=tuple(
+                    ScoredCandidate(
+                        candidate=c,
+                        intent_match=top if i == 0 else 0.05,
+                        reason="stubbed",
+                    )
+                    for i, c in enumerate(candidates)
+                ),
+            )
+
         monkeypatch.setattr("sps.generation.ActorCriticLoop", Loop)
         monkeypatch.setattr("sps.generation.AzureOpenAIChatClient", lambda *a, **k: object())
+        monkeypatch.setattr("sps.generation.score_intent", fake_score_intent)
         return seen
 
     return install
 
 
+# Tier 2 is scoped to configured reason codes. These tests are about what
+# Tier 2 does once it runs, so they configure the gate open and carry a
+# matching code; the gate itself is tested in test_reason_code_gate.py.
+TIER2_CODE = "RC-EQUIV"
+
+
+@pytest.fixture(autouse=True)
+def _tier2_reason_code_allowed(monkeypatch):
+    monkeypatch.setenv("SPS_TIER2_REASON_CODES", TIER2_CODE)
+
+
 def run_cli(tmp_path, docs_dir=None, threshold=0.99, part=PART,
-            tier2_threshold=None, extra=()):
+            tier2_threshold=None, extra=(), reason_code=TIER2_CODE):
     """Threshold 0.99 by default so Tier 1 gates and Tier 2 is reached."""
     out = tmp_path / "out"
     # A near-duplicate, not a copy: identical text scores exactly 1.0 through
     # the stubbed Azure encoder and would clear the 0.99 gate these tests use
     # to force Tier 1 to fail.
     write_history(tmp_path / "h.xlsx", [row("SPS-1001", problem=NEAR_PROBLEM)])
-    write_ticket(tmp_path / "t.xlsx", part=part)
+    write_ticket(tmp_path / "t.xlsx", part=part, reason_code=reason_code)
     argv = [
         "--ticket-file", str(tmp_path / "t.xlsx"),
         "--history-file", str(tmp_path / "h.xlsx"),

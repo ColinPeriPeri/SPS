@@ -219,61 +219,8 @@ def test_no_module_spells_the_sentinel_by_hand():
 # the record had to read two columns to find out.
 
 
-def test_a_successful_row_carries_its_sources_into_the_justification(tmp_path, passing_llm):
-    """The ids and their scores, not the archive text. The recommendation is
-    already the distilled answer; reproducing the source underneath it adds
-    length without adding information."""
-    _, out = run_cli(
-        tmp_path,
-        rows=[row("SPS-1001", solution=LEAKY_SOLUTION)],
-        threshold=0.5,
-    )
-    result = read_sheet(out / "output.xlsx").iloc[0]
-
-    assert result["AI_Recommendation"] != NO_RECOMMENDATION  # it did resolve
-    assert "Synthesized from" in result["Justification"]
-    assert "SPS-1001" in result["Justification"]
-    assert "ESW#20033465" not in result["Justification"]
 
 
-def test_on_a_success_the_rationale_comes_before_the_source(tmp_path, passing_llm):
-    """The opposite order to a refusal, and deliberately so. On a refusal the
-    precedent IS the finding; on a success it is the evidence for a rationale
-    that has already answered the question."""
-    _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=LEAKY_SOLUTION)], threshold=0.5)
-    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
-
-    assert not justification.startswith("Synthesized from")
-    assert justification.index("Synthesized from") > 0
-
-
-def test_the_stripped_items_never_reach_the_recommendation_on_any_path(tmp_path, passing_llm):
-    """Half of the bargain, and the half that must hold everywhere: none of
-    this may appear in the field DEA copies, resolved or refused."""
-    for threshold in (0.5, 0.99):
-        _, out = run_cli(
-            tmp_path,
-            rows=[row("SPS-1001", problem=NEAR_PROBLEM, solution=LEAKY_SOLUTION)],
-            threshold=threshold,
-        )
-        recommendation = read_sheet(out / "output.xlsx").iloc[0]["AI_Recommendation"]
-        for needle in ("ESW#", "attachment", "Per discussed"):
-            assert needle not in recommendation, f"{needle} leaked at threshold {threshold}"
-
-
-def test_the_archive_text_is_shown_only_when_there_is_no_answer(tmp_path, passing_llm):
-    """The other half. A refusal hands the reviewer the raw records, because
-    they now have to answer the ticket themselves. A success does not, because
-    the answer is written and the source list says where to check."""
-    rows_ = [row("SPS-1001", problem=NEAR_PROBLEM, solution=LEAKY_SOLUTION)]
-
-    refused = read_sheet(run_cli(tmp_path, rows=rows_, threshold=0.99)[1] / "output.xlsx").iloc[0]
-    for needle in ("ESW#20033465", "attachment", "Per discussed"):
-        assert needle in refused["Justification"]
-
-    resolved = read_sheet(run_cli(tmp_path, rows=rows_, threshold=0.5)[1] / "output.xlsx").iloc[0]
-    assert "ESW#20033465" not in resolved["Justification"]
-    assert "Synthesized from" in resolved["Justification"]
 
 
 def test_no_precedent_means_no_empty_banner(tmp_path, passing_llm):
@@ -381,3 +328,89 @@ def test_the_banner_appears_once_not_per_record(tmp_path, passing_llm):
     cell = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
 
     assert cell.count("RAW HISTORY") == 1
+
+
+# ------------------------------------------------------- the verbatim cascade
+#
+# The bargain changed shape. It used to be: archive text may never reach the
+# field DEA copies. It is now: above the gate that text IS the field DEA
+# copies, sent exactly as recorded, and a warning column says what is in it.
+#
+# So what these pin is no longer an absence. It is that the pass-through is
+# genuinely a pass-through, and that nothing risky travels silently.
+
+
+def test_the_matched_solution_is_sent_character_for_character(tmp_path, passing_llm):
+    """Not "similar to", not "cleaned up". A reviewer must be able to diff this
+    cell against the source record and find no difference at all."""
+    _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=LEAKY_SOLUTION)], threshold=0.5)
+    recommendation = read_sheet(out / "output.xlsx").iloc[0]["AI_Recommendation"]
+
+    assert recommendation == LEAKY_SOLUTION
+
+
+def test_the_shape_of_the_solution_survives_the_cascade(tmp_path, passing_llm):
+    """Blank lines, double spaces and the numbering style all come through.
+
+    One thing IS normalised, and it is worth stating rather than discovering:
+    the history reader strips each cell at load, as it does for every field, so
+    whitespace at the very start and end of the cell does not survive. Nothing
+    between the first and last character is touched -- which is what makes the
+    cascade diffable against the source.
+    """
+    awkward = "1)  Rework the seam.\n\n2)   Re-inspect under 10x."
+    _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=awkward)], threshold=0.5)
+
+    assert read_sheet(out / "output.xlsx").iloc[0]["AI_Recommendation"] == awkward
+
+
+def test_only_the_cell_edges_are_trimmed(tmp_path, passing_llm):
+    """The one normalisation, pinned so it stays the only one."""
+    padded = "   Rework the seam and re-inspect.   "
+    _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=padded)], threshold=0.5)
+
+    assert read_sheet(out / "output.xlsx").iloc[0]["AI_Recommendation"] == padded.strip()
+
+
+def test_risky_content_is_flagged_but_not_blocked(tmp_path, passing_llm):
+    """The whole design in one test. The text goes out unchanged AND the
+    reviewer is told what is in it -- the flag replaces the gate that used to
+    refuse it, and replaces nothing else."""
+    _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=LEAKY_SOLUTION)], threshold=0.5)
+    result = read_sheet(out / "output.xlsx").iloc[0]
+
+    assert "ESW#20033465" in result["AI_Recommendation"]      # not blocked
+    assert "ESW#20033465" in result["Cascade_Warnings"]       # not silent
+    assert "attachment" in result["Cascade_Warnings"]
+
+
+def test_a_clean_solution_is_flagged_with_nothing(tmp_path, passing_llm):
+    """A warning on every row is a warning on no row."""
+    clean = "Grind out the cracked seam to sound metal, then re-weld and re-inspect."
+    _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=clean)], threshold=0.5)
+    result = read_sheet(out / "output.xlsx").iloc[0]
+
+    assert result["AI_Recommendation"] == clean
+    assert result["Cascade_Warnings"] == ""
+
+
+def test_a_cascade_names_only_the_record_it_came_from(tmp_path, passing_llm):
+    """One record's solution was sent, so one record is cited. The others were
+    considered and rejected, and listing them would say the answer came from
+    all five."""
+    rows_ = [row("SPS-1001"), row("SPS-1002", problem=NEAR_PROBLEM)]
+    _, out = run_cli(tmp_path, rows=rows_, threshold=0.3)
+    result = read_sheet(out / "output.xlsx").iloc[0]
+
+    assert result["Referenced_Sources"] == "SPS-1001"
+    # The rest are still visible, with their scores, in the source list.
+    assert "SPS-1002" in result["Closest_Matching_Solution"]
+
+
+def test_the_success_justification_names_the_confidence_and_the_source(tmp_path, passing_llm):
+    _, out = run_cli(tmp_path, threshold=0.5)
+    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
+
+    assert "95%" in justification
+    assert "SPS-1001" in justification
+    assert "sent unchanged" in justification

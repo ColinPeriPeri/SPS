@@ -73,6 +73,11 @@ class Grounding:
 
 
 def historical_grounding(candidates: Sequence[Candidate]) -> Grounding:
+    """DORMANT. Tier 1 scores intent and cascades; it no longer drafts.
+
+    Kept so re-enabling the Actor/Judge on the historical path is a wiring
+    change in resolve() rather than a rewrite. See the note in prompts.py.
+    """
     return Grounding(
         items=candidates,
         actor_messages=build_actor_messages,

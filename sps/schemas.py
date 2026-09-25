@@ -54,6 +54,52 @@ class ActorDraft(BaseModel):
     )
 
 
+class IntentScore(BaseModel):
+    """One candidate's intent match, as the scorer judged it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sps_id: str = Field(description="The SPS ID of the record being scored, copied exactly.")
+    intent_match: int = Field(
+        ge=0,
+        le=100,
+        description=(
+            "0-100. How well this record's PROBLEM addresses the same intent as "
+            "the incoming ticket -- not how similarly it is worded, and not how "
+            "good its solution is."
+        ),
+    )
+    reason: str = Field(
+        description=(
+            "One short sentence on why this intent does or does not match. "
+            "Read by a human deciding whether to trust the score."
+        )
+    )
+
+
+class IntentAssessment(BaseModel):
+    """The whole Tier-1 decision, in one response.
+
+    The ticket's intent is stated FIRST and the scores second, on purpose. It
+    makes each score conditional on a reading of the ticket that is written
+    down, so a wrong match can be traced to a wrong reading instead of being an
+    unexplained number. It is also why this is one call rather than two.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticket_intent: str = Field(
+        description=(
+            "What the supplier is actually asking for, in one sentence -- the "
+            "request, not the background narrative. Two tickets can describe "
+            "the same defect and ask for different things."
+        )
+    )
+    scores: list[IntentScore] = Field(
+        description="One entry per historical record supplied, in any order."
+    )
+
+
 class JudgeVerdict(BaseModel):
     """What the Judge is allowed to return."""
 

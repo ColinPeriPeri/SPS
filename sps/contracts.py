@@ -108,6 +108,14 @@ class Candidate:
     cosine_similarity: float
     composite_score: float
     applied_boosts: tuple[str, ...] = ()
+    # The record's own problem text, which the intent scorer compares against
+    # the ticket. Defaulted rather than required because it was added later and
+    # nothing that existed before needs it.
+    #
+    # Deliberately NOT shown to the Actor or the Judge: those are grounded in
+    # solutions and a past problem statement is context they could quote from.
+    # `tests/test_component_c_actor_critic.py` pins that boundary.
+    problem_description: str = ""
 
     @property
     def confidence_percent(self) -> int:
@@ -153,6 +161,10 @@ class PipelineResult:
     # of the supplier-facing checks, which is why it carries its own banner and
     # its own column rather than being blended into the recommendation.
     closest_matching_solution: str = ""
+    # What a reviewer should read before pasting the recommendation, when the
+    # recommendation is archive text sent unchanged. Advisory: it names a risk
+    # and blocks nothing, because on this path nothing is allowed to block.
+    cascade_warnings: str = ""
     # Operational signals only, never written to output.xlsx. They let the
     # caller separate a dependency outage, which is worth retrying, from a
     # legitimate refusal, which is not.

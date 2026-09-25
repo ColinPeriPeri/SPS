@@ -61,6 +61,9 @@ RESULT_COLUMNS = (
     "Referenced_Sources",
     "Resolution_Source",
     "Closest_Matching_Solution",
+    # Blank unless the recommendation is archive text passed through unchanged
+    # and that text carries something the reviewer should see first.
+    "Cascade_Warnings",
 )
 
 

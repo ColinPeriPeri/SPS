@@ -103,6 +103,60 @@ def _env_bool(key: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _env_list(key: str) -> tuple[str, ...]:
+    """A comma-separated list, trimmed, casefolded, blanks dropped.
+
+    Casefolded on the way in so every comparison downstream is already
+    case-insensitive and no caller has to remember to do it.
+    """
+    return tuple(part.strip().casefold() for part in _env(key).split(",") if part.strip())
+
+
+# How closely the retrieved precedent must address the ticket's intent before
+# its solution is sent verbatim. Process configuration rather than a property
+# of the embedding space -- it gates an LLM's judgement, not a cosine, which is
+# why it lives here and the retrieval thresholds do not.
+#
+# PROVISIONAL, and for a reason worth remembering: an LLM's "82%" is not a
+# calibrated probability. It ranks candidates against each other reliably
+# enough; as an absolute gate it means whatever the model decides it means.
+# Measure with scripts/run_eval_batch.py before treating 0.75 as settled.
+DEFAULT_INTENT_THRESHOLD = 0.75
+
+# How many candidates the intent scorer is shown. The retrieval gate below it
+# is deliberately permissive, so this is what actually bounds the call.
+DEFAULT_INTENT_TOP_K = 5
+
+
+@dataclass(frozen=True, slots=True)
+class IntentSettings:
+    """The Tier-1 decision: which precedent is close enough to send as-is."""
+
+    threshold: float = DEFAULT_INTENT_THRESHOLD
+    top_k: int = DEFAULT_INTENT_TOP_K
+    # Problem_Reason_Code values for which Tier 2 may run. Empty means Tier 2
+    # never runs: the 0250 standards are scoped to specific reason codes, and
+    # an unset list is read as "none configured" rather than "all of them".
+    #
+    # That makes a lost .env line disable Tier 2 silently, so the resolver
+    # reports the two cases -- nothing configured, versus this code not listed
+    # -- in different words. Only the first is a deployment fault.
+    tier2_reason_codes: tuple[str, ...] = ()
+
+    @classmethod
+    def from_env(cls) -> "IntentSettings":
+        return cls(
+            threshold=_env_float("SPS_INTENT_THRESHOLD", DEFAULT_INTENT_THRESHOLD),
+            top_k=_env_int("SPS_INTENT_TOP_K", DEFAULT_INTENT_TOP_K),
+            tier2_reason_codes=_env_list("SPS_TIER2_REASON_CODES"),
+        )
+
+    def tier2_allowed(self, reason_code: str) -> bool:
+        return bool(self.tier2_reason_codes) and (
+            str(reason_code or "").strip().casefold() in self.tier2_reason_codes
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class EmbeddingSettings:
     model_name: str = DEFAULT_MODEL_NAME

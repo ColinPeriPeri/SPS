@@ -255,7 +255,14 @@ def test_the_azure_threshold_is_the_one_that_applies(tmp_path, monkeypatch):
 
     candidates = retriever.retrieve(_ticket())
 
-    assert retriever.stats.threshold_used == AZURE_EMBEDDING_THRESHOLD == 0.50
+    # Not asserted against a literal. This number is now a recall filter
+    # feeding the intent scorer rather than a decision, so its value is
+    # expected to move; what must hold is that the gate applied is the one
+    # belonging to the encoder that answered.
+    assert retriever.stats.threshold_used == AZURE_EMBEDDING_THRESHOLD
+    assert AZURE_EMBEDDING_THRESHOLD < 0.5, (
+        'a recall filter must admit generously; the intent scorer rejects'
+    )
     assert candidates, "0.6 clears the Azure gate"
     # The same score would have been rejected by the local threshold, which is
     # precisely why a silent fallback was dangerous.
@@ -302,4 +309,4 @@ def test_stats_record_the_backend_for_the_status_sheet(tmp_path, monkeypatch):
     report = retriever.stats.as_dict()
     assert report["backend"] == "azure"
     assert report["backend_detail"] == "text-embedding-3-small"
-    assert report["threshold_used"] == 0.50
+    assert report["threshold_used"] == AZURE_EMBEDDING_THRESHOLD

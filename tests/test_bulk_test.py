@@ -48,6 +48,12 @@ class _Outcome:
 
 @pytest.fixture
 def passing_llm(monkeypatch):
+    """Tier 1 succeeds by scoring intent high, not by drafting.
+
+    The loop stays stubbed because Tier 2 still uses it; what makes a row PASS
+    here is the intent score, and the recommendation that results is the
+    matched record's own solution rather than anything a model wrote.
+    """
     class Loop:
         def __init__(self, *a, **k):
             pass
@@ -58,8 +64,22 @@ def passing_llm(monkeypatch):
         async def run_grounded(self, ticket, grounding):
             return _Outcome()
 
+    async def fake_score_intent(client, ticket, candidates):
+        from sps.generation.intent import IntentOutcome, ScoredCandidate
+
+        return IntentOutcome(
+            ticket_intent="stubbed ticket intent",
+            scored=tuple(
+                ScoredCandidate(
+                    candidate=c, intent_match=0.95 if i == 0 else 0.05, reason="stubbed"
+                )
+                for i, c in enumerate(candidates)
+            ),
+        )
+
     monkeypatch.setattr("sps.generation.ActorCriticLoop", Loop)
     monkeypatch.setattr("sps.generation.AzureOpenAIChatClient", lambda *a, **k: object())
+    monkeypatch.setattr("sps.generation.score_intent", fake_score_intent)
 
 
 def write_tickets(path, rows, columns=TICKET_COLUMNS):
@@ -240,12 +260,17 @@ def test_each_row_is_resolved_independently(tmp_path, passing_llm):
         ticket_row(sps_id="T-1"),
         ticket_row(sps_id="T-2", part="0099-99999"),
         ticket_row(sps_id="T-3", part=""),
+        ticket_row(sps_id="T-4", problem=""),
     ])
 
     codes = dict(zip(read_sheet(out)["SPS_ID"], read_sheet(out)["Status_Code"]))
     assert codes["T-1"] == "SUCCESS_HISTORICAL"
     assert codes["T-2"] == "NO_MATCHES"
-    assert codes["T-3"] == "INVALID_INPUT"
+    # A blank part number no longer ends the run: Tier 1 cannot filter without
+    # it, so the ticket falls through and reports what Tier 2 made of it.
+    assert codes["T-3"] == "NO_MATCHES"
+    # A blank description still does, because both tiers match on that text.
+    assert codes["T-4"] == "INVALID_INPUT"
 
 
 # ------------------------------------------------------------- not attempted

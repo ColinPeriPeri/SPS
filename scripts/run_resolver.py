@@ -56,6 +56,7 @@ from typing import Any, Sequence
 # of the pipeline, and is imported so the constants stay in one place.
 from sps.retrieval.in_memory import (
     AZURE_EMBEDDING_THRESHOLD,
+    CASCADE_LIMIT,
     LOCAL_EMBEDDING_THRESHOLD,
     DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_THRESHOLD,
 )
@@ -243,6 +244,15 @@ class ResolveOutcome:
     closest_match: str = ""
     # The scored source list, used on a success where closest_match is not.
     source_list: str = ""
+    # The intent scorer's verdict, kept apart from `top_score` because they
+    # measure different things: top_score is the cosine that shortlisted a
+    # record, intent_score is the judgement that it asks the same question.
+    # One number standing for both could not be calibrated against either.
+    intent_score: float = 0.0
+    # The scorer's one-line reading of what the ticket asks for. Recorded so a
+    # wrong match can be traced to a wrong reading rather than being an
+    # unexplained number.
+    ticket_intent: str = ""
     # Which check ran out of road, as a value rather than as prose, so a batch
     # can be tallied by cause instead of read one row at a time.
     stop_reason: str = ""
@@ -366,6 +376,12 @@ def _source_list(records: Sequence[tuple[str, float]]) -> str:
 # happen before the Actor is ever called, so the loop cannot report them.
 STOP_NO_HISTORY = "NO_HISTORY_FOR_PART"
 STOP_BELOW_THRESHOLD = "BELOW_THRESHOLD"
+# Records were found and read, and none of them asks the same question. A
+# different finding from BELOW_THRESHOLD, which means nothing was similar
+# enough to be worth reading -- and it routes differently, because this one
+# says the archive has no answer rather than that retrieval missed.
+STOP_INTENT_BELOW = "INTENT_BELOW_THRESHOLD"
+STOP_NO_PART_NUMBER = "NO_PART_NUMBER"
 
 
 def _business_justification(outcome: "ResolveOutcome") -> str:
@@ -377,6 +393,7 @@ def _business_justification(outcome: "ResolveOutcome") -> str:
     was about. The closest precedent leads, because a reviewer would rather see
     the near-miss first and the explanation second.
     """
+    from sps.contracts import score_to_percent
     from sps.generation.actor_critic import (
         STOP_ACTOR_ABSTAINED,
         STOP_GATE_MISATTRIBUTED,
@@ -389,6 +406,10 @@ def _business_justification(outcome: "ResolveOutcome") -> str:
             "This is the closest past problem we found, but it is not similar "
             "enough to rely on. Not much historical data to infer the solution "
             "or recommendation."
+        ),
+        STOP_NO_PART_NUMBER: (
+            "No part number was supplied, so the part's own history could not "
+            "be searched."
         ),
         STOP_ACTOR_ABSTAINED: (
             "This is the closest past solution we found. We are not "
@@ -412,7 +433,27 @@ def _business_justification(outcome: "ResolveOutcome") -> str:
     }
 
     if not outcome.closest_match:
-        return "Not much historical data to infer the solution or recommendation."
+        # No precedent to show, but there may still be a specific reason worth
+        # giving. "Not much historical data" is true of an unknown part and
+        # misleading about a ticket that arrived with no part number at all --
+        # one is a gap in the archive, the other is a gap in the ticket, and
+        # only the second is something the sender can fix.
+        return WHY.get(
+            outcome.stop_reason,
+            "Not much historical data to infer the solution or recommendation.",
+        )
+
+    # The intent case leads with the number, because the number is the finding
+    # -- "we read these records and none of them asks your question, here is
+    # the nearest" is a different statement from "we found nothing". It is the
+    # one entry that needs a value, so it is built rather than looked up.
+    if outcome.stop_reason == STOP_INTENT_BELOW:
+        lead = (
+            f"Confidence is {score_to_percent(outcome.intent_score)}% hence we are not "
+            "recommending the solution, but this is the closest match from "
+            "historical data."
+        )
+        return lead + "\n\n" + outcome.closest_match
 
     why = WHY.get(
         outcome.stop_reason,
@@ -439,7 +480,11 @@ def unresolved_result(outcome: "ResolveOutcome"):
     #
     # Tier 2's score is used when Tier 1 scored nothing: reporting a flat 0%
     # for a run where the standards matched at 0.41 described the wrong tier.
-    score = outcome.top_score or outcome.tier2_top_score
+    # The intent score when there is one: on this path the number a reviewer
+    # reads is the one that decided the outcome, and the cosine only
+    # shortlisted. Falls back to the retrieval scores where no intent judgement
+    # was ever made -- an unknown part, or a Tier-2-only run.
+    score = outcome.intent_score or outcome.top_score or outcome.tier2_top_score
     confidence = f"{score_to_percent(score)}%" if score > 0 else ""
     return PipelineResult(
         ai_recommendation=NO_RECOMMENDATION,
@@ -468,6 +513,7 @@ def write_output(output_dir: Path, part_number: str, result) -> None:
                 "Referenced_Sources": ", ".join(result.referenced_sources),
                 "Resolution_Source": result.resolution_source,
                 "Closest_Matching_Solution": result.closest_matching_solution,
+                "Cascade_Warnings": result.cascade_warnings,
             }
         ],
     )
@@ -483,7 +529,11 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     from sps.embedding import AzureEmbeddingError, AzureEmbeddingNotConfigured
     from sps.generation import ActorCriticLoop, AzureOpenAIChatClient
     from sps.retrieval.in_memory import HistoryError, InMemoryRetriever
-    from sps.validators import normalize_part_number, validate_ticket
+    from sps.validators import (
+        normalize_part_number,
+        validate_part_number,
+        validate_problem_description,
+    )
 
     from sps.file_reader import FileReadError, UnsupportedFileType, validate_file_type
 
@@ -518,11 +568,23 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     part_number = normalize_part_number(ticket.part_number)
 
     # Gate before anything expensive: no file scan, no model load, no LLM.
-    invalid = validate_ticket(ticket.part_number, ticket.problem_description)
+    #
+    # The two halves of the old validate_ticket() are now separated, because
+    # they stop different amounts of the pipeline.
+    #
+    # A missing problem description is terminal. Both tiers match on that text
+    # -- Tier 2 builds its query from it too -- so there is nothing to search
+    # with on either side, and falling through would be searching for nothing.
+    invalid = validate_problem_description(ticket.problem_description)
     if invalid:
         return ResolveOutcome(
             invalid.code, invalid.reason, EXIT_OK, part_number=part_number
         )
+
+    # A missing part number stops Tier 1 only. Tier 1 filters history by exact
+    # part, so there is nothing for it to retrieve; Tier 2 searches standards
+    # by defect text and never looks at the part number.
+    bad_part = validate_part_number(ticket.part_number)
 
     # An explicit --threshold (or SPS_CONFIDENCE_THRESHOLD) overrides both
     # per-model defaults; otherwise the engine picks the one belonging to
@@ -542,6 +604,30 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     def _threshold(name: str, fallback: float) -> float:
         raw = os.environ.get(name, "").strip()
         return float(raw) if raw else fallback
+
+    # Constructed before the part-number branch because Tier 2 needs the loop
+    # on both paths. Constructing either opens no connection.
+    #
+    # The client is built separately rather than read back off the loop: the
+    # intent scorer and the Tier-2 loop are two callers of one deployment, and
+    # having one reach through the other for its transport made the dependency
+    # invisible at the call site.
+    chat_client = AzureOpenAIChatClient(LLMSettings.from_env())
+    loop = ActorCriticLoop(chat_client, LLMSettings.from_env())
+
+    if bad_part:
+        logger.info("%s Tier 1 skipped; trying the standards.", bad_part.reason)
+        return _resolve_from_docs(
+            args=args,
+            ticket=ticket,
+            part_number=part_number,
+            output_dir=output_dir,
+            loop=loop,
+            tier1_detail=bad_part.reason,
+            tier1_stage=STAGE_NOTHING,
+            tier1_stop=STOP_NO_PART_NUMBER,
+            measured=dict(part_number=part_number),
+        )
 
     retriever = InMemoryRetriever(
         history_path=history_path,
@@ -595,8 +681,6 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         candidates_considered=stats.capped_to,
     )
 
-    loop = ActorCriticLoop(AzureOpenAIChatClient(LLMSettings.from_env()), LLMSettings.from_env())
-
     # -- Tier 1: the part's own history ------------------------------------
 
     if stats.usable == 0:
@@ -614,46 +698,82 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
             f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s)."
         )
     else:
-        outcome = asyncio.run(loop.run(ticket, candidates))
+        from sps.config import IntentSettings
+        from sps.generation import score_intent
 
-        if outcome.succeeded and outcome.draft is not None:
-            from sps.output import success
+        intent_settings = IntentSettings.from_env()
+        assessment = asyncio.run(score_intent(chat_client, ticket, candidates))
 
-            result = success(
-                recommendation=outcome.draft.recommendation,
-                justification=outcome.draft.justification
-                or f"Synthesized from {len(candidates)} historical record(s) "
-                f"for part {part_number}.",
-                top_score=stats.top_score,
-                candidates=candidates,
-                closest_matching_solution=measured["source_list"],
+        if assessment.failed:
+            # Fails closed, and as an outage rather than a refusal. "Nothing
+            # matched" is a business outcome the robot files; "we could not
+            # tell" is something it should retry. Tier 2 shares the same
+            # deployment, so there is nothing to fall back to.
+            logger.error("dependency failure: %s", assessment.failure_reason)
+            return ResolveOutcome(
+                CODE_INFRASTRUCTURE, assessment.failure_reason, EXIT_INFRASTRUCTURE, **measured
             )
+
+        best = assessment.best
+        measured["ticket_intent"] = assessment.ticket_intent
+        measured["intent_score"] = best.intent_match if best else 0.0
+        # Re-derived from the intent scores. Retrieval ordered these by cosine,
+        # which is precisely the ordering this design stopped trusting, so what
+        # the reviewer is shown has to be the order that decided the outcome.
+        measured["source_list"] = _source_list(
+            [(s.candidate.sps_id, s.intent_match) for s in assessment.scored]
+        )
+        measured["closest_match"] = _closest_match(
+            [
+                (s.candidate.sps_id, s.candidate.actual_solution, s.intent_match)
+                for s in assessment.scored[:CASCADE_LIMIT]
+            ],
+            gated=True,
+        )
+
+        if best is not None and best.intent_match >= intent_settings.threshold:
+            from sps.output import cascade
+
+            # Sent exactly as recorded. No strip, no renumbering, no
+            # normalisation -- a reviewer can diff this cell against the source
+            # record and expect a character-for-character match, and anything
+            # tidier would break that.
+            result = cascade(
+                solution=best.candidate.actual_solution,
+                candidate=best.candidate,
+                intent_match=best.intent_match,
+                reason=best.reason,
+                source_list=measured["source_list"],
+            )
+            if result.cascade_warnings:
+                logger.warning(
+                    "Ticket %r cascading %s unchanged, and it %s",
+                    ticket.sps_id, best.candidate.sps_id, result.cascade_warnings,
+                )
             return ResolveOutcome(
                 CODE_SUCCESS_HISTORICAL,
-                f"Resolved from {len(candidates)} historical record(s) at "
-                f"{result.confidence} confidence.",
+                f"Intent matched {best.candidate.sps_id} at {best.percent}% "
+                f"across {len(assessment.scored)} record(s); its solution was "
+                f"sent unchanged. Ticket intent: {assessment.ticket_intent}",
                 EXIT_OK,
                 resolution_source=result.resolution_source,
                 result=result,
                 **measured,
             )
 
-        if outcome.infrastructure_failure:
-            # A dependency outage is not a content rejection: it must not look
-            # like a legitimate refusal, or a caller retries nothing. Tier 2
-            # needs the same Azure deployment, so there is nothing to fall
-            # back to -- trying it would only fail again, slower.
-            logger.error("dependency failure: %s", outcome.failure_reason)
-            return ResolveOutcome(
-                CODE_INFRASTRUCTURE, outcome.failure_reason, EXIT_INFRASTRUCTURE, **measured
-            )
-
-        # Reaching the Actor at all means the retrieval maths was satisfied;
-        # an abstention and a tripped circuit breaker are both the Judge's
-        # side of the pipeline declining, not a retrieval shortfall.
+        # Records were read and none asks the same question. STAGE_REJECTED,
+        # not STAGE_GATED: retrieval did its job and a judgement was made on
+        # the content, which is the same shape of outcome the Judge used to
+        # produce and routes to the same place.
         tier1_stage = STAGE_REJECTED
-        tier1_stop = outcome.stop_reason
-        tier1_detail = outcome.failure_reason
+        tier1_stop = STOP_INTENT_BELOW
+        best_pct = best.percent if best else 0
+        tier1_detail = (
+            f"Best intent match {best_pct}% is below the "
+            f"{int(intent_settings.threshold * 100)}% threshold across "
+            f"{len(assessment.scored)} record(s). "
+            f"Ticket intent: {assessment.ticket_intent}"
+        )
 
     logger.info("Tier 1 produced no resolution: %s", tier1_detail)
 
@@ -721,6 +841,30 @@ def _resolve_from_docs(
         # Nothing was retrieved because nothing was looked for, so Tier 1's
         # stage stands on its own.
         return _no_resolution("Tier 2 disabled by --no-tier2.", STAGE_NOTHING)
+
+    # The 0250 standards are scoped to particular reason codes, so most
+    # tickets never reach them.
+    #
+    # The two ways of not being allowed are reported differently on purpose.
+    # An empty list disables Tier 2 for every ticket in the deployment, and if
+    # that happened because a .env line was lost, the only place it would ever
+    # show is this sentence. A code simply not being listed is routine.
+    from sps.config import IntentSettings
+
+    intent_settings = IntentSettings.from_env()
+    reason_code = (ticket.problem_reason_code or "").strip()
+    if not intent_settings.tier2_reason_codes:
+        return _no_resolution(
+            "Tier 2 skipped: no reason codes are configured "
+            "(SPS_TIER2_REASON_CODES is empty).",
+            STAGE_NOTHING,
+        )
+    if not intent_settings.tier2_allowed(reason_code):
+        return _no_resolution(
+            f"Tier 2 skipped: reason code {reason_code or '(blank)'!r} is not "
+            f"one of the {len(intent_settings.tier2_reason_codes)} configured.",
+            STAGE_NOTHING,
+        )
 
     docs_dir = (
         args.docs_dir

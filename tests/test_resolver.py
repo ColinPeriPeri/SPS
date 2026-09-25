@@ -74,13 +74,19 @@ def write_csv_history(path, rows, headers=HEADERS):
     return path
 
 
-def write_ticket(path, part=PART, problem=PROBLEM):
+def write_ticket(path, part=PART, problem=PROBLEM, reason_code=""):
+    """The reason code is blank by default, which is what most tickets carry.
+
+    Tier 2 only runs for configured reason codes, so a blank one keeps these
+    tests on the Tier-1 path they are actually about."""
     from openpyxl import Workbook
 
     book = Workbook()
     sheet = book.active
-    sheet.append(["SPS_ID", "Part_Number", "Issue_Type", "Problem_Description"])
-    sheet.append(["T-1", part, "Quality", problem])
+    sheet.append(
+        ["SPS_ID", "Part_Number", "Issue_Type", "Problem_Description", "Problem_Reason_Code"]
+    )
+    sheet.append(["T-1", part, "Quality", problem, reason_code])
     book.save(path)
     return path
 
@@ -123,11 +129,34 @@ def test_structural_delimiters_stay_distinct():
     assert len(variants) == 4
 
 
+def test_a_blank_part_number_falls_through_to_tier_two(tmp_path, passing_llm, monkeypatch):
+    """It used to be terminal. Tier 1 filters history by exact part so it still
+    cannot run, but Tier 2 searches standards by defect text and never looks at
+    the part number -- so the ticket is no longer dead, it is Tier 2's."""
+    monkeypatch.setenv("SPS_TIER2_REASON_CODES", "RC-1")
+    _, out = run_cli(tmp_path, part="")
+
+    status = read_sheet(out / "status.xlsx").iloc[0]
+    assert status["Status_Code"] != "INVALID_INPUT"
+    assert "part number" in status["Reason"].casefold()
+
+
+def test_a_blank_problem_description_is_still_terminal(tmp_path, passing_llm):
+    """Both tiers match on that text, so there is nothing to search with on
+    either side. Falling through would be searching for nothing."""
+    _, out = run_cli(tmp_path, problem="")
+
+    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "INVALID_INPUT"
+
+
 def test_validation_runs_before_anything_expensive(tmp_path, monkeypatch):
     """A malformed ticket must not load a model or scan the history."""
     called = []
+    # A blank DESCRIPTION, not a blank part number: a blank part now falls
+    # through to Tier 2 rather than stopping, so it no longer demonstrates the
+    # early gate. A blank description is still terminal and still cheap.
     monkeypatch.setattr(
-        resolver, "read_ticket", lambda p: {"Part_Number": "", "Problem_Description": PROBLEM}
+        resolver, "read_ticket", lambda p: {"Part_Number": PART, "Problem_Description": ""}
     )
     import sps.retrieval.in_memory as engine
 
@@ -281,9 +310,21 @@ class _Outcome:
     failure_reason = ""
 
 
+# What the stubbed intent scorer awards the top candidate. Comfortably above
+# any threshold these tests set, so a change to the default gate cannot quietly
+# flip a test that is about something else.
+STUB_INTENT = 0.95
+
+
 @pytest.fixture
 def passing_llm(monkeypatch):
-    """Stub the Actor-Critic loop so the PASS path can be exercised offline."""
+    """Stub the LLM so the PASS path can be exercised offline.
+
+    Tier 1 no longer drafts anything: it scores intent and, above the gate,
+    sends the matched record's solution unchanged. So what makes a run succeed
+    here is a high intent score, not a draft. The loop is still stubbed because
+    Tier 2 uses it.
+    """
     class Loop:
         def __init__(self, *a, **k):
             pass
@@ -291,8 +332,27 @@ def passing_llm(monkeypatch):
         async def run(self, ticket, candidates):
             return _Outcome()
 
+        async def run_grounded(self, ticket, grounding):
+            return _Outcome()
+
+    async def fake_score_intent(client, ticket, candidates):
+        from sps.generation.intent import IntentOutcome, ScoredCandidate
+
+        return IntentOutcome(
+            ticket_intent="stubbed ticket intent",
+            scored=tuple(
+                ScoredCandidate(
+                    candidate=c,
+                    intent_match=STUB_INTENT if i == 0 else 0.05,
+                    reason="stubbed",
+                )
+                for i, c in enumerate(candidates)
+            ),
+        )
+
     monkeypatch.setattr("sps.generation.ActorCriticLoop", Loop)
     monkeypatch.setattr("sps.generation.AzureOpenAIChatClient", lambda *a, **k: object())
+    monkeypatch.setattr("sps.generation.score_intent", fake_score_intent)
 
 
 def run_cli(tmp_path, rows=None, part=PART, problem=PROBLEM, threshold=0.5):
@@ -330,7 +390,7 @@ def test_success_writes_both_workbooks(tmp_path, passing_llm):
     assert list(result.columns) == [
         "Part_Number", "AI_Recommendation", "Justification",
         "Confidence_Score", "Referenced_Sources", "Resolution_Source",
-        "Closest_Matching_Solution",
+        "Closest_Matching_Solution", "Cascade_Warnings",
     ]
     assert result.iloc[0]["Part_Number"] == PART
     assert result.iloc[0]["Referenced_Sources"] == "SPS-1001"
@@ -457,7 +517,10 @@ def test_an_infrastructure_fault_leaves_no_result_row(tmp_path, monkeypatch, pas
 
 def test_status_codes_cover_each_outcome(tmp_path, passing_llm):
     cases = [
-        (dict(part=""), "INVALID_INPUT"),
+        # A blank part number is no longer INVALID_INPUT: Tier 1 cannot run
+        # without it, but Tier 2 does not need it, so the ticket falls through
+        # and reports what Tier 2 made of it.
+        (dict(problem=""), "INVALID_INPUT"),
         (dict(problem="short"), "INVALID_INPUT"),
         # With no 0250 corpus loaded, Tier 2 retrieves nothing and the code
         # is Tier 1's own -- identical to the behaviour before Tier 2 existed.
@@ -490,10 +553,14 @@ def test_each_embedding_space_has_its_own_threshold():
     )
 
     assert LOCAL_EMBEDDING_THRESHOLD == 0.89
-    assert AZURE_EMBEDDING_THRESHOLD == 0.50
     fields = InMemoryRetriever.__dataclass_fields__
-    assert fields["local_threshold"].default == 0.89
-    assert fields["azure_threshold"].default == 0.50
+    assert fields["local_threshold"].default == LOCAL_EMBEDDING_THRESHOLD
+    assert fields["azure_threshold"].default == AZURE_EMBEDDING_THRESHOLD
+    # The Azure value is deliberately not pinned to a literal. It is a recall
+    # filter feeding the intent scorer rather than a decision, so it is
+    # expected to move; what must not move is that the two spaces keep
+    # separate numbers.
+    assert AZURE_EMBEDDING_THRESHOLD != LOCAL_EMBEDDING_THRESHOLD
     # No override by default: the backend decides.
     assert fields["confidence_threshold"].default is None
     assert resolver.DEFAULT_THRESHOLD == 0.89

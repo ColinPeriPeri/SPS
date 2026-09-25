@@ -170,8 +170,8 @@
   <rect class="box" x="120" y="316" width="450" height="116" fill="#eaf2f9" stroke="#2d6a9f"/>
   <text class="kick" x="144" y="341">SOURCE 1 — WHAT WE DID BEFORE</text>
   <text class="lbl" x="144" y="366">Past problem sheets for the same part</text>
-  <text class="sub" x="144" y="388">Only records describing a genuinely similar problem are</text>
-  <text class="sub" x="144" y="405">kept. Everything else is discarded before the AI sees it.</text>
+  <text class="sub" x="144" y="388">The AI reads the closest records and judges which one asks</text>
+  <text class="sub" x="144" y="405">the same question. Above 75%, that answer is sent as written.</text>
 
   <!-- SOURCE 2 -->
   <rect class="box" x="630" y="316" width="450" height="116" fill="#eaf2f9" stroke="#2d6a9f"/>
@@ -195,14 +195,14 @@
   <!-- draft -->
   <rect class="box" x="385" y="496" width="350" height="66" fill="#f2f6fa" stroke="#7d93a8"/>
   <text class="lbl" x="560" y="522" text-anchor="middle">Draft a recommendation</text>
-  <text class="sub" x="560" y="542" text-anchor="middle">Using only the source above — never from</text>
-  <text class="sub" x="560" y="556" text-anchor="middle">the AI's own general knowledge</text>
+  <text class="sub" x="560" y="542" text-anchor="middle">Standards only. A past fix is sent as recorded;</text>
+  <text class="sub" x="560" y="556" text-anchor="middle">nothing is written from the AI's own knowledge</text>
 
   <path class="edge" d="M 560 562 L 560 612" marker-end="url(#fig-runtime-a)"/>
 
   <!-- THE GATES -->
   <rect class="box" x="270" y="614" width="580" height="232" fill="#fff8ec" stroke="#c99a3e"/>
-  <text class="kickg" x="296" y="640">FOUR CHECKS BEFORE ANYTHING CAN BE SENT</text>
+  <text class="kickg" x="296" y="640">FOUR CHECKS ON ANYTHING THE AI WRITES</text>
 
   <circle cx="310" cy="670" r="11" fill="#b7791f"/>
   <text class="num" x="310" y="674" text-anchor="middle">1</text>
@@ -259,7 +259,7 @@
   <rect class="box" x="450" y="1148" width="220" height="44" fill="#f2f6fa" stroke="#7d93a8"/>
   <text class="lbl" x="560" y="1176" text-anchor="middle">Sent to the supplier</text>
 
-  <text class="foot" x="48" y="1216">The system holds no opinion of its own. Both sources are company records, and an answer it cannot ground in one of them is never sent.</text>
+  <text class="foot" x="48" y="1216">The system holds no opinion of its own. A past fix is sent exactly as it was recorded; anything the AI writes itself must pass all four checks first.</text>
 </svg></div>
   <figcaption>The runtime path. Every ticket ends in one of two places — a recommendation with its sources,
   or a refusal with its reason — and a person sees both.</figcaption>
@@ -289,10 +289,28 @@
 <p>The part number is an exact filter, not a suggestion. A ticket for one part is never answered from
 another part's history, however similar the wording.</p>
 
-<h3>The four checks</h3>
+<h3>A past fix is sent as it was written</h3>
 
-<p>Every draft passes through all four before it can leave. A failure sends it back to be rewritten, up to
-three attempts, after which the ticket is refused outright. <strong>An unverified draft is never sent.</strong></p>
+<p>When a past record is judged to be asking the same question &mdash; above a confidence bar &mdash; its recorded
+solution is passed through <strong>exactly as written</strong>. Nothing is reworded and nothing is reviewed,
+because there is nothing new to review: it is not a new answer, it is one this company has already given.</p>
+
+<p>That places the weight on one judgement: whether the past problem really is the same request. Two suppliers
+can report an identical defect and ask for opposite things &mdash; one to rework and ship, one to ship as-is
+&mdash; and an answer to the first does not answer the second. So the match is made on the <em>request</em>
+rather than on how alike the two tickets read.</p>
+
+<p><strong>What the reviewer gets instead of a review.</strong> Past solutions were written internally and
+routinely mention attachments, prior phone calls and other suppliers' ticket numbers &mdash; useful in the
+archive, meaningless once forwarded. Anything sent this way is checked for that content and, where it is found,
+the row carries a note saying so. The note does not stop it; it tells the reviewer which rows to read before
+passing on.</p>
+
+<h3>The four checks, on anything the AI writes</h3>
+
+<p>These apply to the second source, where the AI does compose a reply. Every draft passes all four before it
+can leave. A failure sends it back to be rewritten, up to three attempts, after which the ticket is refused
+outright. <strong>An unverified draft is never sent.</strong></p>
 
 <ol class="checks">
   <li><b>Nothing invented.</b> Every action, measurement, tolerance and specification must appear in the

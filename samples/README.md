@@ -56,12 +56,20 @@ note, `"1. Issue an ESW. 2. Do not ship the parts until the ESW is fully
 approved."`, whose first imperative addresses the customer rather than the
 supplier.
 
-Two of the three tickets should come back **without** a recommendation: `T-9001`
-because the draft carries an attachment and a prior conversation forward,
-`T-9003` because it tells the supplier to issue an ESW. The circuit breaker
-trips in both cases and the `Reason` names what was found. `T-9002`, whose
-record contains an actual disposition, resolves normally.
-`Matched_Solutions` shows the difference at a glance.
+**All three now come back WITH a recommendation**, and that inversion is the
+point of keeping these fixtures. Tier 1 no longer drafts or audits; above the
+intent gate it sends the matched record's solution exactly as recorded. So:
+
+| Ticket | Recommendation | `Cascade_Warnings` |
+| --- | --- | --- |
+| `T-9001` | the attachment boilerplate, verbatim | attachment, prior conversation |
+| `T-9002` | an actual disposition, verbatim | *(blank)* |
+| `T-9003` | `1. Issue an ESW. …`, verbatim | instruction to perform an internal action |
+
+These used to be refused. They are now sent, flagged, and it is the reviewer who
+decides — which is what makes them the right fixtures for checking that the
+warning column earns its place. A run where `T-9001` and `T-9003` come back with
+a blank warning is a broken run.
 
 These fixtures exist because the rest of the samples could never have surfaced
 that bug -- every other `Solution_Text` here is clean, actionable prose.

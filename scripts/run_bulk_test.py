@@ -69,6 +69,9 @@ RESULT_COLUMNS = (
     # The single best precedent, gate or no gate, exactly as output.xlsx shows
     # it to the reviewer.
     "Closest_Matching_Solution",
+    # What the reviewer should read before pasting, when the recommendation is
+    # archive text sent unchanged.
+    "Cascade_Warnings",
     # The historical solutions (or 0250 sections) the Actor was actually shown.
     # Put beside its recommendation because the commonest question about a bad
     # answer is "what was it looking at?", and answering it from the SPS IDs
@@ -157,6 +160,7 @@ def result_for(outcome, duration: float) -> dict[str, str]:
         "Status_Code": outcome.code,
         "No_Recommendation_Reason": "" if passed else (outcome.stop_reason or outcome.code),
         "Closest_Matching_Solution": outcome.closest_match,
+        "Cascade_Warnings": result.cascade_warnings if result is not None else "",
         "Reason": " ".join(str(outcome.reason).split()),
         "AI_Recommendation": result.ai_recommendation if result else "",
         "Justification": result.justification if result else "",
