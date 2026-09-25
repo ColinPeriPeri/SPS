@@ -57,7 +57,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-377 tests in about six seconds, none of which needs a server, an Azure key or
+381 tests in about six seconds, none of which needs a server, an Azure key or
 a model download. The real-model checks are opt-in, and now also need the
 disabled dependencies reinstalled (~130 MB of weights plus torch):
 
@@ -161,6 +161,17 @@ fact.
 explains it in the reviewer's language. The diagnostics — cosines, thresholds,
 row counts — stay in `status.xlsx`'s `Reason`, where the robot and support
 already read them. They used to be shown to DEA as well.
+
+The precedent appears in **two** places, deliberately. `Justification` is the
+field a reviewer is already reading, so the source sits there next to the
+reasoning; `Closest_Matching_Solution` holds the same text on its own for
+anyone filtering or diffing a batch. The order differs by outcome, because the
+two answer different questions:
+
+| Outcome | Justification reads |
+| --- | --- |
+| No recommendation | the precedent **first**, then why we will not use it &mdash; the precedent *is* the finding |
+| Resolved | the rationale first, then the precedent as evidence for it |
 
 `Closest_Matching_Solution` carries the best precedent found **whether or not it
 was recommended, and whether or not it cleared the gate**:
@@ -851,7 +862,7 @@ tests/test_bulk_test.py                24   column preservation, row alignment, 
 tests/test_transferable.py             62   the two local gates, and what they must NOT flag
 tests/test_component_c_actor_critic.py 43   refinement, breaker, fail-closed, both gates, stop_reason, justification
 tests/test_similarity_probe.py         26   pair parsing, the margin maths, both margin verdicts, the file gate
-tests/test_cascade_and_wording.py       11   the raw-history banner, the copy-paste line, the business wording
+tests/test_cascade_and_wording.py       15   the raw-history banner, the copy-paste line, the business wording
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
 tests/test_config.py                   15   env loading, model/threshold single-sourcing
 tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)

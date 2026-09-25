@@ -197,3 +197,65 @@ def test_no_module_spells_the_sentinel_by_hand():
                 if SOLUTION_NOT_FOUND in node.value and len(node.value) < 200:
                     offenders.append(f"{path}: {node.value[:60]!r}")
     assert not offenders, "hardcoded sentinel: " + "; ".join(offenders)
+
+
+# ------------------------------------------- the precedent on the success path
+#
+# The refusal path led with the precedent from the start. The success path did
+# not carry it into Justification at all -- it reached the column and stopped
+# there, so a reviewer checking whether a recommendation really followed from
+# the record had to read two columns to find out.
+
+
+def test_a_successful_row_carries_the_precedent_into_the_justification(tmp_path, passing_llm):
+    _, out = run_cli(
+        tmp_path,
+        rows=[row("SPS-1001", solution=LEAKY_SOLUTION)],
+        threshold=0.5,
+    )
+    result = read_sheet(out / "output.xlsx").iloc[0]
+
+    assert result["AI_Recommendation"] != NO_RECOMMENDATION  # it did resolve
+    assert "[RAW HISTORY" in result["Justification"]
+    assert "ESW#20033465" in result["Justification"]
+
+
+def test_on_a_success_the_rationale_comes_before_the_source(tmp_path, passing_llm):
+    """The opposite order to a refusal, and deliberately so. On a refusal the
+    precedent IS the finding; on a success it is the evidence for a rationale
+    that has already answered the question."""
+    _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=LEAKY_SOLUTION)], threshold=0.5)
+    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
+
+    assert not justification.startswith("[RAW HISTORY")
+    assert justification.index("[RAW HISTORY") > 0
+
+
+def test_the_stripped_items_are_visible_somewhere_on_every_path(tmp_path, passing_llm):
+    """The whole bargain in one test. None of this may appear in the field DEA
+    copies; all of it must be readable in the field DEA reviews -- whether the
+    ticket resolved or not."""
+    for threshold, resolved in ((0.5, True), (0.99, False)):
+        _, out = run_cli(
+            tmp_path,
+            rows=[row("SPS-1001", problem=NEAR_PROBLEM, solution=LEAKY_SOLUTION)],
+            threshold=threshold,
+        )
+        result = read_sheet(out / "output.xlsx").iloc[0]
+        label = "resolved" if resolved else "refused"
+
+        for needle in ("ESW#20033465", "attachment", "Per discussed"):
+            assert needle in result["Justification"], f"{needle} missing on the {label} path"
+            assert needle not in result["AI_Recommendation"], f"{needle} leaked on the {label} path"
+
+
+def test_no_precedent_means_no_empty_banner(tmp_path, passing_llm):
+    """An unknown part has nothing to cascade. The justification should read as
+    a sentence, not as a heading over blank space."""
+    _, out = run_cli(tmp_path, part="0099-99999")
+    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
+
+    assert "[RAW HISTORY" not in justification
+    assert justification == (
+        "Not much historical data to infer the solution or recommendation."
+    )

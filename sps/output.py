@@ -33,6 +33,24 @@ def _dedupe(values: Sequence[str]) -> list[str]:
     return kept
 
 
+def _with_precedent(justification: str, precedent: str) -> str:
+    """Put the source beneath the rationale, in the field a reviewer reads.
+
+    The precedent also has its own column, but a reviewer checking whether a
+    recommendation really follows from the record should not have to hold two
+    columns in their head to do it. So it appears in both, and this is the one
+    they are already looking at.
+
+    The rationale leads here, unlike on a refusal where the precedent does. On
+    a refusal the precedent IS the finding -- there is no recommendation to
+    explain. On a success the rationale is the answer to "why this?" and the
+    source is the evidence for it, which is the order they get read in.
+    """
+    if not precedent:
+        return justification
+    return f"{justification}\n\n{precedent}" if justification else precedent
+
+
 def success(
     recommendation: str,
     justification: str,
@@ -49,7 +67,7 @@ def success(
     """
     return PipelineResult(
         ai_recommendation=recommendation,
-        justification=justification,
+        justification=_with_precedent(justification, closest_matching_solution),
         confidence=f"{score_to_percent(top_score)}%",
         referenced_sources=_dedupe([c.sps_id for c in candidates]),
         resolution_source=SOURCE_HISTORICAL,
@@ -73,7 +91,7 @@ def success_from_docs(
     """
     return PipelineResult(
         ai_recommendation=recommendation,
-        justification=justification,
+        justification=_with_precedent(justification, closest_matching_solution),
         confidence=f"{score_to_percent(top_score)}%",
         referenced_sources=_dedupe([c.citation for c in chunks]),
         resolution_source=SOURCE_DOCUMENTATION,
