@@ -24,13 +24,15 @@ Embeddings and generation both run on **Azure OpenAI**, at `temperature=0.0`,
 embedded per ticket; the standards corpus is embedded once and cached against a
 hash of itself.
 
-> **The local `bge-small` encoder is currently disabled.** Azure is the only
-> encoder in the pipeline. The model wrapper, its acceptance checks and its
-> thresholds are all still in the tree and untouched — see
-> [The local encoder, disabled](#the-local-encoder-disabled) — but nothing
-> reaches them, and `requirements.txt` no longer installs torch. The practical
-> consequence: **an Azure embedding failure now ends the run** instead of being
-> absorbed, and there is no offline mode.
+> **Azure is the only encoder.** The local `bge-small` encoder was disabled and
+> has since been removed — see [The local encoder, removed](#the-local-encoder-removed).
+> The practical consequence: **an Azure embedding failure ends the run**
+> instead of being absorbed, and there is no offline mode.
+
+All of it is two files: **`sps.py`**, everything that runs, and
+**`sps_prompts.py`**, everything the model reads. The code imports four
+packages — `openai`, `numpy`, `pydantic`, `openpyxl` — and otherwise only the
+standard library, which is also what reads a Word document and loads `.env`.
 
 ---
 
@@ -44,21 +46,21 @@ a smoke test that proves the install before any real data touches it.
 python -m pip install -r requirements.txt
 ```
 
-No torch, no CUDA, no model download — 33 packages. Verify before running
-anything:
+No torch, no CUDA, no model download — 24 packages, test runner included.
+Verify before running anything:
 
 ```bash
 python -m pip check
-python -c "from openai import AzureOpenAI; from lxml import etree; import docx"
+python -c "from openai import AzureOpenAI; import numpy, openpyxl, pydantic"
 ```
 
 `pip check` must print `No broken requirements found.`, and the second line must
-print nothing at all. Two pins exist purely to make that second line work on a
-managed Windows machine: **jiter below 0.17** and **lxml below 6**, whose native
-DLLs are blocked by Windows Application Control. Both fail with *"An Application
-Control policy has blocked this file"*, which reads like a corrupt install
-rather than a policy decision — and the jiter one takes every Azure call with
-it, since `openai` imports it.
+print nothing at all. One pin exists purely to make that second line work on a
+managed Windows machine: **jiter below 0.17**, whose native DLL is blocked by
+Windows Application Control. It fails with *"An Application Control policy has
+blocked this file"*, which reads like a corrupt install rather than a policy
+decision — and takes every Azure call with it, since `openai` imports it. lxml 6
+failed the same way; it is no longer installed at all.
 
 Run the test suite:
 
@@ -66,13 +68,7 @@ Run the test suite:
 python -m pytest -q
 ```
 
-417 tests in about seven seconds, none of which needs a server, an Azure key or
-a model download. The real-model checks are opt-in, and now also need the
-disabled dependencies reinstalled (~130 MB of weights plus torch):
-
-```bash
-SPS_MODEL_TESTS=1 python -m pytest -q
-```
+459 tests in about six seconds, none of which needs a server or an Azure key.
 
 ---
 
@@ -80,55 +76,65 @@ SPS_MODEL_TESTS=1 python -m pytest -q
 
 | Path | Role |
 | --- | --- |
-| `scripts/run_resolver.py` | **Entry point** — ticket in, two workbooks out |
-| `scripts/run_resolver.cmd` | UiPath wrapper; propagates the exit code |
-| `scripts/run_bulk_test.py` | **Bulk test** — a sheet of tickets in, the same sheet plus answers out |
-| `scripts/run_bulk_test.cmd` | Wrapper for the above |
-| `scripts/run_eval_batch.py` | Batch evaluator — threshold calibration from a directory of cases |
-| `scripts/run_eval.cmd` | Wrapper for the above |
-| `sps/validators.py` | Part-number canonicalisation + ticket gatekeeping |
-| `sps/retrieval/in_memory.py` | **Tier 1** — filter by part, embed via Azure, rank, gate |
-| `sps/retrieval/docx_parser.py` | **Tier 2** — parse 0250 .docx into citable, section-bounded chunks |
-| `sps/retrieval/doc_cache.py` | **Tier 2** — hash-keyed vector cache, enriched query, search |
-| `sps/embedding.py` | Azure encoder; the BGE wrapper, disabled but intact |
-| `sps/generation/intent.py` | **Tier 1** — scores which past record asks the same question |
-| `sps/generation/` | Actor / Judge loop, schema-constrained — **Tier 2 only** |
-| `sps/generation/transferable.py` | The two deterministic gates: record-specific references, and misattributed actions |
-| `sps/schemas.py` | Pydantic response schemas for the LLM |
-| `sps/contracts.py` | Ticket and result shapes |
-| `sps/output.py` | Builds the resolved recommendation |
-| `sps/file_reader.py` | .csv / .xlsx dispatch + strict type gate |
-| `service/excel_output.py` | Atomic workbook writer |
-| `scripts/verify_embedder.py` | Acceptance checks, and `--probe` to set the gates from labelled pairs |
-| `scripts/make_sample_docs.py` | Regenerates the demo 0250 documents |
+| `sps.py` | **Everything that runs.** `python sps.py resolve \| bulk \| eval \| check` |
+| `sps_prompts.py` | **Everything the model reads** — the intent scorer, the Tier-2 Actor and Judge, and their message builders |
+| `scripts/run_resolver.cmd` | UiPath wrapper for `resolve`; propagates the exit code |
+| `scripts/run_bulk_test.cmd` | Wrapper for `bulk` |
+| `scripts/run_eval.cmd` | Wrapper for `eval` |
+| `tests/` | The suite, run with `python -m pytest` |
 | `samples/` | A ticket + history for smoke tests, a bulk sheet, six eval cases, twelve similarity pairs, three demo standards |
 | `data/0250_docs/` | Where the real 0250 standards go (ships empty) |
+| `docs/` | Architecture diagrams |
 
+`sps.py` reads top to bottom in the order a ticket passes through it:
 
-**Gatekeeping depends on nothing but the standard library.** `sps/validators.py`
-imports without torch, openai, pandas or pydantic, so the rules that decide
-whether a ticket is even processable are testable in milliseconds. Everything
-heavier sits behind lazy imports and the `Embedder` / `ChatClient` protocols.
+| Section | |
+| --- | --- |
+| Validation and part-number canonicalisation | the rules that decide whether a ticket is processable at all |
+| Data contracts | ticket and result shapes |
+| Configuration | environment settings, and the `.env` reader |
+| Reading .csv and .xlsx | format dispatch and the strict type gate |
+| LLM response schemas | the pydantic models every model response is validated against |
+| Embedding | the Azure encoder |
+| Tier 2: reading the 0250 .docx standards | citable, section-bounded chunks |
+| Tier 2: the standards vector cache | hash-keyed, enriched query, search |
+| Tier 1: history retrieval | filter by part, embed, rank, gate |
+| The Azure OpenAI chat client | structured outputs, with a JSON-mode fallback |
+| The deterministic gates | record-specific references, and misattributed actions |
+| Tier 1: intent scoring | which past record asks the same question |
+| The Actor/Judge loop | schema-constrained drafting and audit — **Tier 2 only** |
+| Building results, Writing workbooks | the rows, and the atomic writer |
+| Command: resolve, bulk, eval, check | the four commands, then the similarity probe and the entry point |
+
+Prompt wording lives in its own file so a prompt change is a diff of prompt
+text only. Azure is reached only through the `Embedder` / `ChatClient` seams,
+which is what lets the suite run with neither a key nor a network.
 
 ---
 
 ## The resolver (primary path)
 
-`scripts/run_resolver.py` resolves one ticket against a history file with **no
+`python sps.py resolve` resolves one ticket against a history file with **no
 vector database**. Because the part-number filter means semantic search only ever
 runs against one part's history, that history is small enough to embed on demand
 -- so the index, the indexer schedule, the embedded-storage lock and payload
 drift all stop existing.
 
 ```bash
-python -m scripts.run_resolver --ticket-file ticket.xlsx \
+python sps.py resolve --ticket-file ticket.xlsx \
     --history-file history.csv --output-dir .\out
 ```
 
 | Output | When | Columns |
 | --- | --- | --- |
 | `status.xlsx` | **Always**, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason`, `Embedding_Model` |
-| `output.xlsx` | Whenever the run **reached a conclusion** (exit 0), including "no recommendation". Never on exit 1 or 2 | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Closest_Matching_Solution` |
+| `output.xlsx` | Whenever the run **reached a conclusion** (exit 0), including "no recommendation". Never on exit 1 or 2 | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Closest_Matching_Solution`, `Cascade_Warnings` |
+
+Both are one sheet named `Sheet1`, every cell stored as text — so `0012-43951`
+never becomes a date, and archive text beginning with `=` never becomes a
+formula. A character Excel cannot store (Word's manual line break is one) is
+replaced on the way in rather than failing the write, and a cell over Excel's
+32,767-character limit is cut with a visible marker.
 
 ### Status codes
 
@@ -141,7 +147,7 @@ out of options, not merely that it did.
 | `SUCCESS_0250_DOC` | Answered from a 0250 standard | Admin review |
 | `NO_MATCHES` | No history for the part **and** no standard covered it | Master Data |
 | `BELOW_CONFIDENCE_THRESHOLD` | Candidates found in either tier, none cleared its gate | Reliability Engineer — a genuinely novel defect |
-| `LLM_AUDIT_REJECTED` | Candidates cleared the maths, the Actor or Judge refused | Human reviewer |
+| `LLM_AUDIT_REJECTED` | Candidates cleared the maths, then were refused: no record asked the same question (Tier 1's intent scorer), or the Tier-2 Actor or Judge declined | Human reviewer |
 | `INVALID_INPUT` | Bad part number, missing file, unsupported format | Fault the item |
 | `INFRASTRUCTURE_ERROR` | Azure outage, unhandled crash | Retry |
 
@@ -213,20 +219,24 @@ success the rationale leads and the sources follow it.
 
 ### Why a resolved row does not quote its source
 
-Up to **15** qualified records reach the Actor, each tagged with its own match
-score, and a recommendation may combine steps from several of them. Quoting the
-top record would read as *the* source and invite a reviewer to check a step
-against a record that step did not come from &mdash; worse than showing nothing.
-
-So a resolved row names them all instead, with their scores:
+On a success the answer is already in `AI_Recommendation`, so repeating archive
+text beneath it would add length without adding information. A resolved row
+carries a **scored source list** instead:
 
 ```
-Synthesized from 5 record(s): SPS-1001 (93%), SPS-1002 (74%), SPS-1004 (49%), SPS-1003 (49%), SPS-1005 (35%)
+Synthesized from 2 record(s): SPS-1001 (100%), SPS-1003 (31%)
 ```
 
-`Referenced_Sources` already lists those ids. What it cannot say is which
-matched at 93% and which at 35%, and that is the one thing telling a reviewer
-where to look first.
+In Tier 1 that is every record the intent scorer read, ordered by intent score,
+with the record whose solution was sent first. In Tier 2 it is every standards
+section the Actor was given, and there a recommendation may combine several —
+quoting one section would read as *the* source and invite a reviewer to check a
+step against a section it did not come from. The label reads "Synthesized from"
+in both tiers, which is only accurate for Tier 2.
+
+`Referenced_Sources` already lists the ids. What it cannot say is which scored
+100% and which 31%, and that is the one thing telling a reviewer where to look
+first.
 
 On a refusal the limit is **3**, not all of them: enough that a near-miss is not
 hidden behind a marginally better one, few enough that the cell stays readable.
@@ -251,9 +261,10 @@ do is bypass the checks on its way to a supplier.
 
 > Retaining the below-gate row needed a change in the retriever: `retrieve()`
 > returns only what qualified, so on a gated run the near-miss text existed
-> nowhere at all. `RetrievalStats.best_candidate` is captured beside
-> `top_score`, before the filter, and deliberately kept out of `as_dict()` —
-> that feeds the log line, which does not want 500 characters of solution text.
+> nowhere at all. `RetrievalStats.top_candidates` — the closest three — is
+> captured beside `top_score`, before the filter, and deliberately kept out of
+> `as_dict()`: that feeds the log line, which does not want 500 characters of
+> solution text.
 
 ### Why there was no recommendation
 
@@ -265,13 +276,17 @@ arguing from:
 | --- | --- |
 | `NO_HISTORY_FOR_PART` | The archive — this part is new |
 | `BELOW_THRESHOLD` | The gate, or the encoder |
-| `ACTOR_ABSTAINED` | The archive — precedent found, but it answers a different question |
+| `INTENT_BELOW_THRESHOLD` | The archive — records found and read, none asks the same question |
+| `ACTOR_ABSTAINED` | Tier 2 — the standards found do not answer this defect |
 | `GATE_UNTRANSFERABLE` | **Our checks** — attachment, ticket number, prior conversation |
 | `GATE_MISATTRIBUTED` | **Our checks** — the supplier was told to do the customer's job |
 | `JUDGE_REFUSED` | **Our checks** — failed the compliance audit |
 
-`scripts/run_bulk_test.py` tallies these at the end of a run and prints the
-split:
+The last three stop a Tier-2 draft. A Tier-1 answer is never stopped by them:
+it is the archive's own text, sent as recorded, and the same scanners annotate
+it in `Cascade_Warnings` instead.
+
+`python sps.py bulk` tallies these at the end of a run and prints the split:
 
 ```
   of those without one, why:
@@ -300,14 +315,14 @@ Work is ordered cheapest-first, so nothing expensive runs for a ticket that
 cannot succeed:
 
 ```
-validate -> filter history by part -> cap to newest 300 -> embed -> rank -> gate -> LLM
-                                                                                    |
-                                                        (nothing usable) -----------+
-                                                                 |
-                                        Tier 2:  load cache -> rank chunks -> gate -> LLM
+validate -> filter history by part -> cap to newest 300 -> embed -> rank -> gate -> intent scorer
+                                                                                         |
+                                                             (nothing usable) -----------+
+                                                                      |
+                                       Tier 2:  load cache -> rank chunks -> gate -> Actor/Judge
 ```
 
-A malformed part number is rejected before the model is even loaded. Tier 2 runs
+A malformed part number is rejected before anything is embedded. Tier 2 runs
 only once all of Tier 1 has failed, which is what lets it afford to parse and
 embed a document corpus.
 
@@ -315,25 +330,23 @@ embed a document corpus.
 
 | step | cost |
 | --- | --- |
+| process start and imports | 0.3 s |
 | history scan, CSV | 1.45 s |
-| embed 242 candidates + query | 1.39 s |
-| **per ticket, warm process** | **2.84 s** |
-| model load, once per process | ~8 s |
-| **per ticket, cold CLI** | **~11 s** |
+| embedding and the intent-scoring call | Azure round trips; not yet measured against the deployment |
 
-Two things follow, and both matter operationally:
+The process-start figure is the whole cold-start cost now: there is no model to
+load, so a ticket per process costs no more than a resident process would. (The
+figures this table once carried for embedding and model load were measured on
+the since-removed local encoder.)
 
-1. **Use CSV for a large history.** The same 300k rows take **~40 s** as `.xlsx`
-   against ~1.5 s as `.csv`, because openpyxl inflates and parses XML per row
-   while a CSV is a linear read. The engine reads both; the format is the
-   difference between meeting the 3 s budget and missing it by 13x.
-2. **The 3 s budget only holds for a warm process.** Model load dominates a cold
-   CLI invocation. One ticket per process costs ~11 s regardless of how fast the
-   retrieval is; keep a resident process, or batch tickets, to amortise it.
+**Use CSV for a large history.** The same 300k rows take **~40 s** as `.xlsx`
+against ~1.5 s as `.csv`, because openpyxl inflates and parses XML per row while
+a CSV is a linear read. The engine reads both; the format is the difference
+between meeting the 3 s budget and missing it by 13x.
 
 ### Part-number gatekeeping
 
-`sps/validators.py` canonicalises with `.strip().upper()` plus removal of
+The first section of `sps.py` canonicalises with `.strip().upper()` plus removal of
 invisible characters -- zero-width space, zero-width joiner, BOM, word joiner,
 soft hyphen -- and interior whitespace. Non-breaking spaces from web forms and
 zero-width characters from copy-paste are invisible to whoever pasted them but
@@ -352,18 +365,14 @@ on the extension. `.xlsm` is accepted too: it is the same format as far as
 openpyxl is concerned, a workbook that happens to carry macros, and business
 users hand those over routinely.
 
-`sps/file_reader.py` is the only place that knows the difference. Everything
-past it works on a header row plus data rows, so column mapping, part
-canonicalisation and filtering are format-blind. The same history in both
-formats produces byte-identical results, down to the similarity score:
-
-```
-xlsx  exit=0  BELOW_CONFIDENCE_THRESHOLD  Best match 0.5658 ... [Local]
-csv   exit=0  BELOW_CONFIDENCE_THRESHOLD  Best match 0.5658 ... [Local]
-```
+The reader in `sps.py` ("Reading .csv and .xlsx") is the only place that knows
+the difference. Everything past it works on a header row plus data rows, so
+column mapping, part canonicalisation and filtering are format-blind. The same
+history in both formats produces identical results, down to the similarity
+score, and the suite holds it to that.
 
 **Anything else hard-fails immediately**, on the extension alone, before a file
-is opened, a model is loaded or a history is scanned:
+is opened, anything is embedded or a history is scanned:
 
 ```
 exit=0  FAIL / INVALID_INPUT
@@ -379,24 +388,15 @@ exit 2 — that is genuine I/O trouble and a human should look at it.
 Prefer CSV for a large history: at 300k rows the same data takes about 1.5 s as
 `.csv` against about 40 s as `.xlsx`, because openpyxl parses XML per row.
 
-### The local encoder, disabled
+### The local encoder, removed
 
-Azure OpenAI is the only encoder the pipeline reaches. The `bge-small` path is
-disabled, not deleted:
-
-| Still in the tree | State |
-| --- | --- |
-| `sps/embedding.py` → `BGEEmbedder` | Untouched |
-| `scripts/verify_embedder.py --local` | Works, once torch is reinstalled |
-| `tests/test_real_embedder.py` | Skips cleanly without `sentence_transformers` |
-| `LOCAL_EMBEDDING_THRESHOLD` (0.89), `TIER2_LOCAL_THRESHOLD` (0.62) | Dormant; kept so re-enabling is a wiring change, not a re-measurement |
-| The `embedder=` injection seam on both retrievers | Live — tests use it, and it is where a local model drops back in |
-
-Re-wiring it means restoring one branch at each of the three sites marked
-`LOCAL MODEL DISABLED`, in `sps/retrieval/in_memory.py`,
-`sps/retrieval/doc_cache.py` and `scripts/run_resolver.py`, and uncommenting
-four pins in `requirements.txt`. The steps are written out at the bottom of that
-file.
+Azure OpenAI is the only encoder. The `bge-small` path was first disabled and
+then removed outright — the wrapper, its thresholds (0.89 for Tier 1, 0.62 for
+Tier 2), `check --local` and the opt-in real-model tests — because it needed
+torch to run at all and nothing reached it. It is recoverable from git history.
+The `embedder=` seam on both retrievers stays: the tests inject their stand-in
+through it, and anything injected is labelled `injected` in the status sheet,
+never mistaken for the deployment.
 
 **What changed behaviourally.** A failure used to be absorbed: the run fell back
 to `bge-small`, scored in a different embedding space, applied a different
@@ -417,35 +417,33 @@ The batch evaluator gains something from this too — with one encoder there is 
 longer any way for a run to pool scores from two embedding spaces, which was the
 failure its mixed-encoder warning existed to catch.
 
-### Thresholds, one per embedding space
+### Thresholds
 
 A threshold is a property of one model's scoring distribution and does not
-survive a change of encoder. Four exist; **two are live and two are dormant**,
-and `status.xlsx` records which encoder actually answered.
+survive a change of encoder. Three gate the pipeline, one per comparison:
 
-| | value | state | basis |
+| | default | what it decides | basis |
 | --- | --- | --- | --- |
-| `AZURE_EMBEDDING_THRESHOLD` | **0.50** | **live** | **Provisional, never measured.** |
-| `TIER2_AZURE_THRESHOLD` | **0.35** | **live** | **Provisional twice over** — derived from the 0.50 above, itself a guess. |
-| `LOCAL_EMBEDDING_THRESHOLD` | 0.89 | dormant | Measured, on bge-small. |
-| `TIER2_LOCAL_THRESHOLD` | 0.62 | dormant | Measured, on bge-small against the demo corpus. |
+| `AZURE_EMBEDDING_THRESHOLD` | **0.30** | Tier 1's cosine — a **recall filter**: which records the intent scorer gets to read | **Provisional, never measured.** Lowered from 0.50 when intent scoring took over the decision, so wording similarity cannot silently discard a record whose request matches |
+| `SPS_INTENT_THRESHOLD` | **0.75** | Tier 1's **decision**: the intent score a record must reach for its solution to be sent | An LLM's score, not a calibrated probability |
+| `TIER2_AZURE_THRESHOLD` | **0.35** | Tier 2's cosine gate | **Provisional twice over** — the old 0.50 scaled by bge-small's Tier-1:Tier-2 ratio |
 
-> **Every gating decision the pipeline now makes rests on an unmeasured
-> number.** Disabling the local encoder retired both measured thresholds and
-> promoted both guesses. How wrong 0.50 is depends on which model backs the
-> deployment: `text-embedding-3-small` / `-3-large` put unrelated text around
-> 0.1—0.3, so it is a plausible starting point; `text-embedding-ada-002` is
-> notorious for keeping even unrelated pairs above 0.7, where 0.50 admits
-> essentially everything and the gate stops existing.
+> **Every gating decision the pipeline makes rests on an unmeasured number.**
+> Removing the local encoder retired the two measured thresholds. How far off
+> the Azure numbers are depends on which model backs the deployment:
+> `text-embedding-3-small` / `-3-large` put unrelated text around 0.1—0.3;
+> `text-embedding-ada-002` keeps even unrelated pairs above 0.7, where these
+> gates would admit essentially everything.
 >
-> `python -m scripts.verify_embedder` reads both live gates against the real
-> deployment and suggests a range for each. Run it before trusting either, and
-> widen it with `scripts/run_eval_batch.py`.
+> `python sps.py check` reads both cosine gates against the real deployment and
+> suggests a range for each. Run it before trusting either, and widen it with
+> `python sps.py eval`.
 
-`SPS_CONFIDENCE_THRESHOLD` and `--threshold` override the Tier-1 pair;
-`SPS_TIER2_THRESHOLD` and `--tier2-threshold` override the Tier-2 pair. An
-explicit operator instruction is not second-guessed by the backend that
-happened to respond.
+Tier 1's cosine gate is overridden by `--threshold`, then
+`SPS_CONFIDENCE_THRESHOLD`, then `AZURE_EMBEDDING_THRESHOLD`, before the
+built-in 0.30. Tier 2's by `--tier2-threshold`, then `SPS_TIER2_THRESHOLD`, then
+`TIER2_AZURE_THRESHOLD`. The intent gate by `SPS_INTENT_THRESHOLD`. One override
+spanning both tiers would be a single number standing for two comparisons.
 
 ### Which encoder answered
 
@@ -455,25 +453,36 @@ caller reading the first four positionally is unaffected:
 ```
 azure:text-embedding-3-large     the encoder
 (blank)                          aborted before anything was encoded
-local:<model>                    only reachable through an injected encoder
+injected:<name>                  a stand-in handed in through the test seam
 ```
 
-`Reason` also ends with `[Azure]` or `[Local]`, so a support engineer skimming
-the sheet — or a caller reading only the first four columns — sees which encoder
-ran without needing to know the column exists.
+`Reason` also ends with `[Azure]` (or `[Injected]`), so a support engineer
+skimming the sheet — or a caller reading only the first four columns — sees which
+encoder ran without needing to know the column exists.
 
 The column kept its value after the fallback was removed: a ticket whose Tier 1
-never embedded — an unknown part stops before the model is reached — still
+never embedded — an unknown part stops before anything is encoded — still
 reports Tier 2's encoder if Tier 2 ran, so a run that embedded is never recorded
 as one that did not.
 
 Metadata boosting is gone from this path entirely: part number is an exact
 filter, and the other boosts existed to discriminate within a mixed-part result
-set that no longer occurs. `Confidence_Score` is the cosine alone.
+set that no longer occurs. On a Tier-1 answer `Confidence_Score` is the intent
+score of the record sent; on a Tier-2 answer, the best cosine among the sections
+used.
 
 ---
 
 ## What must never reach a supplier
+
+Two kinds of text reach `AI_Recommendation`, and they are guarded differently.
+**Tier-2 text is written by a model**, so it is drafted, scanned by two
+deterministic gates and audited by a Judge, and a draft that fails is rewritten
+or refused. **Tier-1 text is the archive's own**, sent as recorded: the same two
+scanners run over it, and their findings are written to `Cascade_Warnings`
+rather than blocking it. Most of this chapter is the history of why each guard
+exists; where a guard once ran in Tier 1, it now lives in Tier 2 or in that
+column.
 
 ### Both fields, not just the recommendation
 
@@ -487,9 +496,9 @@ justification  : Based on SPS-100, for which ESW#20033465 was submitted; see the
 ```
 
 The gate rejects that text the moment it is handed it; it was simply never
-handed it. `_sanitised()` in `actor_critic.py` now scans the justification on
-the way out of a PASS and **blanks it on a finding rather than rejecting the
-draft**. Both tiers already substitute generated text for an empty
+handed it. `_sanitised()`, in the Actor/Judge loop, now scans the justification
+on the way out of a PASS and **blanks it on a finding rather than rejecting the
+draft**. The result builder already substitutes generated text for an empty
 justification, so there is no new path, no second model call and no retry.
 
 That asymmetry is deliberate. The recommendation is already clean by then;
@@ -511,8 +520,8 @@ answers. Two live recommendations made the gap concrete:
 ```
 
 Neither is a hallucination. Both restate historical `Solution_Text` accurately,
-so `CHECK 1` passed them. Neither tells the supplier to use an internal system,
-so `CHECK 2` passed them. Both were wrong anyway:
+so the Judge's grounding check passed them. Neither tells the supplier to use an
+internal system, so its tool-leakage check passed them. Both were wrong anyway:
 
 - `ESW#20033465` is an internal work request raised for a **different** issue.
 - There is no attachment — `output.xlsx` is text.
@@ -523,19 +532,21 @@ tracking IDs, attachments, prior conversations, dates, lot and PO numbers, names
 
 ### Two layers
 
-**`CHECK 3 — CONTEXT TRANSFER`** in the Judge, whose load-bearing sentence is
-*"appearing in the historical solutions is not a defence for this check"*.
-`CHECK 1` trains the model toward "in the source ⇒ fine", which is exactly why
-the ESW number survived an audit it should have failed. Tier 2 gets the
-equivalent as `CHECK 5 — ONWARD CROSS-REFERENCES`: citing the extract you used
-is required, sending the supplier to a section they were not given is not.
+**A Judge check whose load-bearing sentence is that appearing in the source is
+not a defence.** A grounding check trains the model toward "in the source ⇒
+fine", which is exactly why the ESW number survived an audit it should have
+failed. The Tier-1 Judge carried this as `CHECK 3 — CONTEXT TRANSFER` until
+Tier 1 stopped drafting; the Tier-2 Judge carries it as
+`CHECK 5 — ONWARD CROSS-REFERENCES`: citing the extract you used is required,
+sending the supplier to a section they were not given is not.
 
-**`sps/generation/transferable.py`**, a deterministic scan, because an LLM asked
-to catch its own class of error is what just failed. It runs **before** the
-Judge — it is local and free where the Judge is a paid call — and a hit feeds
-back through the same critique path a Judge rejection uses, so the Actor
-rewrites and the existing circuit breaker still bounds the retries. Three
-failures trip it and no supplier-facing text is produced.
+**The deterministic gates** ("The deterministic gates" in `sps.py`), because an
+LLM asked to catch its own class of error is what just failed. In Tier 2 they
+run **before** the Judge — they are local and free where the Judge is a paid
+call — and a hit feeds back through the same critique path a Judge rejection
+uses, so the Actor rewrites and the existing circuit breaker still bounds the
+retries. Three failures trip it and no supplier-facing text is produced. In
+Tier 1 the same scans fill `Cascade_Warnings`.
 
 ### Not flagging good text is the harder half
 
@@ -570,7 +581,7 @@ Step 2 is right — the supplier controls shipment. **Step 1 tells the supplier 
 perform the customer's action.** ESW issuance is internal; the supplier may
 request one, and in both tickets that is exactly what they did.
 
-Actor constraint 4 and Judge `CHECK 2` already forbade this in prose. Neither
+The Actor's and the Judge's prompts already forbade this in prose. Neither
 fired, because **nothing in the system knew who issues an ESW.** The historical
 `Solution_Text` is an internal engineer's own to-do note, carrying no actor, and
 the Judge has no domain knowledge to supply one. `INTERNAL_INSTRUMENTS` and
@@ -606,33 +617,35 @@ spending two of its three attempts.
 The same pair exposed something the gates cannot catch. The two tickets asked
 for **different dispositions** — one "we will re-engrave, please issue an ESW",
 the other "we have no experience with that rework, please approve shipping
-as-is" — and got identical answers. `CHECK 4` (and `CHECK 6` in Tier 2) fails a
-draft that does not address what the ticket actually asks.
+as-is" — and got identical answers.
 
-This turns a confident non-answer into an honest refusal. It does **not** make
-the answer responsive: that needs retrieval to match on the request rather than
-the narrative, and today the request is one sentence buried in a long free-text
-blob. Deferred deliberately.
+A Judge check could only turn that confident non-answer into an honest refusal.
+The fix had to be in matching, and that is what Tier 1's intent scorer is: it
+reads the ticket's request and each record's problem, and scores whether they
+ask for the same thing, so wording that matches while the request differs no
+longer counts as precedent. In Tier 2, where text is still drafted, the Judge's
+`CHECK 6 — RESPONSIVENESS` fails a draft that does not address what the ticket
+asks.
 
 ### The consequence to expect
 
-The PASS rate falls. Where the history is process boilerplate rather than
-technical content, constraint 7 now tells the Actor to answer
-`Solution not found.` instead of restating it, and Tier 2 gets its turn. That is
-the honest number: the previous rate counted recommendations a supplier could
-not act on. `Matched_Solutions` in the bulk sheet shows how much of your history
-is like this.
+Archive text is sent as recorded, so whatever process boilerplate the history
+holds reaches the reviewer too — marked in `Cascade_Warnings` when it names an
+attachment, a ticket number or a prior conversation. `Matched_Solutions` in the
+bulk sheet shows how much of your history is like this.
 
 ---
 
 ## Tier 2: the 0250 standards fallback
 
 When Tier 1 produces no recommendation — no matching part, nothing similar
-enough, or an Actor that declines the precedent it was shown — the resolver
-searches the 0250 engineering standards in `data/0250_docs/` instead.
+enough, or no record asking the same question — and the ticket's reason code is
+one listed in `SPS_TIER2_REASON_CODES`, the resolver searches the 0250
+engineering standards in `data/0250_docs/` instead. With that list empty, Tier 2
+never runs.
 
 ```bash
-python -m scripts.run_resolver --ticket-file t.csv --history-file h.csv \
+python sps.py resolve --ticket-file t.csv --history-file h.csv \
     --output-dir .\out --docs-dir data\0250_docs
 ```
 
@@ -655,10 +668,25 @@ Cracking in a fillet or butt weld seam is cause for rejection ...
 so the string that was ranked is the string the model is asked to cite, and
 nothing can drift between retrieval and attribution.
 
-Tables are included, flattened one row per line. `document.paragraphs` omits
-them entirely, and a limits table is where a standard keeps its numbers —
-dropping tables would lose "2 percent by area maximum" from a porosity section
-while keeping the prose around it.
+Tables are included, row by row with cells joined by ` | `, so a limits table
+reads as `Porosity | 2 percent by area max`. A reader that took only the
+paragraphs would lose exactly those numbers while keeping the prose around them.
+(The rows of one table currently run together in the chunk text rather than
+staying a line each.)
+
+A `.docx` is a zip of XML, and it is read with the standard library — to the
+same rules python-docx applied, proven document by document against it before
+it was dropped, so every chunk is what it was. Two consequences of those rules
+are worth knowing, because text Word shows does not reach Tier 2:
+
+- Text inside a **content control** is skipped — including a whole section
+  wrapped in one, which documents built from a template often are — as are
+  **tracked insertions not yet accepted**, fields and smart tags.
+- A table **nested inside a cell** contributes nothing.
+
+Where python-docx gave up on a document, the reader does not: a malformed merge,
+or one running down more than a thousand rows, is read; anything that still
+fails costs only that one document, with a warning naming it.
 
 Legacy `.doc` files are named in a warning and skipped. A `.doc` is not a zip
 container, so the only way to read one on Windows is to drive Word through COM
@@ -667,9 +695,10 @@ rather than failing it.
 
 ### The cache
 
-The corpus is the same on every ticket, so it is embedded once. Two cache files,
-`0250_cache_azure.npz` and `0250_cache_local.npz`, because a vector belongs to
-one embedding space and one file could not hold two.
+The corpus is the same on every ticket, so it is embedded once, into
+`0250_cache_azure.npz` beside the documents. (An encoder injected by the tests
+writes `0250_cache_injected.npz` instead: a vector belongs to one embedding
+space, and one file could not hold two.)
 
 Validity is keyed on a SHA-256 of every document's **name and bytes** — a rename
 changes every citation the document produces, so it invalidates too — plus the
@@ -695,7 +724,8 @@ describing the same symptom under different issue classes.
 Tier 2 scores in a different range from Tier 1, and this is not a detail. Tier 1
 compares one short defect sentence against another; Tier 2 compares a defect
 sentence against 300 words of standards prose that answers it **without
-resembling it**. Measured with bge-small against the demo corpus:
+resembling it**. Measured with the since-removed bge-small against the demo
+corpus:
 
 | query | top-ranked section | score |
 | --- | --- | --- |
@@ -704,21 +734,23 @@ resembling it**. Measured with bge-small against the demo corpus:
 | carton label misprint | `§ 2.1 Carton Labelling` | 0.7507 |
 | hydraulic pump pressure — *not covered by any document* | `§ 4.2 Weld Seam Cracking` | **0.5944** |
 
-Tier 1's gate is 0.89. Reusing it would reject the correct chunk on every ticket
-and Tier 2 would never fire once. `TIER2_LOCAL_THRESHOLD` is **0.62** — above the
-uncovered-defect peak, below every genuine match.
+Tier 1's gate on that encoder was 0.89. Reusing it would have rejected the
+correct chunk on every ticket and Tier 2 would never have fired once. Tier 2's
+gate there was **0.62** — above the uncovered-defect peak, below every genuine
+match. The Azure gate, `TIER2_AZURE_THRESHOLD` = **0.35**, is that ratio applied
+to Tier 1's former Azure gate, and has not been measured.
 
 `--threshold` is deliberately Tier 1's alone; Tier 2 has `--tier2-threshold` and
 `SPS_TIER2_THRESHOLD`. One override spanning both would be a single number
-standing for two different embedding spaces.
+standing for two different comparisons.
 
-**Re-measure 0.62 once the real standards are loaded.** A larger corpus gives an
+**Measure 0.35 once the real standards are loaded.** A larger corpus gives an
 irrelevant section more chances to score highly, so the uncovered-defect peak
-rises with corpus size, and 0.5944 leaves only 0.026 of headroom.
+rises with corpus size; on bge-small it left only 0.026 of headroom.
 
 ### Grounding
 
-The Tier-2 Actor is under one constraint the Tier-1 Actor is not: **a standard is
+The Tier-2 Actor works under a constraint precedent never needed: **a standard is
 not automatically a solution.** A section stating a limit, a tolerance or an
 acceptance criterion without saying what to do about a part that violates it has
 not supplied a resolution, and deriving the disposition is fabrication — the more
@@ -738,11 +770,11 @@ measurement in Tier 1. A model asked to author its own citation can invent one.
 
 ## Bulk test runs
 
-`scripts/run_bulk_test.py` resolves a **sheet of tickets, one per row**, and
-writes a copy carrying every original column plus the answers.
+`python sps.py bulk` resolves a **sheet of tickets, one per row**, and writes a
+copy carrying every original column plus the answers.
 
 ```bash
-python -m scripts.run_bulk_test --tickets tickets.xlsx --history history.csv
+python sps.py bulk --tickets tickets.xlsx --history history.csv
 scripts\run_bulk_test.cmd tickets.xlsx history.csv
 ```
 
@@ -753,7 +785,7 @@ Output defaults to `<tickets>_results.xlsx` beside the input.
 | | |
 | --- | --- |
 | **Original columns** | Preserved verbatim, in order, including ones the pipeline never reads |
-| **Appended** | `Status`, `Status_Code`, `Reason`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Tier1_Score`, `Tier2_Score`, `No_Recommendation_Reason`, `Closest_Matching_Solution`, `Matched_Solutions`, `Embedding_Model`, `Duration_Seconds` |
+| **Appended** | `Status`, `Status_Code`, `Reason`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Tier1_Score`, `Tier2_Score`, `No_Recommendation_Reason`, `Closest_Matching_Solution`, `Cascade_Warnings`, `Matched_Solutions`, `Embedding_Model`, `Duration_Seconds` |
 | **Rows** | Exactly one per input row, in the same order — a ticket that resolved nothing still has a row saying why |
 
 Nothing here reimplements the pipeline. Each row goes through the same
@@ -764,11 +796,11 @@ about what a refusal looks like.
 
 A column that clashes with an existing heading is suffixed `_AI` rather than
 duplicated — a sheet that already has `Status` would otherwise end up with two,
-and which one survived would be down to pandas.
+and which one a reader picked up would be anyone's guess.
 
 ### Two bulk tools, different jobs
 
-| | `run_bulk_test.py` | `run_eval_batch.py` |
+| | `sps.py bulk` | `sps.py eval` |
 | --- | --- | --- |
 | Input | One sheet, a ticket per row | A directory of `<id>_ticket.*` files |
 | Output | Your sheet plus the answers | A fixed results workbook |
@@ -783,8 +815,9 @@ Sequential by design, one ticket at a time. Two things dominate a large run:
   does per invocation and this deliberately does not work around it. Prefer a
   CSV history: the same 300k rows take ~1.5 s as CSV against ~40 s as `.xlsx`,
   *per ticket*.
-- **Each resolved ticket costs an embedding call and up to six LLM calls**
-  (three Actor/Judge rounds, twice if Tier 2 runs).
+- **A ticket costs one embedding call in Tier 1, and one intent-scoring call if
+  anything clears the cosine gate.** When Tier 2 runs it adds a query embedding
+  and up to six more LLM calls (three Actor/Judge rounds).
 
 `--limit N` resolves only the first N rows so you can price a trial before
 committing to 500; the rest still appear, marked `NOT RUN`, so the sheet stays
@@ -797,12 +830,12 @@ carry the same useless message.
 
 ## The batch evaluator
 
-`scripts/run_eval_batch.py` runs a directory of test tickets and writes one
+`python sps.py eval` runs a directory of test tickets and writes one
 `eval_results.xlsx`. It exists to calibrate a threshold, which shapes both of
 its design decisions.
 
 ```bash
-python -m scripts.run_eval_batch --test-dir cases --history-file master.csv \
+python sps.py eval --test-dir cases --history-file master.csv \
     --output-dir eval_out
 scripts\run_eval.cmd cases eval_out master.csv
 ```
@@ -812,20 +845,22 @@ A run that reported only its successes would show you the scores above the
 threshold and hide exactly the ones you need in order to judge whether the
 threshold belongs where it is.
 
-**The whole batch runs in one process**, so the local model's ~7 s cold start is
-paid once rather than once per case. Fifty cases that would take some minutes as
-fifty subprocesses take roughly as long as fifty embeddings. One failing case
-never ends the run: it becomes a row saying what went wrong, and the batch
-carries on.
+**The whole batch runs in one process**, and one failing case never ends the
+run: it becomes a row saying what went wrong, and the batch carries on.
 
 | Column | |
 | --- | --- |
 | `Test_ID`, `Status`, `Status_Code`, `Reason` | as `status.xlsx` |
-| `Embedding_Model` | `azure:<deployment>` or `local:<model>` |
+| `Embedding_Model` | `azure:<deployment>` |
 | `Confidence_Score` | the top cosine, **populated even when the gate rejected it** |
 | `Threshold_Applied`, `Cleared_Threshold` | what it was measured against, and the verdict |
-| `Candidates_Considered`, `Duration_Seconds` | |
+| `Candidates_Considered` | |
+| `Resolution_Source`, `Tier2_Score`, `Tier2_Threshold`, `Tier2_Chunks`, `Tier2_Cache` | the same for Tier 2, kept apart because the tiers score in different ranges |
+| `Duration_Seconds` | |
 | `Ticket_File`, `History_File` | which inputs produced this row |
+
+It calibrates the cosine gates. The intent score that decides a Tier-1 answer
+is not among its columns — only its verdict, in `Status`.
 
 Blank score cells mean nothing was ever encoded — an unknown part, a bad file
 type — which is different from a score of zero, and kept distinct so those cases
@@ -840,10 +875,9 @@ machines.
 The console digest prints the score distribution — min, p25, median, p75, p90,
 max — so the shape is visible without opening Excel. It also **warns if more
 than one encoder ran in the batch**: a threshold belongs to one embedding space,
-so a pooled distribution describes neither. With the local encoder out of the
-pipeline nothing can currently trigger it — which is the point of keeping it.
-It was written for a fallback that fired silently, and it is what would catch
-the same mistake if one is wired back in.
+so a pooled distribution describes neither. With one encoder nothing can
+currently trigger it. It was written for a fallback that fired silently, and it
+is kept so the same mistake cannot come back unannounced.
 
 Exit code 0 means the batch ran, whatever the individual cases did; 1 means at
 least one case hit an infrastructure error; 2 means the case list could not be
@@ -859,16 +893,24 @@ blank part number.
 
 ## Configuration
 
-Copy `.env.example` to `.env`; the resolver loads it if present, and real
-environment variables always win. A UiPath robot does not necessarily inherit an
-interactive shell's environment, which is why the file is read at all.
+Copy `.env.example` to `.env`. Every command loads it if present — from the
+working directory, else from beside `sps.py` — and real environment variables
+always win. A UiPath robot does not necessarily inherit an interactive shell's
+environment, which is why the file is read at all.
+
+The file follows the usual `.env` rules: `KEY=value`, an optional `export`,
+`#` comments (one after a bare value needs a space before it), single or double
+quotes, and `${VAR}` or `${VAR:-default}` expansion. Save it as UTF-8. A
+byte-order mark is fine, and so is the UTF-16 that `echo KEY=value > .env`
+writes in Windows PowerShell; a file in any other encoding is skipped with an
+error naming it, and the run then reports the missing settings. A line that
+cannot be parsed is skipped with a warning giving its line number.
 
 Azure credentials are read **only** from the environment. There is no CLI flag
 for them: command lines are visible in the Windows process list and in UiPath
 job logs.
 
-Precedence for the threshold is `--threshold` — `SPS_CONFIDENCE_THRESHOLD` —
-the built-in 0.89.
+Threshold precedence is under [Thresholds](#thresholds).
 
 ---
 
@@ -876,12 +918,10 @@ the built-in 0.89.
 
 Stated explicitly rather than buried:
 
-1. **BGE query instruction.** Queries are prefixed with
-   `"Represent this sentence for searching relevant passages: "`, the convention
-   `bge-*-v1.5` was trained with; history passages are not. Verified against the
-   real model: a passage vector is bit-identical to an unprefixed query vector
-   (cosine 1.00000000), and ranking is unchanged with the prefix on or off, though
-   absolute scores shift. Disable with `SPS_USE_BGE_QUERY_INSTRUCTION=false`.
+1. **No query instruction.** Queries and history are embedded the same way.
+   Some open models are trained to expect an instruction prefixed to queries;
+   Azure's embedding models are not, and a constant prefix would only shift
+   every query vector.
 
 2. **Part numbers are alphanumeric and free of stray spaces.** Canonicalisation
    still strips invisible characters and upper-cases defensively, but on a house
@@ -903,49 +943,44 @@ Stated explicitly rather than buried:
 5. **Prompt effectiveness is not unit-testable.** The tests pin the loop's
    *control flow* (refinement, the circuit breaker, fail-closed behaviour) and
    that the mandated constraints appear in the prompts. Whether the Judge
-   actually catches a given hallucination is a model-behaviour question needing
-   an evaluation set of labelled drafts against the real deployment.
+   actually catches a given hallucination, or the intent scorer a different
+   request in the same words, is a model-behaviour question needing an
+   evaluation set of labelled cases against the real deployment.
 
 ---
 
 ## Test coverage
 
 ```
-tests/test_tier2_docs.py               62   docx parsing, cache invalidation, Tier-2 gating, the routing matrix
-tests/test_resolver.py                 39   validation, part filtering, capping, dual workbooks, threshold
+tests/test_tier2_docs.py               71   docx reading, cache invalidation, Tier-2 gating, the routing matrix
+tests/test_transferable.py             62   the two local gates, and what they must NOT flag
+tests/test_resolver.py                 53   validation, part filtering, capping, dual workbooks, the writer, threshold
+tests/test_component_c_actor_critic.py 40   refinement, breaker, fail-closed, both gates, stop_reason, justification
 tests/test_eval_batch.py               32   case discovery, per-case isolation, the score columns
 tests/test_file_reader.py              31   format dispatch, strict type gate, format agnosticism
-tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
-tests/test_bulk_test.py                24   column preservation, row alignment, the not-attempted markers
-tests/test_transferable.py             62   the two local gates, and what they must NOT flag
-tests/test_component_c_actor_critic.py 43   refinement, breaker, fail-closed, both gates, stop_reason, justification
+tests/test_config.py                   29   the .env reader, the command line, model/threshold single-sourcing
 tests/test_similarity_probe.py         26   pair parsing, the margin maths, both margin verdicts, the file gate
-tests/test_cascade_and_wording.py       24   verbatim cascade, the warning column, the refusal wording
 tests/test_intent_matching.py          25   intent scoring, failing closed, the reason-code gate
+tests/test_cascade_and_wording.py      24   verbatim cascade, the warning column, the refusal wording
+tests/test_bulk_test.py                24   column preservation, row alignment, the not-attempted markers
+tests/test_azure_embeddings.py         22   the only encoder: hard failure, config vs transient, threshold
 tests/test_structured_outputs.py       12   strict response_format, fallback, schema boundaries
-tests/test_config.py                   15   env loading, model/threshold single-sourcing
-tests/test_real_embedder.py            14   the real bge-small model (opt-in, needs the disabled deps)
+tests/test_golden.py                    6   the whole pipeline's output, pinned
+tests/test_dependencies.py              2   nothing beyond the standard library and four packages
 ```
 
-The real-model tests exercise the disabled local encoder. They need torch and
-sentence-transformers reinstalled, and load ~130 MB of weights, so they are
-opt-in and skip cleanly when those are absent:
+`test_golden.py` runs the real pipeline over `samples/` with Azure stubbed and
+compares every workbook cell and every prompt the model was sent against
+`tests/golden/golden.json`. A change that alters what the pipeline produces —
+intended or not — fails it; `SPS_GOLDEN_CAPTURE=1` re-records it once the
+change is meant.
 
-```bash
-SPS_MODEL_TESTS=1 python -m pytest -q
-```
-
-They pin the properties the ranking maths assumes: 384 dimensions, unit-length
-vectors (so the NumPy matmul *is* the cosine the 0.89 gate is calibrated on), and
-the query instruction applied to queries but never to history passages.
-
-`python -m scripts.verify_embedder` checks the **live Azure deployment**:
-reachability, vector dimension, unit length, batch ordering, and then real
-cosine numbers for related versus unrelated SPS text scored against both gates.
-It ends by suggesting a range for each. That is the fastest way to find out
-whether 0.50 and 0.35 are anywhere near right on a new deployment — both are
-guesses until it has been run. `--local` runs the original bge-small checks
-instead, and reports what to install if torch is absent.
+`python sps.py check` checks the **live Azure deployment**: reachability,
+vector dimension, unit length, batch ordering, and then real cosine numbers for
+related versus unrelated SPS text scored against both cosine gates. It ends by
+suggesting a range for each. That is the fastest way to find out whether 0.30
+and 0.35 are anywhere near right on a new deployment — both are guesses until
+it has been run.
 
 Four fixtures are scored, and all four are now asserted on. Two of those
 assertions were missing for a migration:
@@ -968,8 +1003,8 @@ between what you judged similar and what you did not, and one sample of each
 gives no gap — just two points.
 
 ```bat
-python -m scripts.verify_embedder --probe
-python -m scripts.verify_embedder --probe my_pairs.xlsx --out probe.xlsx
+python sps.py check --probe
+python sps.py check --probe my_pairs.xlsx --out probe.xlsx
 ```
 
 `--probe` scores labelled pairs and reports that gap. Each pair in

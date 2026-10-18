@@ -4,8 +4,8 @@ Copy-paste, top to bottom, in a **Command Prompt** (`cmd.exe`) opened in the
 folder you want the project in. About five minutes, most of it `pip install`.
 
 You need working Azure credentials to get past step 7. There is no offline
-mode: the local encoder is out of the pipeline, so nothing resolves without a
-reachable embedding deployment.
+mode: Azure is the only encoder, so nothing resolves without a reachable
+embedding deployment.
 
 Every step ends with something to check. If a check fails, jump to
 [Troubleshooting](#troubleshooting) rather than continuing — each step depends
@@ -35,15 +35,14 @@ pip check
 copy .env.example .env
 notepad .env
 python -m pytest -q
-python -m scripts.verify_embedder
-scripts
-un_resolver.cmd samples\sample_ticket.csv samples\sample_history.csv smoke
+python sps.py check
+scripts\run_resolver.cmd samples\sample_ticket.csv samples\sample_history.csv smoke
 ```
 
 The two that most often surprise people: `pip check` must also survive
 `python -c "from openai import AzureOpenAI"` on a managed laptop
-([step 4](#4-verify-the-install)), and `verify_embedder` is the only thing that
-will tell you whether the shipped thresholds suit your deployment
+([step 4](#4-verify-the-install)), and `python sps.py check` is the only thing
+that will tell you whether the shipped thresholds suit your deployment
 ([step 7](#7-check-the-azure-deployment)).
 
 ---
@@ -55,7 +54,7 @@ will tell you whether the shipped thresholds suit your deployment
 | Python 3.11 or 3.12 | `python --version` | Built and tested on 3.12.0. 3.13 is untested. |
 | Git | `git --version` | Or download the repo as a zip. |
 | Network to `pypi.org` | | That is the whole list. No model download, no PyTorch index. |
-| Your Azure OpenAI endpoint and keys | | **Required.** Two deployments: one chat, one embedding. The local encoder is disabled, so nothing resolves without these. See [step 5](#5-configure-env). |
+| Your Azure OpenAI endpoint and keys | | **Required.** Two deployments: one chat, one embedding. There is no local encoder, so nothing resolves without these. See [step 5](#5-configure-env). |
 | Your 0250 standards as `.docx` | | Optional. Tier 2 is skipped entirely if the folder is empty — see [step 10](#10-load-the-0250-standards-tier-2). |
 
 No admin rights, no database, no service to install. The whole thing is a
@@ -70,7 +69,8 @@ git clone https://github.com/ColinPeriPeri/SPS.git
 cd SPS
 ```
 
-**Check:** `dir` lists `requirements.txt`, `sps`, `scripts`, `samples`.
+**Check:** `dir` lists `requirements.txt`, `sps.py`, `sps_prompts.py`, `scripts`,
+`samples`.
 
 ---
 
@@ -97,7 +97,8 @@ full path.
 pip install -r requirements.txt
 ```
 
-33 packages, no PyTorch, no model download. A minute or so.
+24 packages, test runner included — no PyTorch, no model download. A minute or
+so.
 
 ---
 
@@ -105,23 +106,23 @@ pip install -r requirements.txt
 
 ```bat
 pip check
-python -c "from openai import AzureOpenAI; from lxml import etree; import docx; print('OK')"
+python -c "from openai import AzureOpenAI; import numpy, openpyxl, pydantic; print('OK')"
 ```
 
 Expect `No broken requirements found.` and `OK`.
 
-**This check earns its place on a corporate laptop.** Two pins exist only to
-survive Windows Application Control, which blocks the native DLLs shipped by the
-newest builds of two dependencies:
+**This check earns its place on a corporate laptop.** One pin exists only to
+survive Windows Application Control, which blocks the native DLL shipped by the
+newest build of a dependency:
 
 | Pin | Without it |
 |---|---|
 | `jiter<0.17` | `import openai` dies with *"DLL load failed while importing jiter: An Application Control policy has blocked this file"* — and takes **every Azure call** with it, embeddings and chat alike |
-| `lxml<6` | The same error on `_elementpath`, taking Tier-2 document parsing with it |
 
-Both read like a corrupt install rather than a policy decision, which is what
-makes them expensive to diagnose. If you hit either, you have a version above
-the pin: `pip install "jiter<0.17"` or `pip install "lxml<6"`.
+It reads like a corrupt install rather than a policy decision, which is what
+makes it expensive to diagnose. If you hit it, you have a version above the pin:
+`pip install "jiter<0.17"`. (lxml 6 used to fail the same way; it is no longer
+installed at all — Word documents are read with the standard library.)
 
 ---
 
@@ -132,15 +133,16 @@ copy .env.example .env
 notepad .env
 ```
 
-`.env` is gitignored and must never be committed. The resolver reads it from the
-working directory or the project root, and **real environment variables always
-win** — so a UiPath robot with machine-level variables set does not need the
-file at all.
+`.env` is gitignored and must never be committed. Every command reads it from
+the working directory or the project root, and **real environment variables
+always win** — so a UiPath robot with machine-level variables set does not need
+the file at all. Save it as UTF-8, which is what Notepad writes; a file in some
+other encoding is skipped with an error naming it.
 
 There are **two separate Azure deployments**, with their own endpoint and key,
 so one can be rotated or fail without touching the other. Both are required —
-the local encoder is disabled, so a missing embedding key means no ticket
-resolves at all. Fill in four values:
+there is no other encoder, so a missing embedding key means no ticket resolves
+at all. Fill in six values:
 
 ### Embeddings — required
 
@@ -155,7 +157,7 @@ and **exit 2** — alert a human, do not retry, because no number of retries
 produces an API key. A transient failure (network, timeout, throttling) is
 `INFRASTRUCTURE_ERROR` with **exit 1** instead, which is worth retrying.
 
-### Chat (the Actor/Judge loop) — required
+### Chat (the intent scorer, and Tier 2's Actor and Judge) — required
 
 | Variable | Value |
 |---|---|
@@ -168,14 +170,20 @@ it is the first GA version with `json_schema` structured outputs. Older versions
 silently fall back to JSON mode plus client-side validation, which works but is
 weaker.
 
-### Thresholds — both live ones are guesses
+### Thresholds — all three are guesses
 
-`AZURE_EMBEDDING_THRESHOLD=0.50` and `TIER2_AZURE_THRESHOLD=0.35` are the two
-that now apply, and **neither has ever been measured**. The measured pair
-(0.89 / 0.62) belonged to the local encoder and is dormant.
+| Setting | Default | |
+|---|---|---|
+| `AZURE_EMBEDDING_THRESHOLD` | 0.30 | Tier 1's cosine: which records the intent scorer gets to read. Deliberately low |
+| `SPS_INTENT_THRESHOLD` | 0.75 | Tier 1's decision: how sure the scorer must be that a record asks the same thing |
+| `TIER2_AZURE_THRESHOLD` | 0.35 | Tier 2's cosine gate |
 
-[Step 7](#7-check-the-azure-deployment) gives a first reading in about ten
-seconds; [step 9](#9-run-the-batch-evaluator) turns it into a distribution.
+**None has been measured against a real deployment.** The measured pair from
+the local encoder (0.89 / 0.62) left with it.
+
+[Step 7](#7-check-the-azure-deployment) gives a first reading of the two cosine
+gates in about ten seconds; [step 9](#9-run-the-batch-evaluator) turns it into a
+distribution.
 
 ---
 
@@ -185,12 +193,12 @@ seconds; [step 9](#9-run-the-batch-evaluator) turns it into a distribution.
 python -m pytest -q
 ```
 
-Expect **219 passed, 1 skipped** in about five seconds. Nothing here needs a
-server, an Azure key or a model download.
+Expect **459 passed** in about six seconds, and nothing skipped. Nothing here
+needs a server or an Azure key.
 
-The skip is `tests/test_real_embedder.py`, which exercises the disabled local
-encoder. It needs torch and sentence-transformers reinstalled and is not part of
-the current pipeline — leave it skipped.
+A skip would now mean something is wrong: the suite no longer skips itself when
+a package is missing, so a dependency that failed to install — or was blocked —
+shows up here as a failure rather than as tests quietly not running.
 
 ---
 
@@ -199,7 +207,7 @@ the current pipeline — leave it skipped.
 Before any ticket, confirm the encoder works and see what its numbers look like:
 
 ```bat
-python -m scripts.verify_embedder
+python sps.py check
 ```
 
 Its first two lines tell you whether it found your `.env` at all:
@@ -214,7 +222,7 @@ sits somewhere other than the working directory or the project root. Everything
 below it will then report missing credentials no matter what you typed.
 
 It goes on to check reachability, vector dimension, unit length and batch
-ordering, then scores real SPS text against both live gates and ends with a
+ordering, then scores real SPS text against both cosine gates and ends with a
 suggested range:
 
 ```
@@ -222,11 +230,17 @@ suggested range:
   Tier 2 between 0.2xxx and 0.7xxx.
 ```
 
-Two checks matter more than the rest. **"unrelated record is blocked by the 0.50
+Two checks matter more than the rest. **"unrelated record is blocked by the 0.30
 gate"** — if that FAILS the gate admits everything and is not a gate, which
 usually means the deployment is `ada-002` rather than `text-embedding-3-large`.
 And the reported dimension: **3072** confirms `-3-large`; 1536 means `-3-small`
 or `ada-002`.
+
+Read **"a different defect on the same part is blocked"** with care. Since 0.30
+became a recall filter — it decides which records the intent scorer reads, not
+which answer is sent — telling weld porosity from weld cracking is the intent
+scorer's job. A fail on that line is not, on its own, a reason to raise the
+gate: raising it is what would silently discard real precedent.
 
 One sample each, so treat it as a smoke test with a hint attached, not a
 calibration. [Step 9](#9-run-the-batch-evaluator) is the calibration.
@@ -255,16 +269,18 @@ If it fails, the exit code says which kind of problem it is:
 | **2** with `INFRASTRUCTURE_ERROR` | A credential is missing. The `Reason` names exactly which variable. |
 | **1** with `INFRASTRUCTURE_ERROR` | The deployment was reachable but the call failed — wrong deployment name, throttling, network. |
 
-There is no longer an offline mode: with the local encoder disabled, nothing
-resolves without a working embedding deployment.
+There is no offline mode: Azure is the only encoder, so nothing resolves without
+a working embedding deployment.
 
 ---
 
 ## 9. Run the batch evaluator
 
 This is the tool for calibrating `AZURE_EMBEDDING_THRESHOLD` and
-`TIER2_AZURE_THRESHOLD` — the two numbers that gate everything, neither of which
-has ever been measured against a real deployment.
+`TIER2_AZURE_THRESHOLD` — the two cosine gates, neither of which has ever been
+measured against a real deployment. (It reports the cosine, not the intent
+score, so for `SPS_INTENT_THRESHOLD` it shows only the verdict on each case, in
+`Status`.)
 
 It runs every case in **one process**, and records the raw similarity on
 **every** row — including the cases the gate rejected, which are precisely the
@@ -298,8 +314,8 @@ distribution.
 
 ### Reviewing the answers rather than the scores
 
-`run_eval_batch` reports scores. To read what the system actually recommended
-across a batch, put the tickets in one sheet and use the bulk runner instead:
+`eval` reports scores. To read what the system actually recommended across a
+batch, put the tickets in one sheet and use the bulk runner instead:
 
 ```bat
 scripts\run_bulk_test.cmd samples\bulk_tickets.csv samples\sample_history.csv
@@ -327,7 +343,7 @@ CSV and ~40 s as `.xlsx`, because openpyxl parses XML per row.
 For anything more structured, use a run list instead:
 
 ```bat
-python -m scripts.run_eval_batch --run-list cases\runs.csv --output-dir eval_out
+python sps.py eval --run-list cases\runs.csv --output-dir eval_out
 ```
 
 with columns `Test_ID`, `Ticket_File`, `History_File` — paths resolved relative
@@ -352,9 +368,8 @@ Two things to watch for:
   neither. The digest prints a `WARNING` if it happens.
 - Set the number in `.env`, not in code:
   `AZURE_EMBEDDING_THRESHOLD` for Tier 1, `TIER2_AZURE_THRESHOLD` for Tier 2.
-  `SPS_CONFIDENCE_THRESHOLD` and `SPS_TIER2_THRESHOLD` override each tier
-  regardless of encoder. The `LOCAL_*` pair is dormant and changing it does
-  nothing while the local encoder is disabled.
+  `SPS_CONFIDENCE_THRESHOLD` and `SPS_TIER2_THRESHOLD` take precedence over
+  them, one per tier.
 
 ---
 
@@ -371,7 +386,7 @@ Three invented standards ship in `samples\0250_docs\`, so you can see the whole
 path work before touching a real document:
 
 ```bat
-python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
+python sps.py resolve --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
 ```
 
 Forcing *both* gates to 0.99 stops before the LLM, so this costs two embedding
@@ -411,23 +426,27 @@ Three things to check before you trust it:
   only the filename.
 - **Measure the threshold.** `TIER2_AZURE_THRESHOLD=0.35` is the one that
   gates your runs, and it is a guess derived from another guess — never measured
-  against any deployment. (`TIER2_LOCAL_THRESHOLD=0.62` *was* measured, but on
-  the retired encoder.) A larger corpus also gives irrelevant sections more
-  chances to score highly, so the headroom shrinks as you load more documents.
-  Run the batch evaluator and read `Tier2_Score` before trusting it.
+  against any deployment. (The 0.62 measured on the removed local encoder does
+  not carry over.) A larger corpus also gives irrelevant sections more chances
+  to score highly, so the headroom shrinks as you load more documents. Run the
+  batch evaluator and read `Tier2_Score` before trusting it.
+- **Check one real document reads fully.** Text inside a Word *content control*
+  is not read — nor are tracked insertions not yet accepted — and documents
+  built from a template sometimes wrap whole sections in one. If a section you
+  expect never appears in a citation, that is the first thing to look for.
 
 ---
 
 ## Exit codes
 
-Both wrappers propagate these verbatim, so the UiPath state machine can branch
+The wrappers propagate these verbatim, so the UiPath state machine can branch
 without opening a workbook.
 
 | Code | Meaning | What the robot should do |
 |---|---|---|
 | `0` | The run completed. `PASS`, or a legitimate `FAIL` — gated ticket, unknown part, wrong file type. | Log a business exception, routed on `Status_Code`. **Do not retry.** |
 | `1` | Infrastructure fault: Azure unreachable, unhandled error. | Retry. |
-| `2` | The ticket or history file could not be read. | Alert a human. |
+| `2` | The ticket or history file could not be read, or the Azure settings are missing. | Alert a human. |
 
 Within exit 0, branch on `Status_Code`: `SUCCESS_HISTORICAL` and
 `SUCCESS_0250_DOC` go to admin review, `NO_MATCHES` to Master Data,
@@ -448,7 +467,6 @@ unambiguous.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `An Application Control policy has blocked this file` on `import openai` (via `jiter`) | jiter 0.17+ ships a native DLL your machine's policy blocks. **This kills every Azure call, embeddings and chat.** | `pip install "jiter<0.17"` |
-| `An Application Control policy has blocked this file` on `from lxml import etree` | Same, for lxml 6.x. Kills Tier-2 document parsing. | `pip install "lxml<6"` |
 | `TypeError: Client.__init__() got an unexpected keyword argument 'proxies'` | httpx 0.28+ removed `proxies`, which openai 1.40.0 still passes | `pip install "httpx>=0.27,<0.28"` |
 | `Python interpreter not found` from a `.cmd` | No `venv\` or `env\` in the project root | Redo step 2, or set `SPS_PYTHON` to the interpreter's full path |
 | `pip` SSL errors on install | TLS interception | Point `pip` at your internal mirror via `PIP_INDEX_URL` — ask IT rather than disabling verification |
@@ -457,21 +475,23 @@ unambiguous.
 | `Problem description is N characters; at least 10 required.` | The description column is blank or nearly so | Check the ticket's column name — `Problem_Description`, matched case-insensitively |
 | `NO_MATCHES` on a part you know exists | Part numbers differ after normalisation (`.strip().upper()`, invisible characters removed) | `Reason` reports how many rows matched out of how many scanned — usually a stray character in one source |
 | `INFRASTRUCTURE_ERROR`, exit **2**, on every ticket | One of the three `AZURE_EMBEDDING_*` values is missing | The `Reason` names exactly which. There is no local fallback to absorb it any more |
-| Credentials are set but everything still reports them missing | `.env` is not where the tools look: the working directory, or the project root | `verify_embedder`'s second line prints the file it read, or `not found`. `copy .env.example .env` in the project root |
-| `INFRASTRUCTURE_ERROR`, exit **1**, on every ticket | The deployment name is wrong, or the endpoint is unreachable | Run `python -m scripts.verify_embedder` — it isolates reachability from configuration |
-| Everything is gated, nothing resolves | 0.50 is a guess and may be far from right for your deployment | `python -m scripts.verify_embedder` suggests a range; set `SPS_CONFIDENCE_THRESHOLD` |
+| Credentials are set but everything still reports them missing | `.env` is not where the tools look: the working directory, or the project root | `python sps.py check`'s second line prints the file it read, or `not found`. `copy .env.example .env` in the project root |
+| `... .env was not read: it is neither UTF-8 nor UTF-16 text` | The file was saved in another encoding | Open it in Notepad and *Save As* with encoding **UTF-8** |
+| `.env: line N could not be parsed and was skipped` | A malformed line — a quote never closed, a value with no name | Fix that line; the rest of the file still loaded |
+| `INFRASTRUCTURE_ERROR`, exit **1**, on every ticket | The deployment name is wrong, or the endpoint is unreachable | Run `python sps.py check` — it isolates reachability from configuration |
+| Everything is gated, nothing resolves | 0.30 is a guess and may be far from right for your deployment | `python sps.py check` suggests a range; set `SPS_CONFIDENCE_THRESHOLD` |
 | Nothing is gated, everything resolves | Same, in the other direction — likely an `ada-002` deployment, where even unrelated text scores above 0.7 | Same check. If the "unrelated record is blocked" line FAILS, raise the threshold |
 | Tier 2 never runs | `data\0250_docs\` holds no `.docx` | Expected until the standards are loaded. Check with `dir data\0250_docs\*.docx` |
 | A 0250 document is ignored | It is a legacy `.doc`, or a `~$` lock file | The warning names it. Re-save as `.docx`; close the document if Word has it open |
 | Every 0250 citation is just the filename | The document's section titles are bold body text, not `Heading 2` | Apply Word's heading styles, then delete `data\0250_docs\0250_cache_*.npz` |
 | Tier 2 finds nothing on a defect you know is covered | 0.35 is a guess derived from another guess | Run the batch evaluator and read `Tier2_Score`, then set `SPS_TIER2_THRESHOLD` |
-| Most tickets come back `LLM_AUDIT_REJECTED` | The transferability gate is rejecting drafts that carry attachments, prior conversations or ticket numbers forward from the history | Expected where history is process boilerplate. Read `Matched_Solutions` in the bulk sheet; extend `KNOWN_TRACKING_PREFIXES` in `sps/generation/transferable.py` with your own systems |
-| `pytest` reports 1 skipped | `tests/test_real_embedder.py`, which exercises the disabled local encoder | Expected. Leave it skipped |
+| Most tickets come back `LLM_AUDIT_REJECTED` | In Tier 1, the intent scorer found no record asking the same question (`No_Recommendation_Reason` `INTENT_BELOW_THRESHOLD`); in Tier 2, the gates or the Judge refused the drafts | Read `No_Recommendation_Reason` and `Matched_Solutions` in the bulk sheet. For Tier 2, extend `KNOWN_TRACKING_PREFIXES` in `sps.py` ("The deterministic gates") with your own systems |
+| `pytest` reports anything skipped | A test skipped itself, which none should | Treat it as a failure and read the reason (`python -m pytest -rs`) |
 
 ---
 
 ## What to read next
 
 - [`README.md`](README.md) — architecture, the constrained-RAG contract, measured
-  latency, and why there are two thresholds.
+  latency, and what each of the three thresholds decides.
 - [`.env.example`](.env.example) — every setting, with the reasoning inline.

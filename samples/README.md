@@ -9,20 +9,20 @@ across two part numbers. Used by the install check in
 [`../MIGRATION_GUIDE.md`](../MIGRATION_GUIDE.md):
 
 ```bat
-python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --threshold 0.99
+python sps.py resolve --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --threshold 0.99
 ```
 
 The forced 0.99 threshold gates the run before the LLM, so it costs one
 embedding call and no generation while still proving the reader, the part
 filter, the Azure encoder, cosine ranking and the Excel writer.
 
-It does need a working `AZURE_EMBEDDING_*` configuration: the local encoder is
-out of the pipeline, so there is no offline path. The top score depends on your
+It does need a working `AZURE_EMBEDDING_*` configuration: Azure is the only
+encoder, so there is no offline path. The top score depends on your
 deployment.
 
 ## Bulk test sheet
 
-`bulk_tickets.csv` is six tickets in one sheet, for `scripts/run_bulk_test.py`.
+`bulk_tickets.csv` is six tickets in one sheet, for `python sps.py bulk`.
 It carries a `Supplier` column the pipeline never reads, which is the point:
 whatever columns you put in come back untouched alongside the answers.
 
@@ -76,7 +76,7 @@ that bug -- every other `Solution_Text` here is clean, actionable prose.
 
 ## Eval cases
 
-`eval_cases/` is a worked example for `scripts/run_eval_batch.py`. Six cases
+`eval_cases/` is a worked example for `python sps.py eval`. Six cases
 against `sample_history.csv`, chosen to put one of each outcome in the results
 workbook:
 
@@ -85,9 +85,9 @@ workbook:
 | `case01` | Verbatim match of a history row | High score, `SUCCESS` |
 | `case02` | Same defect, different wording | High score — the one that shows paraphrase survives encoding |
 | `case03` | Different part, **ships its own history** (`case03_history.csv`) | High score against 2 candidates, not 3 |
-| `case04` | Hydraulic pump problem filed against a bracket part | ~0.57 — a materially different defect, and the case the threshold has to reject |
+| `case04` | Hydraulic pump problem filed against a bracket part | ~0.57 on the removed local encoder — a materially different defect, and the case the threshold has to reject |
 | `case05` | Part number absent from the history | `NO_MATCHES`, nothing encoded |
-| `case06` | Blank part number | `INVALID_INPUT`, rejected before the model loads |
+| `case06` | Blank part number | `INVALID_INPUT`, rejected before anything is encoded |
 
 ```bat
 scripts\run_eval.cmd samples\eval_cases eval_out samples\sample_history.csv
@@ -100,7 +100,7 @@ right, so a set with no `case04` in it cannot calibrate anything.
 ## Similarity pairs
 
 `similarity_pairs.csv` is twelve labelled pairs for
-`python -m scripts.verify_embedder --probe`. Where `eval_cases/` measures the
+`python sps.py check --probe`. Where `eval_cases/` measures the
 whole pipeline, this measures the encoder alone: each pair changes exactly one
 thing about the text, so a bad number says *which* property the encoder could
 not see.
@@ -121,8 +121,8 @@ not see.
 | `unrelated` | no-match | A packaging defect. The floor |
 
 ```bat
-python -m scripts.verify_embedder --probe
-python -m scripts.verify_embedder --probe samples\similarity_pairs.csv --out probe.xlsx
+python sps.py check --probe
+python sps.py check --probe samples\similarity_pairs.csv --out probe.xlsx
 ```
 
 The report ends in the only figure that decides anything: the gap between the
@@ -145,24 +145,25 @@ run. Same point as `case04` above, for the same reason.
 ## Demo 0250 standards
 
 `0250_docs/` holds three invented engineering standards, so Tier 2 can be
-exercised before a real document is loaded. Regenerate them with
-`python -m scripts.make_sample_docs`.
+exercised before a real document is loaded. They are ordinary Word files:
+the script that generated them needed python-docx and went with it, so edit
+them in Word if they need to change.
 
 | Document | Contains | Why it is here |
 | --- | --- | --- |
-| `0250-Weld-Standards.docx` | 4.1 Scope, 4.2 Weld Seam Cracking, 4.3 Porosity Limits (a **table**), 4.4 Undercut, 7.1 Re-inspection | The section a weld ticket should land on, plus a limits table that `document.paragraphs` would drop |
+| `0250-Weld-Standards.docx` | 4.1 Scope, 4.2 Weld Seam Cracking, 4.3 Porosity Limits (a **table**), 4.4 Undercut, 7.1 Re-inspection | The section a weld ticket should land on, plus a limits table, which a reader taking only paragraphs would drop |
 | `0250-Packaging-Standards.docx` | 2.1 Carton Labelling, 2.4 Barcode Symbology | A different issue class, so the enriched query has something to discriminate against |
 | `0250-Surface-Finish.docx` | 3.2 Surface Finish | **States a limit and no disposition.** It retrieves at 0.75 and the Actor is then required to decline it — the fabrication Tier 2's grounding check exists to catch |
 
 ```bat
-python -m scripts.run_resolver --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
+python sps.py resolve --ticket-file samples\sample_ticket.csv --history-file samples\sample_history.csv --output-dir smoke --docs-dir samples\0250_docs --threshold 0.99 --tier2-threshold 0.99
 ```
 
 Both gates forced to 0.99 stop before the LLM; the Reason then names a score
-from each tier. The numbers below were measured with **bge-small**, the encoder
-that is currently disabled, and are what `TIER2_LOCAL_THRESHOLD = 0.62` was
-derived from. Your Azure deployment will produce a different distribution --
-`python -m scripts.verify_embedder` reads it:
+from each tier. The numbers below were measured with **bge-small**, the
+since-removed local encoder, and are what its Tier-2 gate of 0.62 was derived
+from. Your Azure deployment will produce a different distribution --
+`python sps.py check` reads it:
 
 | query | top section | score |
 | --- | --- | --- |
@@ -171,7 +172,7 @@ derived from. Your Azure deployment will produce a different distribution --
 | carton label misprint | `§ 2.1 Carton Labelling` | 0.7507 |
 | hydraulic pump pressure (`case04`) | — nothing covers it — | 0.5944 |
 
-That last row is why `TIER2_LOCAL_THRESHOLD` is 0.62.
+That last row is why that encoder's Tier-2 gate was 0.62.
 
 ## Adding your own
 
