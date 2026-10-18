@@ -12,7 +12,7 @@ import math
 
 import pytest
 
-from scripts.verify_embedder import (
+from sps import (
     MATCH,
     NO_MATCH,
     Pair,
@@ -276,7 +276,7 @@ def test_report_survives_one_sided_input(capsys, tmp_path):
     ],
 )
 def test_an_unusable_pairs_path_reports_instead_of_raising(name, expected, capsys):
-    from scripts.verify_embedder import Checks, run_probe
+    from sps import Checks, run_probe
     from pathlib import Path
 
     checks = Checks()
@@ -291,7 +291,7 @@ def test_an_unusable_pairs_path_reports_instead_of_raising(name, expected, capsy
 def test_a_bad_pairs_file_is_rejected_before_credentials_are_needed(tmp_path, capsys, monkeypatch):
     """Ordering, not just handling. Discovering a typo should not require a
     configured deployment -- reading the file is local and free."""
-    from scripts.verify_embedder import Checks, run_probe
+    from sps import Checks, run_probe
 
     for var in ("AZURE_EMBEDDING_ENDPOINT", "AZURE_EMBEDDING_API_KEY", "AZURE_EMBEDDING_DEPLOYMENT"):
         monkeypatch.delenv(var, raising=False)
@@ -310,7 +310,7 @@ def test_a_bad_pairs_file_is_rejected_before_credentials_are_needed(tmp_path, ca
 def test_shipped_pair_set_is_valid_and_two_sided():
     """The file the probe defaults to has to parse, and has to contain both
     populations -- a set with only matches in it cannot calibrate anything."""
-    from scripts.verify_embedder import DEFAULT_PAIRS
+    from sps import DEFAULT_PAIRS
 
     pairs = read_pairs(DEFAULT_PAIRS)
     expectations = {p.expect for p in pairs}
@@ -322,7 +322,7 @@ def test_shipped_pair_set_is_valid_and_two_sided():
 
 
 def test_shipped_pair_set_covers_the_two_failures_that_motivated_it():
-    from scripts.verify_embedder import DEFAULT_PAIRS
+    from sps import DEFAULT_PAIRS
 
     by_label = {p.label: p for p in read_pairs(DEFAULT_PAIRS)}
     # Negation: near-identical form, opposite meaning.

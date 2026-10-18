@@ -15,8 +15,8 @@ pytest.importorskip("pandas")
 pytest.importorskip("openpyxl")
 pytest.importorskip("numpy")
 
-import scripts.run_resolver as resolver  # noqa: E402
-from sps.contracts import NO_RECOMMENDATION, SOLUTION_NOT_FOUND  # noqa: E402
+import sps as resolver  # noqa: E402
+from sps import NO_RECOMMENDATION, SOLUTION_NOT_FOUND  # noqa: E402
 from tests.test_resolver import (  # noqa: E402
     NEAR_PROBLEM,
     PART,
@@ -197,17 +197,29 @@ def test_no_module_spells_the_sentinel_by_hand():
     import ast
     import pathlib
 
+    root = pathlib.Path(__file__).resolve().parent.parent
+    files = [root / "sps.py", root / "sps_prompts.py"]
+    # Named explicitly rather than globbed. A glob over a directory that has
+    # since moved finds nothing and passes, which is how this test would have
+    # silently stopped checking anything when the package became two files.
+    assert all(f.exists() for f in files), "expected sps.py and sps_prompts.py"
+
     offenders = []
-    for path in sorted(pathlib.Path("sps").rglob("*.py")):
-        if path.name == "contracts.py":
-            continue
+    for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        # The one legitimate spelling: the definition in sps_prompts.py.
+        definition = {
+            id(node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "SOLUTION_NOT_FOUND" for t in node.targets)
+        }
         for node in ast.walk(tree):
             # Docstrings are Constant nodes too, so only flag short strings --
             # a prose paragraph mentioning it is documentation, not a duplicate.
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in definition:
                 if SOLUTION_NOT_FOUND in node.value and len(node.value) < 200:
-                    offenders.append(f"{path}: {node.value[:60]!r}")
+                    offenders.append(f"{path.name}: {node.value[:60]!r}")
     assert not offenders, "hardcoded sentinel: " + "; ".join(offenders)
 
 

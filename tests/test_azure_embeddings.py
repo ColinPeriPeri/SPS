@@ -19,14 +19,14 @@ import pytest
 pytest.importorskip("numpy")
 pytest.importorskip("openpyxl")
 
-from sps.config import AzureEmbeddingSettings  # noqa: E402
-from sps.contracts import IncomingTicket  # noqa: E402
-from sps.embedding import (  # noqa: E402
+from sps import AzureEmbeddingSettings  # noqa: E402
+from sps import IncomingTicket  # noqa: E402
+from sps import (  # noqa: E402
     AzureEmbedder,
     AzureEmbeddingError,
     AzureEmbeddingNotConfigured,
 )
-from sps.retrieval.in_memory import (  # noqa: E402
+from sps import (  # noqa: E402
     AZURE_BACKEND,
     AZURE_EMBEDDING_THRESHOLD,
     LOCAL_BACKEND,
@@ -143,7 +143,7 @@ def _retriever(tmp_path, monkeypatch, *, azure_client=None, azure_settings=CONFI
                rows=None):
     """Retriever whose Azure path is served by a fake."""
     if azure_client is not None:
-        import sps.embedding as embedding_module
+        import sps as embedding_module
 
         real = embedding_module.AzureEmbedder
         monkeypatch.setattr(

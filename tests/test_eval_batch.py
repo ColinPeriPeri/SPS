@@ -18,9 +18,9 @@ import pytest
 pytest.importorskip("pandas")
 pytest.importorskip("openpyxl")
 
-import scripts.run_eval_batch as batch  # noqa: E402
-import scripts.run_resolver as resolver  # noqa: E402
-from sps.file_reader import UnsupportedFileType  # noqa: E402
+import sps as batch  # noqa: E402
+import sps as resolver  # noqa: E402
+from sps import UnsupportedFileType  # noqa: E402
 from tests.test_resolver import HEADERS, PART, PROBLEM, read_sheet, row  # noqa: E402
 
 
@@ -314,7 +314,7 @@ def _run(tmp_path, directory, shared, extra=()):
     out = tmp_path / "out"
     argv = ["--test-dir", str(directory), "--history-file", str(shared),
             "--output-dir", str(out), *extra]
-    return batch.main(argv), out
+    return batch.eval_main(argv), out
 
 
 def test_the_workbook_carries_every_column_in_order(tmp_path, scripted):
@@ -326,7 +326,7 @@ def test_the_workbook_carries_every_column_in_order(tmp_path, scripted):
 
     assert code == batch.EXIT_OK
     sheet = read_sheet(out / batch.RESULTS_FILE)
-    assert list(sheet.columns) == list(batch.RESULT_COLUMNS)
+    assert list(sheet.columns) == list(batch.EVAL_RESULT_COLUMNS)
     assert list(sheet["Test_ID"]) == ["case01", "case02"]
     assert list(sheet["Status"]) == ["PASS", "FAIL"]
     assert list(sheet["Cleared_Threshold"]) == ["YES", "NO"]
@@ -365,12 +365,12 @@ def test_an_empty_directory_is_a_bad_input(tmp_path):
     directory.mkdir()
 
     argv = ["--test-dir", str(directory), "--output-dir", str(tmp_path / "out")]
-    assert batch.main(argv) == batch.EXIT_BAD_INPUT
+    assert batch.eval_main(argv) == batch.EXIT_BAD_INPUT
 
 
 def test_a_missing_directory_is_a_bad_input(tmp_path):
     argv = ["--test-dir", str(tmp_path / "absent"), "--output-dir", str(tmp_path / "out")]
-    assert batch.main(argv) == batch.EXIT_BAD_INPUT
+    assert batch.eval_main(argv) == batch.EXIT_BAD_INPUT
 
 
 def test_a_shared_history_of_the_wrong_type_is_caught_before_any_case_runs(tmp_path, scripted):
@@ -393,7 +393,7 @@ def test_a_run_list_drives_the_batch(tmp_path, scripted):
     scripted(outcome())
     out = tmp_path / "out"
 
-    code = batch.main(["--run-list", str(listing), "--output-dir", str(out)])
+    code = batch.eval_main(["--run-list", str(listing), "--output-dir", str(out)])
 
     assert code == batch.EXIT_OK
     assert list(read_sheet(out / batch.RESULTS_FILE)["Test_ID"]) == ["A1"]
@@ -401,7 +401,7 @@ def test_a_run_list_drives_the_batch(tmp_path, scripted):
 
 def test_a_source_is_required(tmp_path):
     with pytest.raises(SystemExit):
-        batch.main(["--output-dir", str(tmp_path)])
+        batch.eval_main(["--output-dir", str(tmp_path)])
 
 
 # ---------------------------------------------------------------- the digest
@@ -413,7 +413,7 @@ def test_the_digest_reports_the_spread(tmp_path):
         for i, score in enumerate([0.10, 0.50, 0.90, 0.95])
     ]
 
-    text = batch.summarise(rows)
+    text = batch.summarise_eval(rows)
 
     assert "min 0.1000" in text
     assert "max 0.9500" in text
@@ -421,7 +421,7 @@ def test_the_digest_reports_the_spread(tmp_path):
 
 
 def test_the_digest_survives_a_batch_that_scored_nothing():
-    text = batch.summarise([batch.Row(test_id="a", status_code="INVALID_INPUT")])
+    text = batch.summarise_eval([batch.Row(test_id="a", status_code="INVALID_INPUT")])
 
     assert "1 case(s)" in text
     assert "score distribution" not in text
@@ -438,7 +438,7 @@ def test_a_mixed_encoder_batch_is_called_out(tmp_path):
                   embedding_model="azure:text-embedding-3-large"),
     ]
 
-    text = batch.summarise(rows)
+    text = batch.summarise_eval(rows)
 
     assert "WARNING" in text
     assert "azure:text-embedding-3-large" in text
@@ -451,7 +451,7 @@ def test_one_encoder_throughout_draws_no_warning():
         for i in range(3)
     ]
 
-    assert "WARNING" not in batch.summarise(rows)
+    assert "WARNING" not in batch.summarise_eval(rows)
 
 
 # ------------------------------------------------------------- configuration

@@ -13,8 +13,8 @@ import pytest
 pytest.importorskip("openpyxl")
 pytest.importorskip("pandas")
 
-import scripts.run_resolver as resolver  # noqa: E402
-from sps.file_reader import (  # noqa: E402
+import sps as resolver  # noqa: E402
+from sps import (  # noqa: E402
     EXCEL_SUFFIXES,
     SUPPORTED_SUFFIXES,
     FileReadError,
@@ -167,7 +167,7 @@ def _run(tmp_path, ticket_name="t.xlsx", history_name="h.xlsx", threshold="0.99"
     else:
         history.write_text("not really a history", encoding="utf-8")
 
-    code = resolver.main([
+    code = resolver.resolve_main([
         "--ticket-file", str(ticket),
         "--history-file", str(history),
         "--output-dir", str(out),
@@ -206,7 +206,7 @@ def test_a_missing_but_valid_type_still_exits_two(tmp_path):
     rather than the item being quietly faulted."""
     out = tmp_path / "out"
     write_ticket(tmp_path / "t.xlsx")
-    code = resolver.main([
+    code = resolver.resolve_main([
         "--ticket-file", str(tmp_path / "t.xlsx"),
         "--history-file", str(tmp_path / "absent.csv"),
         "--output-dir", str(out),

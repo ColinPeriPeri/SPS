@@ -10,17 +10,17 @@ pytest.importorskip("pandas")
 pytest.importorskip("openpyxl")
 pytest.importorskip("numpy")
 
-import scripts.run_resolver as resolver
-import sps.contracts as resolver_contracts  # noqa: E402
-from sps.contracts import IncomingTicket  # noqa: E402
-from sps.retrieval.in_memory import (  # noqa: E402
+import sps as resolver
+import sps as resolver_contracts  # noqa: E402
+from sps import IncomingTicket  # noqa: E402
+from sps import (  # noqa: E402
     HistoryError,
     InMemoryRetriever,
     build_header_map,
     cap_to_newest,
     load_matching_history,
 )
-from sps.validators import normalize_part_number, validate_ticket  # noqa: E402
+from sps import normalize_part_number, validate_ticket  # noqa: E402
 from tests.conftest import TokenOverlapEmbedder  # noqa: E402
 
 
@@ -158,13 +158,13 @@ def test_validation_runs_before_anything_expensive(tmp_path, monkeypatch):
     monkeypatch.setattr(
         resolver, "read_ticket", lambda p: {"Part_Number": PART, "Problem_Description": ""}
     )
-    import sps.retrieval.in_memory as engine
+    import sps as engine
 
     monkeypatch.setattr(engine, "load_matching_history",
                         lambda *a, **k: called.append("scanned") or [])
 
     write_history(tmp_path / "h.xlsx", [row("S1")])
-    args = resolver.parse_args([
+    args = resolver.resolve_parse_args([
         "--ticket-file", str(write_ticket(tmp_path / "t.xlsx")),
         "--history-file", str(tmp_path / "h.xlsx"),
         "--output-dir", str(tmp_path / "out"),
@@ -336,7 +336,7 @@ def passing_llm(monkeypatch):
             return _Outcome()
 
     async def fake_score_intent(client, ticket, candidates):
-        from sps.generation.intent import IntentOutcome, ScoredCandidate
+        from sps import IntentOutcome, ScoredCandidate
 
         return IntentOutcome(
             ticket_intent="stubbed ticket intent",
@@ -350,16 +350,16 @@ def passing_llm(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr("sps.generation.ActorCriticLoop", Loop)
-    monkeypatch.setattr("sps.generation.AzureOpenAIChatClient", lambda *a, **k: object())
-    monkeypatch.setattr("sps.generation.score_intent", fake_score_intent)
+    monkeypatch.setattr("sps.ActorCriticLoop", Loop)
+    monkeypatch.setattr("sps.AzureOpenAIChatClient", lambda *a, **k: object())
+    monkeypatch.setattr("sps.score_intent", fake_score_intent)
 
 
 def run_cli(tmp_path, rows=None, part=PART, problem=PROBLEM, threshold=0.5):
     out = tmp_path / "out"
     write_history(tmp_path / "h.xlsx", rows if rows is not None else [row("SPS-1001")])
     write_ticket(tmp_path / "t.xlsx", part=part, problem=problem)
-    code = resolver.main([
+    code = resolver.resolve_main([
         "--ticket-file", str(tmp_path / "t.xlsx"),
         "--history-file", str(tmp_path / "h.xlsx"),
         "--output-dir", str(out),
@@ -371,7 +371,7 @@ def run_cli(tmp_path, rows=None, part=PART, problem=PROBLEM, threshold=0.5):
 def test_status_workbook_is_always_written(tmp_path, passing_llm):
     for part, problem in ((PART, PROBLEM), ("", PROBLEM), (PART, "short"), ("0099-1", PROBLEM)):
         _, out = run_cli(tmp_path, part=part, problem=problem)
-        from service.excel_output import STATUS_COLUMNS
+        from sps import STATUS_COLUMNS
 
         sheet = read_sheet(out / "status.xlsx")
         assert list(sheet.columns) == list(STATUS_COLUMNS)
@@ -483,7 +483,7 @@ def test_a_stale_result_row_is_replaced_not_left(tmp_path, passing_llm):
     """The previous run's answer must never be read as this one's."""
     out = tmp_path / "out"
     out.mkdir()
-    from service.excel_output import RESULT_COLUMNS, write_rows
+    from sps import RESULT_COLUMNS, write_rows
 
     write_rows(out / "output.xlsx", RESULT_COLUMNS, [{"Part_Number": "STALE"}])
     run_cli(tmp_path, part="")
@@ -499,7 +499,7 @@ def test_an_infrastructure_fault_leaves_no_result_row(tmp_path, monkeypatch, pas
     meant to retry it -- so a stale row from a previous run is cleared too."""
     out = tmp_path / "out"
     out.mkdir()
-    from service.excel_output import RESULT_COLUMNS, write_rows
+    from sps import RESULT_COLUMNS, write_rows
 
     write_rows(out / "output.xlsx", RESULT_COLUMNS, [{"Part_Number": "STALE"}])
     monkeypatch.setattr(
@@ -546,7 +546,7 @@ def test_reason_is_a_single_line(tmp_path, passing_llm):
 def test_each_embedding_space_has_its_own_threshold():
     """A threshold belongs to one embedding space. Two encoders means two
     numbers, and the gate must apply whichever produced the vectors."""
-    from sps.retrieval.in_memory import (
+    from sps import (
         AZURE_EMBEDDING_THRESHOLD,
         LOCAL_EMBEDDING_THRESHOLD,
         InMemoryRetriever,
@@ -577,16 +577,16 @@ def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):
               "--history-file", str(tmp_path / "h.xlsx")]
 
     monkeypatch.delenv("SPS_CONFIDENCE_THRESHOLD", raising=False)
-    args = resolver.parse_args(common)
+    args = resolver.resolve_parse_args(common)
     assert args.threshold is None          # falls through to the default
 
     monkeypatch.setenv("SPS_CONFIDENCE_THRESHOLD", "0.99")
     out = tmp_path / "env"
-    resolver.main(common + ["--output-dir", str(out)])
+    resolver.resolve_main(common + ["--output-dir", str(out)])
     status = read_sheet(out / "status.xlsx").iloc[0]
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "0.99 threshold" in status["Reason"]
 
     out2 = tmp_path / "flag"
-    resolver.main(common + ["--output-dir", str(out2), "--threshold", "0.1"])
+    resolver.resolve_main(common + ["--output-dir", str(out2), "--threshold", "0.1"])
     assert read_sheet(out2 / "status.xlsx").iloc[0]["Status_Code"] == "SUCCESS_HISTORICAL"

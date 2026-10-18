@@ -18,9 +18,9 @@ pytest.importorskip("pandas")
 pytest.importorskip("openpyxl")
 docx = pytest.importorskip("docx", reason="python-docx is required for Tier 2")
 
-import scripts.run_resolver as resolver  # noqa: E402
-from sps.contracts import IncomingTicket  # noqa: E402
-from sps.retrieval.doc_cache import (  # noqa: E402
+import sps as resolver  # noqa: E402
+from sps import IncomingTicket  # noqa: E402
+from sps import (  # noqa: E402
     CACHE_FILENAMES,
     TIER2_AZURE_THRESHOLD,
     TIER2_LOCAL_THRESHOLD,
@@ -31,7 +31,7 @@ from sps.retrieval.doc_cache import (  # noqa: E402
     load_cache,
     save_cache,
 )
-from sps.retrieval.docx_parser import (  # noqa: E402
+from sps import (  # noqa: E402
     MIN_USABLE_WORDS,
     DocChunk,
     iter_doc_files,
@@ -383,7 +383,7 @@ def test_an_unwritable_cache_directory_still_answers(tmp_path, monkeypatch):
     def refuse(*args, **kwargs):
         raise OSError("read-only file system")
 
-    monkeypatch.setattr("sps.retrieval.doc_cache.save_cache", refuse)
+    monkeypatch.setattr("sps.save_cache", refuse)
     retriever = DocRetriever(docs_dir=tmp_path, embedder=TokenOverlapEmbedder())
 
     assert retriever.retrieve(ticket()) is not None
@@ -407,7 +407,7 @@ def test_tier2_has_its_own_thresholds():
     """Tier 1's 0.89 was calibrated on two short defect sentences. A 300-word
     standards chunk that genuinely answers the ticket measures 0.78, so sharing
     the number would reject every chunk and the tier would never fire."""
-    from sps.retrieval.in_memory import LOCAL_EMBEDDING_THRESHOLD
+    from sps import LOCAL_EMBEDDING_THRESHOLD
 
     assert TIER2_LOCAL_THRESHOLD == 0.62
     assert TIER2_AZURE_THRESHOLD == 0.35
@@ -474,7 +474,7 @@ def test_a_failed_corpus_batch_aborts_rather_than_ranking_half_a_corpus(tmp_path
     available is ranking the query against a partial corpus -- which would look
     like a successful search that simply found nothing relevant.
     """
-    from sps.embedding import AzureEmbeddingError
+    from sps import AzureEmbeddingError
 
     weld_corpus(tmp_path)
     retriever = DocRetriever(docs_dir=tmp_path)
@@ -500,7 +500,7 @@ def test_a_failed_corpus_batch_aborts_rather_than_ranking_half_a_corpus(tmp_path
 def test_missing_credentials_are_their_own_error(tmp_path, monkeypatch):
     """Distinguished from a transient failure so the caller can exit 2 instead
     of asking a robot to retry its way to an API key."""
-    from sps.embedding import AzureEmbeddingError, AzureEmbeddingNotConfigured
+    from sps import AzureEmbeddingError, AzureEmbeddingNotConfigured
 
     for name in ("AZURE_EMBEDDING_ENDPOINT", "AZURE_EMBEDDING_API_KEY",
                  "AZURE_EMBEDDING_DEPLOYMENT"):
@@ -518,7 +518,7 @@ def test_missing_credentials_are_their_own_error(tmp_path, monkeypatch):
 
 
 def test_the_tier2_actor_must_acknowledge_the_history_gap():
-    from sps.generation.prompts import TIER2_ACTOR_SYSTEM_PROMPT
+    from sps_prompts import TIER2_ACTOR_SYSTEM_PROMPT
 
     assert "Historical records yielded no resolution." in TIER2_ACTOR_SYSTEM_PROMPT
 
@@ -527,20 +527,20 @@ def test_the_tier2_actor_is_told_a_limit_is_not_a_disposition():
     """The likeliest wrong answer here is the engineering-plausible one: a
     standard that states a tolerance does not state what to do about a part
     that misses it."""
-    from sps.generation.prompts import TIER2_ACTOR_SYSTEM_PROMPT
+    from sps_prompts import TIER2_ACTOR_SYSTEM_PROMPT
 
     assert "A STANDARD IS NOT AUTOMATICALLY A SOLUTION" in TIER2_ACTOR_SYSTEM_PROMPT
 
 
 def test_the_tier2_judge_checks_citations_and_dispositions():
-    from sps.generation.prompts import TIER2_JUDGE_SYSTEM_PROMPT
+    from sps_prompts import TIER2_JUDGE_SYSTEM_PROMPT
 
     assert "CITATION INTEGRITY" in TIER2_JUDGE_SYSTEM_PROMPT
     assert "UNGROUNDED DISPOSITION" in TIER2_JUDGE_SYSTEM_PROMPT
 
 
 def test_the_rendered_context_shows_each_citation():
-    from sps.generation.prompts import build_tier2_actor_messages
+    from sps_prompts import build_tier2_actor_messages
 
     chunk = ScoredChunk(DocChunk("0250-Weld.docx", "4.2 Cracking", CRACKING), 0.81)
     messages = build_tier2_actor_messages(ticket(), [chunk])
@@ -552,7 +552,7 @@ def test_the_rendered_context_shows_each_citation():
 
 
 def test_the_tier2_grounding_carries_its_own_abstention_reason():
-    from sps.generation.actor_critic import documentation_grounding, historical_grounding
+    from sps import documentation_grounding, historical_grounding
 
     assert "0250" in documentation_grounding([]).abstention_reason
     assert "Historical" in historical_grounding([]).abstention_reason
@@ -612,7 +612,7 @@ def tiered_llm(monkeypatch):
         # succeeds" or "Tier 1 fails", so it is translated into the intent
         # verdict that produces the same outcome.
         async def fake_score_intent(client, ticket, candidates):
-            from sps.generation.intent import IntentOutcome, ScoredCandidate
+            from sps import IntentOutcome, ScoredCandidate
 
             seen["tier1"] = list(candidates)
             if tier1.infrastructure_failure:
@@ -632,9 +632,9 @@ def tiered_llm(monkeypatch):
                 ),
             )
 
-        monkeypatch.setattr("sps.generation.ActorCriticLoop", Loop)
-        monkeypatch.setattr("sps.generation.AzureOpenAIChatClient", lambda *a, **k: object())
-        monkeypatch.setattr("sps.generation.score_intent", fake_score_intent)
+        monkeypatch.setattr("sps.ActorCriticLoop", Loop)
+        monkeypatch.setattr("sps.AzureOpenAIChatClient", lambda *a, **k: object())
+        monkeypatch.setattr("sps.score_intent", fake_score_intent)
         return seen
 
     return install
@@ -671,7 +671,7 @@ def run_cli(tmp_path, docs_dir=None, threshold=0.99, part=PART,
         argv += ["--docs-dir", str(docs_dir)]
     if tier2_threshold is not None:
         argv += ["--tier2-threshold", str(tier2_threshold)]
-    return resolver.main(argv), out
+    return resolver.resolve_main(argv), out
 
 
 def test_tier2_answers_when_tier1_finds_nothing(tmp_path, tiered_llm):
@@ -814,7 +814,7 @@ def test_a_broken_corpus_does_not_become_an_infrastructure_fault(tmp_path, tiere
     tiered_llm(tier1=_Outcome(failure_reason="none"), tier2=_Outcome())
     docs = weld_corpus(tmp_path / "0250")
 
-    import sps.retrieval.doc_cache as doc_cache
+    import sps as doc_cache
 
     original = doc_cache.DocRetriever.retrieve
 

@@ -10,9 +10,9 @@ import pytest
 
 pytest.importorskip("pydantic")
 
-from sps.config import LLMSettings  # noqa: E402
-from sps.generation.llm import AzureOpenAIChatClient, LLMError, validate_json  # noqa: E402
-from sps.schemas import ActorDraft, JudgeVerdict  # noqa: E402
+from sps import LLMSettings  # noqa: E402
+from sps import AzureOpenAIChatClient, LLMError, validate_json  # noqa: E402
+from sps import ActorDraft, JudgeVerdict  # noqa: E402
 
 
 class _Message:

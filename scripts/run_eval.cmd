@@ -50,9 +50,9 @@ if "%OUT%"=="" set "OUT=."
 pushd "%PROJECT_DIR%"
 
 if "%~3"=="" (
-    "%PYTHON_EXE%" -m scripts.run_eval_batch --test-dir "%~1" --output-dir "%OUT%"
+    "%PYTHON_EXE%" sps.py eval --test-dir "%~1" --output-dir "%OUT%"
 ) else (
-    "%PYTHON_EXE%" -m scripts.run_eval_batch --test-dir "%~1" --output-dir "%OUT%" --history-file "%~3"
+    "%PYTHON_EXE%" sps.py eval --test-dir "%~1" --output-dir "%OUT%" --history-file "%~3"
 )
 set "RC=%ERRORLEVEL%"
 

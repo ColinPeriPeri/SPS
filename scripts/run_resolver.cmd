@@ -54,7 +54,7 @@ if not exist "%PYTHON_EXE%" (
 pushd "%PROJECT_DIR%"
 
 REM stderr stays attached so faults land in the UiPath job log.
-"%PYTHON_EXE%" -m scripts.run_resolver --ticket-file "%~1" --history-file "%~2" --output-dir "%~3"
+"%PYTHON_EXE%" sps.py resolve --ticket-file "%~1" --history-file "%~2" --output-dir "%~3"
 set "RC=%ERRORLEVEL%"
 
 popd

@@ -1,4 +1,13 @@
-"""Component C -- prompt construction for the Actor and the Judge.
+"""Everything the model reads.
+
+Every system prompt, and the builders that turn a ticket and its evidence
+into messages. Kept apart from sps.py so wording can change without touching
+code, and so the diff of a prompt change shows prompt text and nothing else.
+
+This file never imports sps at runtime: sps imports it, and the type names
+below are for annotations only.
+
+Component C -- prompt construction for the Actor and the Judge.
 
 Kept free of I/O so prompt text is diffable and unit-testable. The constraints
 that stop hallucination and internal-tool leakage live here, in the system
@@ -10,8 +19,22 @@ tooling in its context to leak in the first place.
 from __future__ import annotations
 
 from typing import Any, Sequence
+from typing import TYPE_CHECKING
 
-from ..contracts import SOLUTION_NOT_FOUND, Candidate, IncomingTicket
+if TYPE_CHECKING:
+    from sps import Candidate, IncomingTicket
+
+# Two strings, deliberately separate, because they serve different readers.
+#
+# SOLUTION_NOT_FOUND is a PROTOCOL TOKEN between us and the model. The Actor is
+# instructed to emit it verbatim and `Draft.is_abstention` matches on it. It is
+# not business copy and should not be reworded to suit a reader who never sees
+# it -- doing so silently changes what the model is asked to produce.
+#
+# NO_RECOMMENDATION is the only one a person reads. It reaches
+# AI_Recommendation, which DEA copies into the SPS portal, so it is phrased for
+# a supplier rather than for an engineer reading a log.
+SOLUTION_NOT_FOUND = "Solution not found."
 
 # The separator in a chunk citation. Named rather than inlined because it
 # appears in the prompt text, in the parser and in the rendered context, and

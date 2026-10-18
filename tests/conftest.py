@@ -67,7 +67,7 @@ class ScriptedChatClient:
         """Scripts stay plain JSON strings and are validated through the same
         pydantic models the real client is constrained by, so a script that the
         deployment could not have produced fails here too."""
-        from sps.generation.llm import validate_json
+        from sps import validate_json
 
         return validate_json(await self.complete(messages), model)
 
@@ -127,4 +127,4 @@ def azure_embeddings(monkeypatch):
     monkeypatch.setenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
     # Patched on the module, not the call site: both retrievers import
     # AzureEmbedder inside the function that uses it, so the lookup is fresh.
-    monkeypatch.setattr("sps.embedding.AzureEmbedder", FakeAzureEmbedder)
+    monkeypatch.setattr("sps.AzureEmbedder", FakeAzureEmbedder)

@@ -15,11 +15,11 @@ import pytest
 
 pytest.importorskip("pydantic")
 
-from sps.config import IntentSettings  # noqa: E402
-from sps.contracts import Candidate, IncomingTicket  # noqa: E402
-from sps.generation.intent import IntentOutcome, score_intent  # noqa: E402
-from sps.generation.llm import LLMError  # noqa: E402
-from sps.generation.prompts import build_intent_messages  # noqa: E402
+from sps import IntentSettings  # noqa: E402
+from sps import Candidate, IncomingTicket  # noqa: E402
+from sps import IntentOutcome, score_intent  # noqa: E402
+from sps import LLMError  # noqa: E402
+from sps_prompts import build_intent_messages  # noqa: E402
 from tests.conftest import ScriptedChatClient  # noqa: E402
 
 TICKET = IncomingTicket(
@@ -164,7 +164,7 @@ def test_a_score_for_a_record_we_never_sent_is_dropped():
 def test_an_out_of_range_score_is_clamped(value, expected):
     """Pydantic bounds it, but the clamp stays: a score out of range must never
     become a confidence above 100% on a sheet someone reads."""
-    from sps.generation.intent import ScoredCandidate
+    from sps import ScoredCandidate
 
     scored = ScoredCandidate(
         candidate=CANDIDATES[0],
@@ -194,7 +194,7 @@ def test_the_scorer_is_shown_problems_and_never_solutions():
 def test_the_prompt_teaches_the_distinction_it_has_to_draw():
     """Two tickets, same defect, opposite requests. That pair is the whole
     reason this step exists, so it is in the prompt as a worked example."""
-    from sps.generation.prompts import INTENT_SYSTEM_PROMPT
+    from sps_prompts import INTENT_SYSTEM_PROMPT
 
     assert "as-is" in INTENT_SYSTEM_PROMPT
     assert "re-engrave" in INTENT_SYSTEM_PROMPT

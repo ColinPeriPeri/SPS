@@ -45,9 +45,9 @@ if not exist "%PYTHON_EXE%" (
 pushd "%PROJECT_DIR%"
 
 if "%~3"=="" (
-    "%PYTHON_EXE%" -m scripts.run_bulk_test --tickets "%~1" --history "%~2"
+    "%PYTHON_EXE%" sps.py bulk --tickets "%~1" --history "%~2"
 ) else (
-    "%PYTHON_EXE%" -m scripts.run_bulk_test --tickets "%~1" --history "%~2" --output "%~3"
+    "%PYTHON_EXE%" sps.py bulk --tickets "%~1" --history "%~2" --output "%~3"
 )
 set "RC=%ERRORLEVEL%"
 

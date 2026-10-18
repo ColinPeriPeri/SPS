@@ -34,10 +34,10 @@ pytest.importorskip("openpyxl")
 pytest.importorskip("numpy")
 pytest.importorskip("pydantic")
 
-import scripts.run_bulk_test as bulk  # noqa: E402
-import scripts.run_resolver as resolver  # noqa: E402
-from sps.retrieval.docx_parser import parse_docx  # noqa: E402
-from sps.schemas import ActorDraft, IntentAssessment, JudgeVerdict  # noqa: E402
+import sps as bulk  # noqa: E402
+import sps as resolver  # noqa: E402
+from sps import parse_docx  # noqa: E402
+from sps import ActorDraft, IntentAssessment, JudgeVerdict  # noqa: E402
 
 GOLDEN = Path(__file__).parent / "golden" / "golden.json"
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
@@ -45,7 +45,7 @@ CAPTURE = os.environ.get("SPS_GOLDEN_CAPTURE") == "1"
 
 # The one place the consolidation has to touch: where the chat client is
 # looked up. Everything else in this file is layout-independent.
-CHAT_CLIENT_TARGET = "sps.generation.AzureOpenAIChatClient"
+CHAT_CLIENT_TARGET = "sps.AzureOpenAIChatClient"
 
 TIER2_CODE = "RC-EQUIV"
 # Columns whose values legitimately differ between runs.
@@ -188,7 +188,7 @@ def _capture_or_compare(key: str, actual) -> None:
 )
 def test_history_only_bulk_run(case, tickets, history, tmp_path, azure_embeddings, fake_model, no_tier2):
     out = tmp_path / "results.xlsx"
-    bulk.main([
+    bulk.bulk_main([
         "--tickets", str(SAMPLES / tickets),
         "--history", str(SAMPLES / history),
         "--output", str(out),
@@ -206,7 +206,7 @@ def test_tier2_bulk_run(tmp_path, azure_embeddings, fake_model, monkeypatch):
 
     tickets = _write_tickets(tmp_path / "tickets.csv", SAMPLES / "bulk_tickets.csv", TIER2_CODE)
     out = tmp_path / "results.xlsx"
-    bulk.main([
+    bulk.bulk_main([
         "--tickets", str(tickets),
         "--history", str(SAMPLES / "sample_history.csv"),
         "--output", str(out),
@@ -230,7 +230,7 @@ def test_single_ticket_workbooks(case, row_index, tmp_path, azure_embeddings, fa
         writer.writerow(rows[row_index])
 
     out = tmp_path / "out"
-    code = resolver.main([
+    code = resolver.resolve_main([
         "--ticket-file", str(ticket),
         "--history-file", str(SAMPLES / "sample_history.csv"),
         "--output-dir", str(out),

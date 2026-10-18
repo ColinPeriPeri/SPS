@@ -16,9 +16,9 @@ import pytest
 pytest.importorskip("pandas")
 pytest.importorskip("openpyxl")
 
-import scripts.run_bulk_test as bulk
-from sps.contracts import NO_RECOMMENDATION  # noqa: E402
-import scripts.run_resolver as resolver  # noqa: E402
+import sps as bulk
+from sps import NO_RECOMMENDATION  # noqa: E402
+import sps as resolver  # noqa: E402
 from tests.test_resolver import (  # noqa: E402
     NEAR_PROBLEM, PART, PROBLEM, read_sheet, row, write_history,
 )
@@ -65,7 +65,7 @@ def passing_llm(monkeypatch):
             return _Outcome()
 
     async def fake_score_intent(client, ticket, candidates):
-        from sps.generation.intent import IntentOutcome, ScoredCandidate
+        from sps import IntentOutcome, ScoredCandidate
 
         return IntentOutcome(
             ticket_intent="stubbed ticket intent",
@@ -77,9 +77,9 @@ def passing_llm(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr("sps.generation.ActorCriticLoop", Loop)
-    monkeypatch.setattr("sps.generation.AzureOpenAIChatClient", lambda *a, **k: object())
-    monkeypatch.setattr("sps.generation.score_intent", fake_score_intent)
+    monkeypatch.setattr("sps.ActorCriticLoop", Loop)
+    monkeypatch.setattr("sps.AzureOpenAIChatClient", lambda *a, **k: object())
+    monkeypatch.setattr("sps.score_intent", fake_score_intent)
 
 
 def write_tickets(path, rows, columns=TICKET_COLUMNS):
@@ -100,7 +100,7 @@ def run(tmp_path, rows, history_rows=None, extra=(), columns=TICKET_COLUMNS):
         tmp_path / "h.xlsx", history_rows if history_rows is not None else [row("SPS-1001")]
     )
     out = tmp_path / "results.xlsx"
-    code = bulk.main([
+    code = bulk.bulk_main([
         "--tickets", str(tickets),
         "--history", str(history),
         "--output", str(out),
@@ -131,7 +131,7 @@ def test_the_original_columns_come_first_and_keep_their_order(tmp_path, passing_
 
     columns = list(read_sheet(out).columns)
     assert columns[: len(TICKET_COLUMNS)] == TICKET_COLUMNS
-    assert columns[len(TICKET_COLUMNS):] == list(bulk.RESULT_COLUMNS)
+    assert columns[len(TICKET_COLUMNS):] == list(bulk.BULK_RESULT_COLUMNS)
 
 
 def test_one_output_row_per_input_row_in_order(tmp_path, passing_llm):
@@ -238,7 +238,7 @@ def test_a_gated_row_reports_how_close_it_came(tmp_path, passing_llm):
     history = write_history(tmp_path / "h.xlsx", [row("SPS-1001", problem=NEAR_PROBLEM)])
     out = tmp_path / "results.xlsx"
 
-    bulk.main([
+    bulk.bulk_main([
         "--tickets", str(tickets), "--history", str(history),
         "--output", str(out), "--threshold", "0.99",
     ])
@@ -348,7 +348,7 @@ def test_an_unsupported_ticket_type_is_refused(tmp_path):
     bad.write_text("x", encoding="utf-8")
     history = write_history(tmp_path / "h.xlsx", [row("SPS-1001")])
 
-    assert bulk.main([
+    assert bulk.bulk_main([
         "--tickets", str(bad), "--history", str(history),
         "--output", str(tmp_path / "out.xlsx"),
     ]) == bulk.EXIT_BAD_INPUT
@@ -357,7 +357,7 @@ def test_an_unsupported_ticket_type_is_refused(tmp_path):
 def test_a_missing_ticket_file_is_refused(tmp_path):
     history = write_history(tmp_path / "h.xlsx", [row("SPS-1001")])
 
-    assert bulk.main([
+    assert bulk.bulk_main([
         "--tickets", str(tmp_path / "absent.csv"), "--history", str(history),
         "--output", str(tmp_path / "out.xlsx"),
     ]) == bulk.EXIT_BAD_INPUT
@@ -367,7 +367,7 @@ def test_a_sheet_with_no_ticket_rows_is_refused(tmp_path):
     tickets = write_tickets(tmp_path / "tickets.csv", [])
     history = write_history(tmp_path / "h.xlsx", [row("SPS-1001")])
 
-    assert bulk.main([
+    assert bulk.bulk_main([
         "--tickets", str(tickets), "--history", str(history),
         "--output", str(tmp_path / "out.xlsx"),
     ]) == bulk.EXIT_BAD_INPUT
@@ -398,7 +398,7 @@ def test_a_gated_row_shows_nothing_because_nothing_was_shown(tmp_path, passing_l
     history = write_history(tmp_path / "h.xlsx", [row("SPS-1001", problem=NEAR_PROBLEM)])
     out = tmp_path / "results.xlsx"
 
-    bulk.main([
+    bulk.bulk_main([
         "--tickets", str(tickets), "--history", str(history),
         "--output", str(out), "--threshold", "0.99",
     ])
@@ -417,7 +417,7 @@ def test_an_unknown_part_has_nothing_to_show(tmp_path, passing_llm):
 
 def test_the_evidence_never_reaches_the_supplier_facing_sheet():
     """output.xlsx goes to a supplier. The evidence is operational only."""
-    from service.excel_output import RESULT_COLUMNS as OUTPUT_COLUMNS
+    from sps import RESULT_COLUMNS as OUTPUT_COLUMNS
 
     assert "Matched_Solutions" not in OUTPUT_COLUMNS
-    assert "Matched_Solutions" in bulk.RESULT_COLUMNS
+    assert "Matched_Solutions" in bulk.BULK_RESULT_COLUMNS

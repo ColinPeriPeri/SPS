@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from sps.generation.transferable import (
+from sps import (
     KNOWN_TRACKING_PREFIXES,
     critique_for,
     untransferable_references,
@@ -194,7 +194,7 @@ NTK_RECOMMENDATION = (
 
 
 def test_the_live_esw_recommendation_is_rejected():
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     assert misattributed_actions(NTK_RECOMMENDATION)
 
@@ -202,7 +202,7 @@ def test_the_live_esw_recommendation_is_rejected():
 def test_the_correctly_addressed_step_survives():
     """Step 2 was right: the supplier controls shipment. A gate that eats it is
     worse than no gate at all."""
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     assert misattributed_actions(
         "Do not ship the parts until the ESW is fully approved."
@@ -222,7 +222,7 @@ def test_the_correctly_addressed_step_survives():
     ],
 )
 def test_customer_actions_stated_as_instructions_are_caught(text):
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     assert misattributed_actions(text), text
 
@@ -246,13 +246,13 @@ def test_customer_actions_stated_as_instructions_are_caught(text):
     ],
 )
 def test_outcomes_and_supplier_actions_are_left_alone(text):
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     assert misattributed_actions(text) == [], text
 
 
 def test_the_instrument_list_is_extendable():
-    from sps.generation.transferable import INTERNAL_ACTION_VERBS, INTERNAL_INSTRUMENTS
+    from sps import INTERNAL_ACTION_VERBS, INTERNAL_INSTRUMENTS
 
     assert "ESW" in INTERNAL_INSTRUMENTS
     assert "issue" in INTERNAL_ACTION_VERBS
@@ -261,7 +261,7 @@ def test_the_instrument_list_is_extendable():
 
 
 def test_the_critique_gives_the_rephrasing_not_only_the_rejection():
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     critique = critique_for([], misattributed_actions(NTK_RECOMMENDATION))
 
@@ -273,7 +273,7 @@ def test_the_critique_gives_the_rephrasing_not_only_the_rejection():
 def test_both_kinds_arrive_in_one_critique():
     """A draft with both problems is rewritten once, not twice -- it only gets
     three attempts."""
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     combined = "1. Issue an ESW.\n2. Per discussed, see the attachment."
     critique = critique_for(
@@ -297,7 +297,7 @@ def test_both_kinds_arrive_in_one_critique():
     ],
 )
 def test_a_stated_outcome_is_not_an_instruction(text):
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     assert misattributed_actions(text) == [], text
 
@@ -309,6 +309,6 @@ def test_a_stated_outcome_is_not_an_instruction(text):
 def test_a_bare_customer_verb_is_caught_in_imperative_position(text):
     """Position is the only thing separating "Waive the requirement" from
     "we will waive it": both are the base form."""
-    from sps.generation.transferable import misattributed_actions
+    from sps import misattributed_actions
 
     assert misattributed_actions(text), text

@@ -11,10 +11,10 @@ import pytest
 # Components A and B stay dependency-free.
 pytest.importorskip("pydantic")
 
-from sps.config import LLMSettings
-from sps.contracts import Candidate, IncomingTicket
-from sps.generation import ActorCriticLoop, LLMError, parse_json_response
-from sps.generation.prompts import build_actor_messages, build_judge_messages
+from sps import LLMSettings
+from sps import Candidate, IncomingTicket
+from sps import ActorCriticLoop, LLMError, parse_json_response
+from sps_prompts import build_actor_messages, build_judge_messages
 from tests.conftest import ScriptedChatClient
 
 TICKET = IncomingTicket(
@@ -254,7 +254,7 @@ def test_history_metadata_cannot_reach_the_actor_or_judge():
     """The Actor is shown the incoming problem and the historical solution text,
     nothing else. Candidate carries metadata, but the prompt builders read named
     attributes only, so a field added to history can never reach the model."""
-    from sps.retrieval.in_memory import HistoryRow, _to_candidate
+    from sps import HistoryRow, _to_candidate
 
     secret = "INTERNAL-MES-REF-9931"
     candidate = _to_candidate(

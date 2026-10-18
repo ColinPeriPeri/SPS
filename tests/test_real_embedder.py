@@ -25,8 +25,8 @@ if not os.environ.get("SPS_MODEL_TESTS"):
 
 pytest.importorskip("sentence_transformers")
 
-from sps.config import BGE_QUERY_INSTRUCTION, EmbeddingSettings  # noqa: E402
-from sps.embedding import BGEEmbedder  # noqa: E402
+from sps import BGE_QUERY_INSTRUCTION, EmbeddingSettings  # noqa: E402
+from sps import BGEEmbedder  # noqa: E402
 
 TOL = 1e-5
 
