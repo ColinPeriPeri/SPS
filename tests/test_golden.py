@@ -30,14 +30,10 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("openpyxl")
-pytest.importorskip("numpy")
-pytest.importorskip("pydantic")
-
-import sps as bulk  # noqa: E402
-import sps as resolver  # noqa: E402
-from sps import parse_docx  # noqa: E402
-from sps import ActorDraft, IntentAssessment, JudgeVerdict  # noqa: E402
+import sps as bulk
+import sps as resolver
+from sps import parse_docx
+from sps import ActorDraft, IntentAssessment, JudgeVerdict
 
 GOLDEN = Path(__file__).parent / "golden" / "golden.json"
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"

@@ -13,14 +13,9 @@ import json
 
 import pytest
 
-pytest.importorskip("numpy")
-pytest.importorskip("pandas")
-pytest.importorskip("openpyxl")
-docx = pytest.importorskip("docx", reason="python-docx is required for Tier 2")
-
-import sps as resolver  # noqa: E402
-from sps import IncomingTicket  # noqa: E402
-from sps import (  # noqa: E402
+import sps as resolver
+from sps import IncomingTicket
+from sps import (
     CACHE_FILENAMES,
     TIER2_AZURE_THRESHOLD,
     DocRetriever,
@@ -30,14 +25,14 @@ from sps import (  # noqa: E402
     load_cache,
     save_cache,
 )
-from sps import (  # noqa: E402
+from sps import (
     MIN_USABLE_WORDS,
     DocChunk,
     iter_doc_files,
     parse_docx,
 )
-from tests.conftest import TokenOverlapEmbedder  # noqa: E402
-from tests.test_resolver import (  # noqa: E402
+from tests.conftest import TokenOverlapEmbedder, docx_style, write_docx
+from tests.test_resolver import (
     NEAR_PROBLEM, PART, PROBLEM, read_sheet, row, write_history, write_ticket,
 )
 
@@ -66,16 +61,11 @@ PACKAGING = (
 
 def write_doc(path, sections, title="0250 Standard"):
     """Build a .docx with a title and (heading, [paragraphs]) sections."""
-    from docx import Document
-
-    document = Document()
-    document.add_heading(title, level=1)
+    blocks = [("heading", 1, title)]
     for heading, paragraphs in sections:
-        document.add_heading(heading, level=2)
-        for text in paragraphs:
-            document.add_paragraph(text)
-    document.save(str(path))
-    return path
+        blocks.append(("heading", 2, heading))
+        blocks.extend(("paragraph", text) for text in paragraphs)
+    return write_docx(path, blocks)
 
 
 def weld_corpus(directory):
@@ -139,21 +129,125 @@ def test_the_citation_travels_inside_the_embedded_text(tmp_path):
 def test_table_text_is_captured(tmp_path):
     """`document.paragraphs` omits every table, and a limits table is where a
     standard keeps its numbers."""
-    from docx import Document
-
-    document = Document()
-    document.add_heading("4.3 Porosity Limits", level=2)
-    table = document.add_table(rows=2, cols=2)
-    table.cell(0, 0).text = "Scattered porosity"
-    table.cell(0, 1).text = "2 percent by area max over any 25 mm of seam"
-    table.cell(1, 0).text = "Clustered porosity and wormholes"
-    table.cell(1, 1).text = "Rejectable at any level whatsoever"
-    path = tmp_path / "d.docx"
-    document.save(str(path))
+    path = write_docx(tmp_path / "d.docx", [
+        ("heading", 2, "4.3 Porosity Limits"),
+        ("table", [["Scattered porosity", "2 percent by area max over any 25 mm of seam"],
+                   ["Clustered porosity and wormholes", "Rejectable at any level whatsoever"]]),
+    ])
 
     (chunk,) = parse_docx(path)
     assert "2 percent by area max" in chunk.text
     assert "Scattered porosity |" in chunk.text
+
+
+# ---------------------------------------------------------------- the reader
+#
+# A .docx is read with the standard library, to python-docx 1.1.2's rules. Each
+# expected value below is what python-docx itself produced for the same file,
+# compared side by side before it left the install.
+
+FILLER = "Applies to every welded bracket supplied under this standard, whatever the alloy."
+
+
+def _cell(text, properties=""):
+    tc_pr = f"<w:tcPr>{properties}</w:tcPr>" if properties else ""
+    return f"<w:tc>{tc_pr}<w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>"
+
+
+def test_run_content_is_read_as_word_shows_it(tmp_path):
+    """Tabs, line breaks and non-breaking hyphens are text; a hyperlink's
+    runs are part of its paragraph."""
+    path = write_docx(tmp_path / "d.docx", [
+        ("heading", 2, "4.2 Cracking"),
+        ("xml", '<w:p><w:r><w:t>Grind</w:t><w:tab/><w:t>out</w:t><w:br/><w:t>the seam</w:t>'
+                '<w:noBreakHyphen/><w:t>end</w:t></w:r><w:hyperlink><w:r>'
+                '<w:t xml:space="preserve"> per drawing 7.</w:t></w:r></w:hyperlink></w:p>'),
+        ("paragraph", FILLER),
+    ])
+    (chunk,) = parse_docx(path)
+    assert chunk.text == f"Grind out the seam-end per drawing 7.\n{FILLER}"
+
+
+def test_unaccepted_tracked_changes_are_not_read(tmp_path):
+    """Deleted text is gone, and -- as python-docx read it, so the cached
+    chunks did too -- an insertion not yet accepted is not read either."""
+    path = write_docx(tmp_path / "d.docx", [
+        ("heading", 2, "6.1 Torque"),
+        ("xml", '<w:p><w:r><w:t xml:space="preserve">Torque the bracket fasteners to 12 Nm</w:t></w:r>'
+                '<w:ins w:id="1" w:author="a"><w:r><w:t xml:space="preserve"> and then to 14 Nm</w:t>'
+                '</w:r></w:ins><w:del w:id="2" w:author="a"><w:r>'
+                '<w:delText xml:space="preserve"> or by hand</w:delText></w:r></w:del>'
+                "<w:r><w:t>.</w:t></w:r></w:p>"),
+        ("paragraph", FILLER),
+    ])
+    (chunk,) = parse_docx(path)
+    assert chunk.text == f"Torque the bracket fasteners to 12 Nm.\n{FILLER}"
+
+
+def test_a_heading_from_a_localized_word_is_still_a_heading(tmp_path):
+    """The style name is localized; the style id stays English."""
+    styles = docx_style("Normal", "Normal", default=True) + docx_style("Heading2", "Überschrift 2")
+    path = write_docx(tmp_path / "d.docx", [("heading", 2, "4.2 Risse"), ("paragraph", FILLER)],
+                      styles=styles)
+    (chunk,) = parse_docx(path)
+    assert chunk.section == "4.2 Risse"
+
+
+def test_without_a_styles_part_nothing_is_a_heading(tmp_path):
+    """python-docx stood in a template defining only Normal, so a heading
+    style in a file with no styles part read as body text."""
+    path = write_docx(tmp_path / "d.docx", [("heading", 2, "4.2 Cracking"), ("paragraph", FILLER)],
+                      styles=None)
+    (chunk,) = parse_docx(path)
+    assert (chunk.section, chunk.text) == ("", f"4.2 Cracking\n{FILLER}")
+
+
+def test_merged_cells_are_read_once(tmp_path):
+    path = write_docx(tmp_path / "d.docx", [
+        ("heading", 2, "4.3 Porosity Limits"),
+        ("xml", "<w:tbl>"
+                "<w:tr>" + _cell("Porosity", '<w:vMerge w:val="restart"/>') + _cell("Scattered")
+                + _cell("2 percent by area max") + "</w:tr>"
+                "<w:tr>" + _cell("", "<w:vMerge/>") + _cell("Clustered")
+                + _cell("Rejectable at any level") + "</w:tr>"
+                "<w:tr>" + _cell("Applies to every seam over 25 mm long", '<w:gridSpan w:val="3"/>')
+                + "</w:tr></w:tbl>"),
+    ])
+    (chunk,) = parse_docx(path)
+    # One line per row leaves `_table_text`; the rows run together here because
+    # the chunker collapses every newline in what it is given. Kept as is: it is
+    # what the cached chunks hold.
+    assert chunk.text == ("Porosity | Scattered | 2 percent by area max "
+                          "Porosity | Clustered | Rejectable at any level "
+                          "Applies to every seam over 25 mm long")
+
+
+def test_a_merge_down_a_long_table_is_read_in_full(tmp_path):
+    """python-docx followed a vertical merge upward one recursive call per row,
+    and a merge past about a thousand rows raised RecursionError."""
+    rows = ["<w:tr>" + _cell("Porosity", '<w:vMerge w:val="restart"/>') + _cell("row 0") + "</w:tr>"]
+    rows += ["<w:tr>" + _cell("", "<w:vMerge/>") + _cell(f"row {i}") + "</w:tr>" for i in range(1, 1500)]
+    path = write_docx(tmp_path / "d.docx", [
+        ("heading", 2, "4.3 Porosity Limits"), ("xml", "<w:tbl>" + "".join(rows) + "</w:tbl>"),
+    ])
+
+    text = " ".join(chunk.text for chunk in parse_docx(path))
+    # Counted over the joined text, because chunking cuts a long table mid-row.
+    assert text.count("Porosity | row") == 1500
+    assert text.endswith("Porosity | row 1499")
+
+
+def test_a_merge_with_nothing_above_it_costs_one_cell_not_the_document(tmp_path):
+    """A deliberate difference: python-docx raised here mid-document, past the
+    guard that skips one unreadable file, and Tier 2 lost every document."""
+    path = write_docx(tmp_path / "d.docx", [
+        ("heading", 2, "4.3 Porosity Limits"),
+        ("xml", "<w:tbl><w:tr>" + _cell("orphan", "<w:vMerge/>")
+                + _cell("Scattered porosity is limited to 2 percent by area over any 25 mm of seam")
+                + "</w:tr></w:tbl>"),
+    ])
+    (chunk,) = parse_docx(path)
+    assert chunk.text == "Scattered porosity is limited to 2 percent by area over any 25 mm of seam"
 
 
 def test_the_section_trail_does_not_restate_the_document_title(tmp_path):
@@ -242,6 +336,24 @@ def test_an_unreadable_document_does_not_lose_the_corpus(tmp_path, caplog):
     assert "0250-Corrupt.docx" in caplog.text
     assert retriever.stats.chunks == 2
     assert hits or retriever.stats.top_score > 0
+
+
+def test_malformed_markup_mid_document_loses_only_that_document(tmp_path, caplog):
+    """A valid package whose table markup does not add up fails while it is
+    being walked, not while it is opened. That has to be caught per document
+    too, or one bad table would make Tier 2 unavailable for every ticket."""
+    weld_corpus(tmp_path)
+    write_docx(tmp_path / "0250-Bad-Table.docx", [
+        ("heading", 2, "4.3 Porosity Limits"),
+        ("xml", "<w:tbl><w:tr>" + _cell("Porosity", '<w:gridSpan w:val="two"/>') + "</w:tr></w:tbl>"),
+    ])
+
+    retriever = DocRetriever(docs_dir=tmp_path, embedder=TokenOverlapEmbedder())
+    with caplog.at_level("WARNING"):
+        retriever.retrieve(ticket())
+
+    assert "0250-Bad-Table.docx" in caplog.text
+    assert retriever.stats.chunks == 2
 
 
 # ------------------------------------------------------------------ hashing
@@ -679,11 +791,11 @@ def test_tier2_answers_when_tier1_finds_nothing(tmp_path, tiered_llm):
     code, out = run_cli(tmp_path, docs_dir=docs)
 
     assert code == resolver.EXIT_OK
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status"] == "PASS"
     assert status["Status_Code"] == "SUCCESS_0250_DOC"
 
-    result = read_sheet(out / "output.xlsx").iloc[0]
+    result = read_sheet(out / "output.xlsx")[0]
     assert result["Resolution_Source"] == "0250_DOCUMENTATION"
     assert "0250-Weld-Standards.docx" in result["Referenced_Sources"]
     assert "§" in result["Referenced_Sources"]
@@ -708,8 +820,8 @@ def test_a_part_with_no_history_can_still_be_answered_from_the_standards(tmp_pat
     code, out = run_cli(tmp_path, docs_dir=docs, part="0099-99999", tier2_threshold=0.05)
 
     assert code == resolver.EXIT_OK
-    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "SUCCESS_0250_DOC"
-    assert read_sheet(out / "output.xlsx").iloc[0]["Resolution_Source"] == "0250_DOCUMENTATION"
+    assert read_sheet(out / "status.xlsx")[0]["Status_Code"] == "SUCCESS_0250_DOC"
+    assert read_sheet(out / "output.xlsx")[0]["Resolution_Source"] == "0250_DOCUMENTATION"
 
 
 def test_the_citations_come_from_retrieval_not_from_the_model(tmp_path, tiered_llm):
@@ -724,7 +836,7 @@ def test_the_citations_come_from_retrieval_not_from_the_model(tmp_path, tiered_l
 
     _, out = run_cli(tmp_path, docs_dir=docs)
 
-    sources = read_sheet(out / "output.xlsx").iloc[0]["Referenced_Sources"]
+    sources = read_sheet(out / "output.xlsx")[0]["Referenced_Sources"]
     assert "0250-Invented-Document.docx" not in sources
     assert "0250-Weld-Standards.docx" in sources
 
@@ -735,7 +847,7 @@ def test_the_reason_logs_the_best_score_from_both_tiers(tmp_path, tiered_llm):
 
     _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.999)
 
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     # Tier 1 gated, but Tier 2 cleared its own gate and the Actor then declined:
     # the furthest stage reached was the audit, so that is what is reported.
     assert status["Status_Code"] == "LLM_AUDIT_REJECTED"
@@ -752,7 +864,7 @@ def test_no_corpus_reports_the_tier1_outcome(tmp_path, tiered_llm):
     code, out = run_cli(tmp_path, docs_dir=empty)
 
     assert code == resolver.EXIT_OK
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     # Nothing retrieved from Tier 2, so Tier 1's own stage stands.
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "No 0250 documents found" in status["Reason"]
@@ -764,11 +876,11 @@ def test_no_tier2_restores_the_single_tier_behaviour(tmp_path, tiered_llm):
 
     _, out = run_cli(tmp_path, docs_dir=docs, extra=["--no-tier2"])
 
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "disabled by --no-tier2" in status["Reason"]
     # A concluded run, so it still leaves a row -- one that says no solution.
-    assert read_sheet(out / "output.xlsx").iloc[0]["Resolution_Source"] == "NONE"
+    assert read_sheet(out / "output.xlsx")[0]["Resolution_Source"] == "NONE"
 
 
 def test_a_tier1_outage_does_not_fall_through_to_tier2(tmp_path, tiered_llm):
@@ -783,7 +895,7 @@ def test_a_tier1_outage_does_not_fall_through_to_tier2(tmp_path, tiered_llm):
     code, out = run_cli(tmp_path, docs_dir=docs, threshold=0.1)
 
     assert code == resolver.EXIT_INFRASTRUCTURE
-    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "INFRASTRUCTURE_ERROR"
+    assert read_sheet(out / "status.xlsx")[0]["Status_Code"] == "INFRASTRUCTURE_ERROR"
     assert "tier2" not in seen
 
 
@@ -796,9 +908,9 @@ def test_tier1_success_never_reaches_tier2(tmp_path, tiered_llm):
 
     _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.1)
 
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status_Code"] == "SUCCESS_HISTORICAL"
-    assert read_sheet(out / "output.xlsx").iloc[0]["Resolution_Source"] == "HISTORICAL_DATA"
+    assert read_sheet(out / "output.xlsx")[0]["Resolution_Source"] == "HISTORICAL_DATA"
     assert "tier2" not in seen
 
 
@@ -822,7 +934,7 @@ def test_a_broken_corpus_does_not_become_an_infrastructure_fault(tmp_path, tiere
         doc_cache.DocRetriever.retrieve = original
 
     assert code == resolver.EXIT_OK
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "Tier 2 unavailable" in status["Reason"]
 
@@ -891,7 +1003,7 @@ def test_the_reported_code_is_the_furthest_stage_either_tier_reached(
     )
 
     assert code == resolver.EXIT_OK
-    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == expected
+    assert read_sheet(out / "status.xlsx")[0]["Status_Code"] == expected
 
 
 def test_the_reason_still_carries_both_tiers_whatever_the_code(tmp_path, tiered_llm):
@@ -902,7 +1014,7 @@ def test_the_reason_still_carries_both_tiers_whatever_the_code(tmp_path, tiered_
 
     _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.99, tier2_threshold=0.99)
 
-    reason = read_sheet(out / "status.xlsx").iloc[0]["Reason"]
+    reason = read_sheet(out / "status.xlsx")[0]["Reason"]
     assert "Best historical match 0.9354" in reason
     assert "Best 0250 match" in reason
 
@@ -946,7 +1058,7 @@ def test_a_tier2_only_encode_still_names_its_encoder(tmp_path, tiered_llm):
 
     _, out = run_cli(tmp_path, docs_dir=docs, part=UNKNOWN_PART, tier2_threshold=0.99)
 
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Embedding_Model"].startswith("azure:")
     assert status["Reason"].endswith("[Azure]")
 
@@ -958,4 +1070,4 @@ def test_tier1_keeps_naming_the_encoder_when_it_did_embed(tmp_path, tiered_llm):
 
     _, out = run_cli(tmp_path, docs_dir=docs, threshold=0.99, tier2_threshold=0.99)
 
-    assert read_sheet(out / "status.xlsx").iloc[0]["Embedding_Model"].startswith("azure:")
+    assert read_sheet(out / "status.xlsx")[0]["Embedding_Model"].startswith("azure:")

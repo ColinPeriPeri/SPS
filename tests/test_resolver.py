@@ -6,22 +6,18 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-pytest.importorskip("pandas")
-pytest.importorskip("openpyxl")
-pytest.importorskip("numpy")
-
 import sps as resolver
-import sps as resolver_contracts  # noqa: E402
-from sps import IncomingTicket  # noqa: E402
-from sps import (  # noqa: E402
+import sps as resolver_contracts
+from sps import IncomingTicket
+from sps import (
     HistoryError,
     InMemoryRetriever,
     build_header_map,
     cap_to_newest,
     load_matching_history,
 )
-from sps import normalize_part_number, validate_ticket  # noqa: E402
-from tests.conftest import TokenOverlapEmbedder  # noqa: E402
+from sps import normalize_part_number, validate_ticket
+from tests.conftest import TokenOverlapEmbedder
 
 
 @pytest.fixture(autouse=True)
@@ -91,10 +87,26 @@ def write_ticket(path, part=PART, problem=PROBLEM, reason_code=""):
     return path
 
 
-def read_sheet(path):
-    import pandas as pd
+def read_sheet(path) -> list[dict[str, str]]:
+    """A written workbook's data rows, keyed by header. Blank cells read ''."""
+    header, *body = _sheet_cells(path)
+    return [dict(zip(header, row + [""] * (len(header) - len(row)))) for row in body]
 
-    return pd.read_excel(path, dtype=str).fillna("")
+
+def read_columns(path) -> list[str]:
+    """A written workbook's header row."""
+    return _sheet_cells(path)[0]
+
+
+def _sheet_cells(path) -> list[list[str]]:
+    from openpyxl import load_workbook
+
+    book = load_workbook(path, read_only=True)
+    try:
+        return [["" if value is None else str(value) for value in row]
+                for row in book.active.iter_rows(values_only=True)]
+    finally:
+        book.close()
 
 
 # ---------------------------------------------------------------- validation
@@ -136,7 +148,7 @@ def test_a_blank_part_number_falls_through_to_tier_two(tmp_path, passing_llm, mo
     monkeypatch.setenv("SPS_TIER2_REASON_CODES", "RC-1")
     _, out = run_cli(tmp_path, part="")
 
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status_Code"] != "INVALID_INPUT"
     assert "part number" in status["Reason"].casefold()
 
@@ -146,7 +158,7 @@ def test_a_blank_problem_description_is_still_terminal(tmp_path, passing_llm):
     either side. Falling through would be searching for nothing."""
     _, out = run_cli(tmp_path, problem="")
 
-    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "INVALID_INPUT"
+    assert read_sheet(out / "status.xlsx")[0]["Status_Code"] == "INVALID_INPUT"
 
 
 def test_validation_runs_before_anything_expensive(tmp_path, monkeypatch):
@@ -374,7 +386,7 @@ def test_status_workbook_is_always_written(tmp_path, passing_llm):
         from sps import STATUS_COLUMNS
 
         sheet = read_sheet(out / "status.xlsx")
-        assert list(sheet.columns) == list(STATUS_COLUMNS)
+        assert read_columns(out / "status.xlsx") == list(STATUS_COLUMNS)
         assert len(sheet) == 1
 
 
@@ -382,20 +394,20 @@ def test_success_writes_both_workbooks(tmp_path, passing_llm):
     code, out = run_cli(tmp_path)
 
     assert code == resolver.EXIT_OK
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status"] == "PASS"
     assert status["Status_Code"] == "SUCCESS_HISTORICAL"
 
     result = read_sheet(out / "output.xlsx")
-    assert list(result.columns) == [
+    assert read_columns(out / "output.xlsx") == [
         "Part_Number", "AI_Recommendation", "Justification",
         "Confidence_Score", "Referenced_Sources", "Resolution_Source",
         "Closest_Matching_Solution", "Cascade_Warnings",
     ]
-    assert result.iloc[0]["Part_Number"] == PART
-    assert result.iloc[0]["Referenced_Sources"] == "SPS-1001"
-    assert result.iloc[0]["Resolution_Source"] == "HISTORICAL_DATA"
-    assert result.iloc[0]["Confidence_Score"].endswith("%")
+    assert result[0]["Part_Number"] == PART
+    assert result[0]["Referenced_Sources"] == "SPS-1001"
+    assert result[0]["Resolution_Source"] == "HISTORICAL_DATA"
+    assert result[0]["Confidence_Score"].endswith("%")
 
 
 def test_a_concluded_failure_still_writes_a_result_row(tmp_path, passing_llm):
@@ -408,7 +420,7 @@ def test_a_concluded_failure_still_writes_a_result_row(tmp_path, passing_llm):
     assert (out / "status.xlsx").exists()
     assert (out / "output.xlsx").exists()
 
-    row = read_sheet(out / "output.xlsx").iloc[0]
+    row = read_sheet(out / "output.xlsx")[0]
     assert row["AI_Recommendation"] == resolver_contracts.NO_RECOMMENDATION
     assert row["Resolution_Source"] == "NONE"
     assert row["Referenced_Sources"] == ""
@@ -424,8 +436,8 @@ def test_the_unresolved_row_carries_the_reason(tmp_path, passing_llm):
     """
     _, out = run_cli(tmp_path, part="0099-99999")
 
-    row = read_sheet(out / "output.xlsx").iloc[0]
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    row = read_sheet(out / "output.xlsx")[0]
+    status = read_sheet(out / "status.xlsx")[0]
 
     assert row["Justification"] == (
         "Not much historical data to infer the solution or recommendation."
@@ -441,7 +453,7 @@ def test_nothing_scored_leaves_the_confidence_blank(tmp_path, passing_llm):
     near miss that scored badly, which is a different finding."""
     _, out = run_cli(tmp_path, part="0099-99999")
 
-    assert read_sheet(out / "output.xlsx").iloc[0]["Confidence_Score"] == ""
+    assert read_sheet(out / "output.xlsx")[0]["Confidence_Score"] == ""
 
 
 def test_a_gated_ticket_reports_the_score_it_reached(tmp_path, passing_llm):
@@ -453,7 +465,7 @@ def test_a_gated_ticket_reports_the_score_it_reached(tmp_path, passing_llm):
         threshold=0.99,
     )
 
-    result = read_sheet(out / "output.xlsx").iloc[0]
+    result = read_sheet(out / "output.xlsx")[0]
     assert result["AI_Recommendation"] == resolver_contracts.NO_RECOMMENDATION
     assert result["Confidence_Score"].endswith("%")
     assert result["Confidence_Score"] != "0%"
@@ -463,7 +475,7 @@ def test_a_success_still_writes_the_real_recommendation(tmp_path, passing_llm):
     """The row is only synthesised when there is nothing to report."""
     _, out = run_cli(tmp_path)
 
-    row_ = read_sheet(out / "output.xlsx").iloc[0]
+    row_ = read_sheet(out / "output.xlsx")[0]
     assert row_["AI_Recommendation"] != resolver_contracts.NO_RECOMMENDATION
     assert row_["Resolution_Source"] == "HISTORICAL_DATA"
     assert row_["Referenced_Sources"] == "SPS-1001"
@@ -474,7 +486,7 @@ def test_unhandled_error_still_writes_status(tmp_path, monkeypatch):
     code, out = run_cli(tmp_path)
 
     assert code == resolver.EXIT_INFRASTRUCTURE
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status"] == "FAIL"
     assert status["Status_Code"] == "INFRASTRUCTURE_ERROR"
 
@@ -488,7 +500,7 @@ def test_a_stale_result_row_is_replaced_not_left(tmp_path, passing_llm):
     write_rows(out / "output.xlsx", RESULT_COLUMNS, [{"Part_Number": "STALE"}])
     run_cli(tmp_path, part="")
 
-    row_ = read_sheet(out / "output.xlsx").iloc[0]
+    row_ = read_sheet(out / "output.xlsx")[0]
     assert row_["Part_Number"] != "STALE"
     assert row_["AI_Recommendation"] == resolver_contracts.NO_RECOMMENDATION
 
@@ -531,13 +543,99 @@ def test_status_codes_cover_each_outcome(tmp_path, passing_llm):
     ]
     for kwargs, expected in cases:
         _, out = run_cli(tmp_path, **kwargs)
-        assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == expected, kwargs
+        assert read_sheet(out / "status.xlsx")[0]["Status_Code"] == expected, kwargs
 
 
 def test_reason_is_a_single_line(tmp_path, passing_llm):
     """Newlines would break a one-row-per-run sheet for anyone reading it back."""
     _, out = run_cli(tmp_path, part="0099-99999")
-    assert "\n" not in read_sheet(out / "status.xlsx").iloc[0]["Reason"]
+    assert "\n" not in read_sheet(out / "status.xlsx")[0]["Reason"]
+
+
+# ---------------------------------------------------------- writing workbooks
+
+
+def _written(tmp_path, value):
+    """The cell `write_rows` produced for one value, as openpyxl reads it."""
+    from openpyxl import load_workbook
+
+    from sps import write_rows
+
+    path = tmp_path / "w.xlsx"
+    write_rows(path, ["Cell"], [{"Cell": value}])
+    return load_workbook(path).active["A2"]
+
+
+@pytest.mark.parametrize("value", ["0012-43951", "84%", "0.95", "2024-01-01", "00123", "1e5"])
+def test_every_cell_is_written_as_text(tmp_path, value):
+    """Nothing Excel could read as a number or a date is allowed to become one."""
+    cell = _written(tmp_path, value)
+    assert (cell.value, cell.data_type) == (value, "s")
+
+
+@pytest.mark.parametrize("value", ["=> regrind the seam", "=SUM(A1:A2)", "#N/A", "#REF!"])
+def test_text_that_looks_like_a_formula_or_an_error_stays_text(tmp_path, value):
+    """openpyxl -- and pandas, through it -- stored these as a formula and an
+    error value, so an archive solution beginning "=>" opened as a broken
+    formula instead of the words the cascade promised to send unchanged."""
+    cell = _written(tmp_path, value)
+    assert (cell.value, cell.data_type) == (value, "s")
+
+
+def test_characters_excel_cannot_hold_no_longer_fail_the_write(tmp_path):
+    """Word's manual line break is a vertical tab, and pasted archive text
+    carries it. openpyxl refused it, so the write failed."""
+    vertical_tab, form_feed, nul = chr(11), chr(12), chr(0)
+    cell = _written(tmp_path, f"Regrind{vertical_tab}then re-weld{form_feed}page two{nul}")
+    assert cell.value == "Regrind\nthen re-weld\npage two"
+
+
+def test_a_vertical_tab_in_the_matched_solution_is_answered_not_retried(tmp_path, passing_llm):
+    """The failed write used to be reported as an infrastructure fault: exit 1,
+    which the robot retries -- forever, on a record that never changes."""
+    out = tmp_path / "out"
+    solution = f"Grind out the cracked seam.{chr(11)}Re-weld and re-inspect."
+    write_csv_history(tmp_path / "h.csv", [row("SPS-1001", solution=solution)])
+    write_ticket(tmp_path / "t.xlsx")
+
+    code = resolver.resolve_main([
+        "--ticket-file", str(tmp_path / "t.xlsx"),
+        "--history-file", str(tmp_path / "h.csv"),
+        "--output-dir", str(out),
+        "--threshold", "0.5",
+    ])
+
+    assert code == resolver.EXIT_OK
+    assert read_sheet(out / "output.xlsx")[0]["AI_Recommendation"] == (
+        "Grind out the cracked seam.\nRe-weld and re-inspect."
+    )
+
+
+def test_an_over_long_cell_is_cut_with_a_visible_marker(tmp_path):
+    from sps import EXCEL_MAX_CELL
+
+    cell = _written(tmp_path, "x" * (EXCEL_MAX_CELL + 100))
+    assert len(cell.value) == EXCEL_MAX_CELL
+    assert cell.value.endswith("truncated for Excel]")
+
+
+def test_the_layout_is_the_one_pandas_wrote(tmp_path):
+    """One sheet named Sheet1, header bold, bordered and centred: what every
+    caller has been reading since the start, whatever now writes it."""
+    from openpyxl import load_workbook
+
+    from sps import STATUS_COLUMNS, write_rows
+
+    path = tmp_path / "status.xlsx"
+    write_rows(path, STATUS_COLUMNS, [])
+    book = load_workbook(path)
+
+    assert book.sheetnames == ["Sheet1"]
+    header = book.active["A1"]
+    assert header.value == STATUS_COLUMNS[0]
+    assert header.font.b
+    assert header.border.left.style == header.border.bottom.style == "thin"
+    assert (header.alignment.horizontal, header.alignment.vertical) == ("center", "top")
 
 
 # ------------------------------------------------------------------ threshold
@@ -574,10 +672,10 @@ def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):
     monkeypatch.setenv("SPS_CONFIDENCE_THRESHOLD", "0.99")
     out = tmp_path / "env"
     resolver.resolve_main(common + ["--output-dir", str(out)])
-    status = read_sheet(out / "status.xlsx").iloc[0]
+    status = read_sheet(out / "status.xlsx")[0]
     assert status["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert "0.99 threshold" in status["Reason"]
 
     out2 = tmp_path / "flag"
     resolver.resolve_main(common + ["--output-dir", str(out2), "--threshold", "0.1"])
-    assert read_sheet(out2 / "status.xlsx").iloc[0]["Status_Code"] == "SUCCESS_HISTORICAL"
+    assert read_sheet(out2 / "status.xlsx")[0]["Status_Code"] == "SUCCESS_HISTORICAL"

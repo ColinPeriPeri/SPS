@@ -32,31 +32,29 @@ Sections run in the order a ticket passes through them:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import dataclass, field
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
-from pathlib import Path
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any
-from typing import Any, Callable, Sequence
-from typing import Any, Iterator, Sequence
-from typing import Any, Protocol, Sequence, TypeVar, runtime_checkable
-from typing import Literal
-from typing import Protocol, Sequence, runtime_checkable
 import argparse
+import codecs
 import csv
 import hashlib
 import json
 import logging
 import math
 import os
+import posixpath
 import re
 import sys
 import tempfile
 import time
 import traceback
 import unicodedata
+import xml.etree.ElementTree as ET
+import zipfile
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterator, Literal, Protocol, Sequence, TypeVar, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from sps_prompts import (
     build_intent_messages,
@@ -375,11 +373,10 @@ class PipelineResult:
 #
 # Environment-driven configuration.
 #
-# The embedding and inference settings, in one auditable place. Stdlib only, so
-# this imports without the ML stack.
+# The embedding and inference settings, in one auditable place.
 #
-# The confidence threshold deliberately lives elsewhere -- beside the retrieval
-# engine in `sps/retrieval/in_memory.py` -- because it is a property of the
+# The confidence threshold deliberately lives elsewhere -- with the retriever,
+# under "Tier 1: history retrieval" -- because it is a property of the
 # embedding model's scoring distribution, not of the process configuration.
 
 MAX_ATTEMPTS = 3  # 1 initial draft + 2 refinement retries
@@ -403,22 +400,16 @@ def load_env_file(start=None):
     """Best-effort .env load. Returns the Path that was read, or None.
 
     It lives here, next to the settings that read the variables, rather than
-    inside one entry point -- `verify_embedder` was written later, did not know
-    to call the resolver's private copy, and spent a migration reporting every
-    credential as missing while the resolver read the same file perfectly well.
+    inside one entry point -- the old `verify_embedder` script was written
+    later, did not know to call the resolver's private copy, and spent a
+    migration reporting every credential as missing while the resolver read the
+    same file perfectly well.
 
     A process launched by a UiPath robot does not necessarily inherit an
     interactive shell's environment, which is why the file is read at all. Real
-    environment variables always win (`override=False`), so a machine-level
-    setting is never overridden by a stale checkout.
+    environment variables always win, so a machine-level setting is never
+    overridden by a stale checkout.
     """
-    from pathlib import Path
-
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return None
-
     candidates = [
         Path(start) / ".env" if start else Path.cwd() / ".env",
         # The project root, so running from anywhere still finds the
@@ -426,17 +417,157 @@ def load_env_file(start=None):
         PROJECT_DIR / ".env",
     ]
     for candidate in candidates:
-        if candidate.exists():
-            load_dotenv(candidate, override=False)
-            return candidate
+        if not candidate.is_file():
+            continue
+        try:
+            values = read_env_file(candidate)
+        except UnicodeDecodeError as exc:
+            # Logged and skipped rather than raised: raised, it stopped the run
+            # before status.xlsx existed, with an exit code the robot retries.
+            # Skipped, the run reports the missing settings and exits 2 -- a
+            # person is needed either way, and now the sheet says so.
+            logger.error(
+                "%s was not read: it is neither UTF-8 nor UTF-16 text (%s). "
+                "Save it as UTF-8.", candidate, exc,
+            )
+            return None
+        for name, value in values.items():
+            if value is not None and name not in os.environ:
+                os.environ[name] = value
+        return candidate
     return None
 
 
 def env_file_candidates():
     """Where load_env_file would look, for error messages that can be acted on."""
-    from pathlib import Path
-
     return [Path.cwd() / ".env", PROJECT_DIR / ".env"]
+
+
+# ---- Reading the .env file -------------------------------------------------
+#
+# python-dotenv 1.0.1's rules, which read this file before, reproduced with its
+# own patterns: KEY=value lines, an optional `export`, '#' comments (one after a
+# bare value needs a space before it), single or double quotes -- which may span
+# lines, and in double quotes \n, \t and friends are escapes -- and ${VAR} or
+# ${VAR:-default} expansion, where a real environment variable beats a value set
+# earlier in the file. A KEY with no '=' sets nothing. A line that cannot be
+# parsed is skipped with a warning naming it, and the rest still load.
+#
+# Three deliberate differences, all where python-dotenv failed:
+#
+#   * A byte-order mark is not read as part of the first key. Notepad and
+#     PowerShell both write one, and python-dotenv kept it, invisibly, at the
+#     front of the first variable's name -- leaving the real one unset.
+#   * A UTF-16 file -- what `echo KEY=value > .env` writes in Windows
+#     PowerShell 5 -- is read, where python-dotenv stopped the run with a
+#     UnicodeDecodeError.
+#   * A file in any other encoding is skipped with an error naming it (see
+#     `load_env_file`), where python-dotenv stopped the run the same way.
+
+_ENV_LEADING_SPACE = re.compile(r"\s*")
+_ENV_EXPORT = re.compile(r"(?:export[^\S\r\n]+)?")
+_ENV_QUOTED_KEY = re.compile(r"'([^']+)'")
+_ENV_KEY = re.compile(r"([^=\#\s]+)")
+_ENV_INLINE_SPACE = re.compile(r"[^\S\r\n]*")
+_ENV_EQUALS = re.compile(r"(=[^\S\r\n]*)")
+_ENV_SINGLE_QUOTED = re.compile(r"'((?:\\'|[^'])*)'")
+_ENV_DOUBLE_QUOTED = re.compile(r'"((?:\\"|[^"])*)"')
+_ENV_BARE_VALUE = re.compile(r"([^\r\n]*)")
+_ENV_COMMENT = re.compile(r"(?:[^\S\r\n]*#[^\r\n]*)?")
+_ENV_END_OF_LINE = re.compile(r"[^\S\r\n]*(?:\r\n|\n|\r|$)")
+_ENV_REST_OF_LINE = re.compile(r"[^\r\n]*(?:\r|\n|\r\n)?")
+_ENV_SINGLE_ESCAPES = re.compile(r"\\[\\']")
+_ENV_DOUBLE_ESCAPES = re.compile(r"\\[\\'\"abfnrtv]")
+_ENV_VARIABLE = re.compile(r"\$\{(?P<name>[^\}:]*)(?::-(?P<default>[^\}]*))?\}")
+
+
+class _EnvSyntax(Exception):
+    """A statement in a .env file that does not parse."""
+
+
+def _unescape(pattern: re.Pattern[str], value: str) -> str:
+    return pattern.sub(lambda m: codecs.decode(m.group(0), "unicode-escape"), value)
+
+
+def parse_env(text: str) -> tuple[list[tuple[str, str | None]], list[int]]:
+    """(key, value) pairs in file order, and the lines that could not be parsed.
+
+    The value is None for a key with no '='. No expansion here; see
+    `read_env_file`.
+    """
+    pairs: list[tuple[str, str | None]] = []
+    bad_lines: list[int] = []
+    at = 0
+
+    def take(pattern: re.Pattern[str]) -> tuple[str, ...]:
+        nonlocal at
+        match = pattern.match(text, at)
+        if match is None:
+            raise _EnvSyntax
+        at = match.end()
+        return match.groups()
+
+    while at < len(text):
+        take(_ENV_LEADING_SPACE)
+        if at >= len(text):
+            break
+        statement = at
+        try:
+            take(_ENV_EXPORT)
+            if text.startswith("#", at):
+                key = None
+            elif text.startswith("'", at):
+                (key,) = take(_ENV_QUOTED_KEY)
+            else:
+                (key,) = take(_ENV_KEY)
+            take(_ENV_INLINE_SPACE)
+            value = None
+            if text.startswith("=", at):
+                take(_ENV_EQUALS)
+                if text.startswith("'", at):
+                    value = _unescape(_ENV_SINGLE_ESCAPES, take(_ENV_SINGLE_QUOTED)[0])
+                elif text.startswith('"', at):
+                    value = _unescape(_ENV_DOUBLE_ESCAPES, take(_ENV_DOUBLE_QUOTED)[0])
+                elif at >= len(text) or text[at] in "\r\n":
+                    value = ""
+                else:
+                    (raw,) = take(_ENV_BARE_VALUE)
+                    value = re.sub(r"\s+#.*", "", raw).rstrip()
+            take(_ENV_COMMENT)
+            take(_ENV_END_OF_LINE)
+        except _EnvSyntax:
+            take(_ENV_REST_OF_LINE)
+            bad_lines.append(text.count("\n", 0, statement) + 1)
+            continue
+        if key is not None:
+            pairs.append((key, value))
+    return pairs, bad_lines
+
+
+def read_env_file(path: Path) -> dict[str, str | None]:
+    """A .env file's variables, expanded, in file order; later keys win."""
+    raw = Path(path).read_bytes()
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        text = raw.decode("utf-16")
+    else:
+        text = raw.decode("utf-8-sig")
+    # As text mode would have read it: every line ending becomes "\n".
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    pairs, bad_lines = parse_env(text)
+    for line in bad_lines:
+        logger.warning("%s: line %d could not be parsed and was skipped", path, line)
+
+    values: dict[str, str | None] = {}
+    for name, value in pairs:
+        if value is not None:
+            # The real environment beats an earlier value from the file.
+            scope = {**values, **os.environ}
+            value = _ENV_VARIABLE.sub(
+                lambda m: scope.get(m["name"], m["default"] or "") or "", value
+            )
+        values[name] = value
+    return values
 
 
 def _env(key: str, default: str = "") -> str:
@@ -472,11 +603,13 @@ def _env_list(key: str) -> tuple[str, ...]:
 # PROVISIONAL, and for a reason worth remembering: an LLM's "82%" is not a
 # calibrated probability. It ranks candidates against each other reliably
 # enough; as an absolute gate it means whatever the model decides it means.
-# Measure with scripts/run_eval_batch.py before treating 0.75 as settled.
+# Judge it on labelled cases with `python sps.py eval` -- its Status column
+# shows which it passed -- before treating 0.75 as settled.
 DEFAULT_INTENT_THRESHOLD = 0.75
 
-# How many candidates the intent scorer is shown. The retrieval gate below it
-# is deliberately permissive, so this is what actually bounds the call.
+# How many candidates the intent scorer is meant to be shown. NOT YET READ:
+# what bounds the call today is the retriever's `max_context_records`, also 5,
+# so SPS_INTENT_TOP_K changes nothing until the two are wired together.
 DEFAULT_INTENT_TOP_K = 5
 
 
@@ -594,13 +727,12 @@ class AzureEmbeddingSettings:
 #
 # Both readers stream. CSV is a linear read; XLSX goes through openpyxl in
 # `read_only` mode, which iterates rows rather than materialising the sheet.
-# `pandas.read_excel` has no chunked mode and would pull the whole workbook into
-# memory, which is the spike that makes CSV preferable for a large history in the
-# first place. Measured at 300k rows on this hardware: about 1.5 s for CSV against
-# about 40 s for XLSX.
+# Streamed or not, XLSX is far slower to read -- measured at 300k rows on this
+# hardware, about 1.5 s for CSV against about 40 s for XLSX -- which is why CSV
+# is the format to prefer for a large history.
 #
-# Stdlib only at import time; pandas and openpyxl are pulled in lazily by the
-# readers that need them.
+# openpyxl is imported by the XLSX reader itself, so reading a CSV never loads
+# it.
 
 CSV_SUFFIXES = frozenset({".csv"})
 
@@ -962,9 +1094,6 @@ def _unit(vector: Sequence[float]) -> list[float]:
 # * It **carries its own provenance**. The document name and section trail are
 #   prepended to the text itself, so the citation travels with the content into
 #   the model's context rather than living in a side-channel the model cannot see.
-#
-# `python-docx` is imported lazily: the rest of the package, and its tests, still
-# import on a machine without it.
 
 DOCX_SUFFIX = ".docx"
 LEGACY_DOC_SUFFIX = ".doc"
@@ -1027,18 +1156,14 @@ class DocChunk:
         return len(self.text.split())
 
 
-def _heading_level(paragraph) -> int | None:
-    """Word heading level, or None for body text."""
-    style = getattr(paragraph, "style", None)
-    if style is None:
-        return None
-    for value, pattern in ((getattr(style, "name", ""), _HEADING_NAME),
-                           (getattr(style, "style_id", ""), _HEADING_ID)):
+def _heading_level(name: str, style_id: str) -> int | None:
+    """Word heading level for a paragraph style, or None for body text."""
+    for value, pattern in ((name, _HEADING_NAME), (style_id, _HEADING_ID)):
         match = pattern.match(str(value or "").strip())
         if match:
             return int(match.group(1))
     # "Title" heads the document but is not numbered.
-    if str(getattr(style, "style_id", "") or "").strip().casefold() == "title":
+    if str(style_id or "").strip().casefold() == "title":
         return 0
     return None
 
@@ -1047,47 +1172,231 @@ def _clean_doc_text(text: str) -> str:
     return _WHITESPACE.sub(" ", str(text or "")).strip()
 
 
-def _iter_blocks(document) -> Iterator[tuple[str, object]]:
-    """Yield ("paragraph", Paragraph) / ("table", Table) in document order.
+# ---- Reading the .docx itself ---------------------------------------------
+#
+# A .docx is a zip of XML, and this reads it with the standard library. It used
+# to go through python-docx, whose lxml dependency ships a native DLL that
+# Windows Application Control blocks on the deployment machines.
+#
+# The rules below are python-docx 1.1.2's, reproduced exactly rather than
+# improved on, because every cached chunk and the golden master were built
+# with them. Consequences worth knowing -- text Word shows that Tier 2 does
+# not see:
+#
+#   * Only a paragraph's DIRECT runs and hyperlinks count. Runs wrapped in
+#     anything else are skipped: a tracked insertion not yet accepted (w:ins),
+#     a field (w:fldSimple), a content control (w:sdt), a smart tag.
+#   * Only paragraphs and tables directly in the body are read. A section
+#     inside a content control -- which documents built from a template often
+#     use -- is skipped whole, and a table nested in a cell contributes nothing
+#     to that cell's text.
+#
+# Differences arise only where python-docx raised instead of reading:
+#
+#   * A vertically merged cell with no cell above it to continue. python-docx
+#     raised mid-document, past the guard that skips one unreadable file, and
+#     took every document down with it. Here it is an empty cell.
+#   * A merge running down more rows than Python's recursion limit.
+#   * A macro-enabled document or a template saved with a .docx name, which
+#     was refused for its content type. Its text is read like any other.
+#   * An attribute value outside its schema -- a w:default of "yes", a
+#     w:pStyle with no value -- is read leniently rather than refused.
+#   * Whatever does still fail, a non-numeric w:gridSpan say, costs only its
+#     own document: the walk runs inside the guard in `parse_docx`.
 
-    `document.paragraphs` silently omits every table, and in a standards
-    document the tables are where the numbers live -- porosity limits, torque
-    values, acceptance criteria. Walking the body element is the only way to
-    get both, in the order a reader would meet them.
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_REL_OFFICE_DOCUMENT = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+)
+_REL_STYLES = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+
+
+def _break_text(element) -> str:
+    # A text-wrapping break is a newline; page and column breaks are layout.
+    return "\n" if element.get(_W + "type", "textWrapping") == "textWrapping" else ""
+
+
+# What each run child contributes. Anything not listed -- deleted text, field
+# codes, drawings -- contributes nothing.
+_RUN_TEXT = {
+    _W + "t": lambda element: element.text or "",
+    _W + "tab": lambda element: "\t",
+    _W + "ptab": lambda element: "\t",
+    _W + "cr": lambda element: "\n",
+    _W + "br": _break_text,
+    _W + "noBreakHyphen": lambda element: "-",
+}
+
+
+def _run_text(run) -> str:
+    return "".join(_RUN_TEXT[child.tag](child) for child in run if child.tag in _RUN_TEXT)
+
+
+def _paragraph_text(paragraph) -> str:
+    parts = []
+    for child in paragraph:
+        if child.tag == _W + "r":
+            parts.append(_run_text(child))
+        elif child.tag == _W + "hyperlink":
+            parts.extend(_run_text(run) for run in child if run.tag == _W + "r")
+    return "".join(parts)
+
+
+def _paragraph_style_id(paragraph) -> str | None:
+    style = paragraph.find(f"{_W}pPr/{_W}pStyle")
+    return None if style is None else style.get(_W + "val")
+
+
+class _Styles:
+    """Paragraph-style lookup, resolved the way python-docx resolves it.
+
+    A paragraph with no style id, or one naming a missing style or a style of
+    another type, takes the default paragraph style; with several defaults the
+    last one wins, as the spec says. A style with no w:type counts as no type
+    at all, so it neither matches nor serves as the default.
     """
-    from docx.document import Document as _Document
-    from docx.oxml.table import CT_Tbl
-    from docx.oxml.text.paragraph import CT_P
-    from docx.table import Table
-    from docx.text.paragraph import Paragraph
 
-    if not isinstance(document, _Document):
-        raise DocParseError("Expected a python-docx Document")
+    def __init__(self, root) -> None:
+        self.by_id: dict[str, tuple[str | None, str]] = {}
+        self.default: tuple[str, str] | None = None
+        if root is None:
+            # No styles part. python-docx substituted a template that defines
+            # Normal and nothing else, so no paragraph in such a file is a
+            # heading, whatever its pStyle says.
+            self.default = ("Normal", "Normal")
+            return
+        for style in root.findall(_W + "style"):
+            style_type = style.get(_W + "type")
+            style_id = style.get(_W + "styleId", "")
+            name_element = style.find(_W + "name")
+            name = "" if name_element is None else name_element.get(_W + "val", "")
+            self.by_id.setdefault(style_id, (style_type, name))
+            if style_type == "paragraph" and style.get(_W + "default") in ("1", "true", "on"):
+                self.default = (name, style_id)
 
-    for child in document.element.body.iterchildren():
-        if isinstance(child, CT_P):
-            yield "paragraph", Paragraph(child, document)
-        elif isinstance(child, CT_Tbl):
-            yield "table", Table(child, document)
+    def resolve(self, style_id: str | None) -> tuple[str, str] | None:
+        """(name, style_id) of the paragraph's effective style, or None."""
+        if style_id:
+            found = self.by_id.get(style_id)
+            if found is not None and found[0] == "paragraph":
+                return found[1], style_id
+        return self.default
 
 
-def _table_text(table) -> str:
+def _grid_span(cell) -> int:
+    span = cell.find(f"{_W}tcPr/{_W}gridSpan")
+    return 1 if span is None else int(span.get(_W + "val", "1"))
+
+
+def _vertical_merge(cell) -> str | None:
+    merge = cell.find(f"{_W}tcPr/{_W}vMerge")
+    # Present without a value means "continue", per the schema default.
+    return None if merge is None else merge.get(_W + "val", "continue")
+
+
+def _grid_before(row) -> int:
+    before = row.find(f"{_W}trPr/{_W}gridBefore")
+    return 0 if before is None else int(before.get(_W + "val", "0"))
+
+
+def _cell_text(cell) -> str:
+    return "\n".join(_paragraph_text(p) for p in cell if p.tag == _W + "p")
+
+
+def _table_rows(table) -> list[list[str]]:
+    """Each row's cell texts, one entry per grid column the row covers.
+
+    A horizontally merged cell repeats once per column it spans; a vertically
+    merged continuation reads as whatever the cell starting at the same grid
+    column in the row above read as. Both repeats collapse again in
+    `_table_text`.
+
+    Row by row rather than by recursing upward, as python-docx did, so a merge
+    down a long table is not limited by Python's recursion depth.
+    """
+    rows: list[list[str]] = []
+    above: dict[int, list[str]] = {}  # grid column -> what the cell starting there read as
+    for row in (r for r in table if r.tag == _W + "tr"):
+        texts_here: list[str] = []
+        starts: dict[int, list[str]] = {}
+        at = _grid_before(row)
+        for cell in (c for c in row if c.tag == _W + "tc"):
+            span = _grid_span(cell)
+            if _vertical_merge(cell) == "continue":
+                texts = above.get(at, [""] * span)
+            else:
+                texts = [_cell_text(cell)] * span
+            starts.setdefault(at, texts)  # the first cell to start at a column is the one found
+            texts_here.extend(texts)
+            at += span
+        rows.append(texts_here)
+        above = starts
+    return rows
+
+
+def _iter_blocks(body, styles: _Styles) -> Iterator[tuple[str, object]]:
+    """Yield ("paragraph", (text, style)) / ("table", rows) in document order.
+
+    `document.paragraphs` in python-docx silently omitted every table, and in a
+    standards document the tables are where the numbers live -- porosity
+    limits, torque values, acceptance criteria. Walking the body in order is
+    the only way to get both, in the order a reader would meet them.
+    """
+    for child in body:
+        if child.tag == _W + "p":
+            yield "paragraph", (_paragraph_text(child), styles.resolve(_paragraph_style_id(child)))
+        elif child.tag == _W + "tbl":
+            yield "table", _table_rows(child)
+
+
+def _table_text(rows: list[list[str]]) -> str:
     """Flatten a table to one line per row.
 
     Row-wise with a separator keeps a limits table readable as
     "Porosity | 2 percent max", which is the shape the answer is actually in.
     """
     lines = []
-    for row in table.rows:
-        cells = [_clean_doc_text(cell.text) for cell in row.cells]
+    for cells in rows:
         # Merged cells repeat their text across the span; collapse the repeats.
         deduped: list[str] = []
-        for cell in cells:
+        for cell in (_clean_doc_text(c) for c in cells):
             if cell and (not deduped or deduped[-1] != cell):
                 deduped.append(cell)
         if deduped:
             lines.append(" | ".join(deduped))
     return "\n".join(lines)
+
+
+def _relationship_target(package, rels_name: str, base: str, rel_type: str) -> str | None:
+    if rels_name not in package.namelist():
+        return None
+    for rel in ET.fromstring(package.read(rels_name)):
+        if rel.get("Type") == rel_type and rel.get("TargetMode") != "External":
+            target = rel.get("Target", "")
+            if target.startswith("/"):
+                return target.lstrip("/")
+            return posixpath.normpath(posixpath.join(base, target))
+    return None
+
+
+def _read_docx(path: Path):
+    """The document body and the styles root, found through the package's own
+    relationships rather than assumed paths."""
+    with zipfile.ZipFile(path) as package:
+        main = _relationship_target(package, "_rels/.rels", "", _REL_OFFICE_DOCUMENT)
+        main = main or "word/document.xml"
+        document = ET.fromstring(package.read(main))
+        base = posixpath.dirname(main)
+        rels = posixpath.join(base, "_rels", posixpath.basename(main) + ".rels")
+        styles_name = _relationship_target(package, rels, base, _REL_STYLES)
+        styles = None
+        if styles_name and styles_name in package.namelist():
+            styles = ET.fromstring(package.read(styles_name))
+
+    body = document.find(_W + "body")
+    if body is None:
+        raise ValueError("the document has no body")
+    return body, styles
 
 
 def _split_long(text: str, limit: int = MAX_CHUNK_WORDS) -> list[str]:
@@ -1174,30 +1483,28 @@ def parse_docx(path: Path | str) -> list[DocChunk]:
     """Parse one .docx into section-bounded chunks."""
     path = Path(path)
     try:
-        from docx import Document
-    except ImportError as exc:  # pragma: no cover - environment dependent
-        raise DocParseError(
-            "python-docx is required to read 0250 documents. "
-            "Install it with: pip install python-docx"
-        ) from exc
-
-    try:
-        document = Document(str(path))
+        body, styles_root = _read_docx(path)
+        # Walked inside the guard, not after it: malformed markup surfaces
+        # while walking, and an error escaping from here would make Tier 2
+        # unavailable for the whole run rather than lose this one document.
+        blocks = list(_iter_blocks(body, _Styles(styles_root)))
     except Exception as exc:
-        # python-docx raises a variety of types for a corrupt or password
-        # protected file; the caller only needs "this one is unusable".
+        # A corrupt file, a password-protected one, a .doc renamed to .docx, a
+        # table whose markup does not add up -- each fails differently, and the
+        # caller only needs "this one is unusable".
         raise DocParseError(f"Could not read {path.name!r}: {exc}") from exc
 
     accumulator = _Accumulator(path.name)
     trail: list[str] = []
 
-    for kind, block in _iter_blocks(document):
+    for kind, block in blocks:
         if kind == "table":
             accumulator.add(_table_text(block))
             continue
 
-        level = _heading_level(block)
-        text = _clean_doc_text(block.text)
+        text, style = block
+        level = _heading_level(*style) if style else None
+        text = _clean_doc_text(text)
         if level is None:
             accumulator.add(text)
             continue
@@ -1219,7 +1526,7 @@ def parse_docx(path: Path | str) -> list[DocChunk]:
 def iter_doc_files(directory: Path | str) -> list[Path]:
     """The .docx files in a directory, sorted, with legacy .doc refused.
 
-    A .doc is not a zip container and `python-docx` cannot open it. The only
+    A .doc is not a zip container, so the reader here cannot open it. The only
     way to read one on Windows is to drive Word through COM automation, which
     on a headless robot blocks on a modal dialog and hangs the run rather than
     failing it -- so the file is named in a warning and skipped.
@@ -3115,30 +3422,6 @@ def _with_precedent(justification: str, precedent: str) -> str:
     return f"{justification}\n\n{precedent}" if justification else precedent
 
 
-def success(
-    recommendation: str,
-    justification: str,
-    top_score: float,
-    candidates: Sequence[Candidate],
-    closest_matching_solution: str = "",
-) -> PipelineResult:
-    """Tier 1: audited recommendation plus the precedent it came from.
-
-    The raw precedent rides along even on a success. Referenced_Sources names
-    the SPS IDs, which tells a reviewer where to look but not what it said, and
-    the whole point of showing the source is to let them check the
-    recommendation against it without opening another system.
-    """
-    return PipelineResult(
-        ai_recommendation=recommendation,
-        justification=_with_precedent(justification, closest_matching_solution),
-        confidence=f"{score_to_percent(top_score)}%",
-        referenced_sources=_dedupe([c.sps_id for c in candidates]),
-        resolution_source=SOURCE_HISTORICAL,
-        closest_matching_solution=closest_matching_solution,
-    )
-
-
 def success_from_docs(
     recommendation: str,
     justification: str,
@@ -3173,16 +3456,29 @@ def success_from_docs(
 # a result sheet written whenever the run reached a conclusion -- including the
 # conclusion that neither tier had an answer.
 #
-# pandas and openpyxl are imported lazily, so importing this module -- and
-# therefore the CLI -- costs nothing and requires nothing.
+# openpyxl is imported inside the writer, so a command that writes no workbook
+# never loads it.
 
 # openpyxl refuses to write a cell longer than this, and Excel itself will not
 # display more. Truncating with a visible marker beats failing the handoff.
 EXCEL_MAX_CELL = 32767
 _TRUNCATION_NOTE = " […truncated for Excel]"
 
+# Characters an .xlsx cannot hold at all: XML 1.0 forbids them, and openpyxl
+# raised on them, failing the write -- which the resolver then reported as an
+# infrastructure fault for the robot to retry, forever, on the same text. They
+# arrive in archive text pasted from Word, where a vertical tab is a manual line
+# break and a form feed a page break; those two become line breaks, and the
+# rest, which carry nothing, are dropped. Same reasoning as the truncation.
+_EXCEL_LINE_BREAKS = str.maketrans({"\x0b": "\n", "\x0c": "\n"})
+_EXCEL_UNSTORABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
 
 def _fit_cell(value: str) -> str:
+    unstorable = len(_EXCEL_UNSTORABLE.findall(value))
+    if unstorable:
+        logger.warning("Replacing %d character(s) an Excel cell cannot hold", unstorable)
+        value = _EXCEL_UNSTORABLE.sub("", value.translate(_EXCEL_LINE_BREAKS))
     if len(value) <= EXCEL_MAX_CELL:
         return value
     logger.warning("Truncating a %d-character cell to Excel's 32767 limit", len(value))
@@ -3228,27 +3524,50 @@ RESULT_COLUMNS = (
 def write_rows(path: Path | str, columns: Sequence[str], rows: Sequence[dict[str, Any]]) -> None:
     """Write a sheet atomically, every cell as text.
 
-    Text throughout for the same reason as the contract workbook: pandas would
-    otherwise infer dtypes and a Confidence_Score of "84%" or a part number of
-    "0012-43951" could reach Excel as a number or a date.
+    Text throughout, so a Confidence_Score of "84%" or a part number of
+    "0012-43951" never reaches Excel as a number or a date. Marked as text cell
+    by cell, too: left to itself openpyxl stores text beginning with "=" as a
+    formula and "#N/A" as an error value, so an archive solution reading
+    "=> regrind the seam" would open as a broken formula.
+
+    One sheet named Sheet1, header bold with thin borders, centred: the layout
+    pandas gave these workbooks when it wrote them, kept so that nothing reading
+    them notices the change.
     """
-    import pandas as pd
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, Side
 
     path = Path(path)
-    frame = pd.DataFrame(
-        [{c: row.get(c, "") for c in columns} for row in rows], columns=list(columns)
-    )
-    frame = frame.astype(str).map(_fit_cell)
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Sheet1"
+
+    edge = Side(style="thin")
+    for column, name in enumerate(columns, start=1):
+        cell = _text_cell(sheet, 1, column, _fit_cell(str(name)))
+        cell.font = Font(bold=True)
+        cell.border = Border(left=edge, right=edge, top=edge, bottom=edge)
+        cell.alignment = Alignment(horizontal="center", vertical="top")
+    for row_number, row in enumerate(rows, start=2):
+        for column, name in enumerate(columns, start=1):
+            _text_cell(sheet, row_number, column, _fit_cell(str(row.get(name, ""))))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".xlsx")
     os.close(handle)
     try:
-        frame.to_excel(tmp_path, index=False)
+        book.save(tmp_path)
         os.replace(tmp_path, path)
     except BaseException:
         Path(tmp_path).unlink(missing_ok=True)
         raise
+
+
+def _text_cell(sheet, row: int, column: int, text: str):
+    cell = sheet.cell(row=row, column=column)
+    cell.value = text
+    cell.data_type = "s"  # never a formula or an error value; see write_rows
+    return cell
 
 
 # =============================================================================
@@ -3257,7 +3576,7 @@ def write_rows(path: Path | str, columns: Sequence[str], rows: Sequence[dict[str
 #
 # Resolve one SPS ticket against a historical file. No vector database.
 #
-#     python -m scripts.run_resolver --ticket-file ticket.xlsx         --history-file history.csv --output-dir .\out
+#     python sps.py resolve --ticket-file ticket.xlsx --history-file history.csv --output-dir .\out
 #
 # Writes two workbooks into --output-dir:
 #
@@ -3286,9 +3605,10 @@ def write_rows(path: Path | str, columns: Sequence[str], rows: Sequence[dict[str
 # FAIL), 1 an infrastructure fault, 2 the inputs could not be read.
 #
 # Two tiers. Tier 1 answers from the part's own historical SPS records. When
-# that produces nothing usable -- no matching part, nothing similar enough, or an
-# Actor that declines the precedent -- Tier 2 answers from the 0250 engineering
-# standards instead, and says so in Resolution_Source.
+# that produces nothing usable -- no matching part, nothing similar enough, or no
+# record the intent scorer judges to ask the same question -- Tier 2 answers
+# from the 0250 engineering standards instead, and says so in
+# Resolution_Source.
 #
 # Order of work is cheapest-first, so nothing expensive runs for a ticket that
 # cannot succeed: validate, then filter history by part, then cap, then embed,
@@ -3331,7 +3651,7 @@ SUCCESS_CODES = frozenset({CODE_SUCCESS_HISTORICAL, CODE_SUCCESS_DOC})
 # the part was perfectly well known.
 STAGE_NOTHING = 0    # nothing retrieved at all
 STAGE_GATED = 1      # retrieved, nothing cleared the threshold
-STAGE_REJECTED = 2   # cleared the threshold, the Actor or Judge refused it
+STAGE_REJECTED = 2   # cleared the threshold, then refused: intent score, Actor or Judge
 
 STAGE_CODES = {
     STAGE_NOTHING: CODE_NO_MATCHES,
@@ -3345,7 +3665,7 @@ OUTPUT_FILE = "output.xlsx"
 
 def resolve_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m scripts.run_resolver",
+        prog="python sps.py resolve",
         description="Resolve one SPS ticket against a historical file.",
         epilog=(
             "Azure credentials are read from the environment only "
@@ -3410,14 +3730,6 @@ def read_ticket(path: Path) -> dict[str, Any]:
     raise FileReadError(f"Ticket file {path.name!r} has a header but no data row.")
 
 
-def _load_dotenv() -> None:
-    """Load the deployment's .env. Kept as a name here because the batch
-    evaluator imports it and tests patch it; the logic lives in sps.config so
-    every entry point reaches the same one."""
-
-    load_env_file()
-
-
 @dataclass(frozen=True, slots=True)
 class ResolveOutcome:
     """What one run produced.
@@ -3453,12 +3765,13 @@ class ResolveOutcome:
     # The PipelineResult on a success; None when there is no recommendation, in
     # which case main() builds the "Solution not found." row.
     result: Any = None
-    # The evidence actually shown to the Actor. Operational only -- it never
-    # reaches output.xlsx, which is supplier-facing -- but it is what lets a
-    # reviewer see WHY a recommendation says what it does, in the same glance
-    # that shows what it said. Two fields rather than one because the tiers are
-    # populated from different call frames and a single key would collide in
-    # the shared **measured expansion.
+    # The shortlisted records' solutions (Tier 1) or the sections the Tier-2
+    # Actor was given. Operational only -- it never reaches output.xlsx, which
+    # is supplier-facing -- but it is what lets a reviewer see WHY a
+    # recommendation says what it does, in the same glance that shows what it
+    # said. Two fields rather than one because the tiers are populated from
+    # different call frames and a single key would collide in the shared
+    # **measured expansion.
     evidence: tuple[str, ...] = ()
     tier2_evidence: tuple[str, ...] = ()
     # The single best precedent, banner and all, ready to write. Unlike
@@ -3482,11 +3795,15 @@ class ResolveOutcome:
 
 
 def _reason_with_marker(reason: str, embedding_model: str) -> str:
-    """Append [Azure] or [Local] so the encoder is visible in Reason itself."""
+    """Append [Azure] so the encoder is visible in Reason itself.
+
+    [Injected] marks an encoder handed in through the test seam, so a stand-in
+    can never pass for the deployment in a status sheet.
+    """
     flat = " ".join(str(reason).split())
     if not embedding_model:
         return flat
-    marker = "[Azure]" if embedding_model.startswith("azure") else "[Local]"
+    marker = "[Azure]" if embedding_model.startswith("azure") else "[Injected]"
     return f"{flat} {marker}"
 
 
@@ -3576,10 +3893,11 @@ def _source_list(records: Sequence[tuple[str, float]]) -> str:
     """Where a recommendation came from, without reproducing it.
 
     On a success the answer is already written; repeating the archive text
-    underneath it adds length without adding information. Worse, up to fifteen
-    records reach the Actor and a recommendation may combine several, so
-    showing one record's text would read as THE source and invite a reviewer to
-    check a step against a record it did not come from.
+    underneath it adds length without adding information. In Tier 2 the Actor
+    may combine several sections, so showing one section's text would read as
+    THE source and invite a reviewer to check a step against one it did not
+    come from. In Tier 1 one record's solution is sent, and the list is every
+    record the intent scorer read, in the order its scores put them.
 
     What is missing from `Referenced_Sources` is the per-record score -- it
     lists the ids and cannot say which matched at 94% and which at 71%, which
@@ -3592,8 +3910,8 @@ def _source_list(records: Sequence[tuple[str, float]]) -> str:
     return f"Synthesized from {len(records)} record(s): {listed}"
 
 
-# Resolver-level stops, alongside the loop's own STOP_* values. These two
-# happen before the Actor is ever called, so the loop cannot report them.
+# Resolver-level stops, alongside the loop's own STOP_* values. These happen
+# before any draft is written, so the loop cannot report them.
 STOP_NO_HISTORY = "NO_HISTORY_FOR_PART"
 STOP_BELOW_THRESHOLD = "BELOW_THRESHOLD"
 # Records were found and read, and none of them asks the same question. A
@@ -3786,9 +4104,9 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     # by defect text and never looks at the part number.
     bad_part = validate_part_number(ticket.part_number)
 
-    # An explicit --threshold (or SPS_CONFIDENCE_THRESHOLD) overrides both
-    # per-model defaults; otherwise the engine picks the one belonging to
-    # whichever encoder answered.
+    # An explicit --threshold (or SPS_CONFIDENCE_THRESHOLD) overrides the
+    # Tier-1 gate; otherwise it is AZURE_EMBEDDING_THRESHOLD, from the
+    # environment when set there.
     threshold_override = args.threshold
     if threshold_override is None:
         raw_threshold = os.environ.get("SPS_CONFIDENCE_THRESHOLD", "").strip()
@@ -3850,8 +4168,8 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
 
     measured = dict(
         part_number=part_number,
-        # What the Actor was shown, or would have been. Present even on the
-        # gated path, where seeing the near-miss text is the whole point.
+        # The shortlisted records' solutions. Present even on the gated path,
+        # where seeing the near-miss text is the whole point.
         evidence=tuple(_evidence(c.sps_id, c.actual_solution) for c in candidates),
         # The closest rows, gate or no gate. `candidates` is empty on a gated
         # run, which is exactly when a reviewer most wants to see what was
@@ -3863,9 +4181,9 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
             [(c.sps_id, c.actual_solution, c.composite_score) for c in stats.top_candidates],
             gated=not candidates,
         ),
-        # Every record the Actor was given, with its score. All of them, not
-        # the top three: a recommendation may draw on any of them, and naming
-        # only some would misreport where the answer came from.
+        # Every shortlisted record with its cosine. Replaced by the intent-
+        # ordered list once the scorer has run; this is what a run that stops
+        # before it reports.
         source_list=_source_list([(c.sps_id, c.composite_score) for c in candidates]),
         embedding_model=model,
         top_score=stats.top_score,
@@ -4216,7 +4534,7 @@ def resolve_main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
 
-    _load_dotenv()
+    load_env_file()
 
     output_dir = Path(args.output_dir)
     try:
@@ -4281,14 +4599,14 @@ def resolve_main(argv: list[str] | None = None) -> int:
 #
 # Run a workbook of tickets through the real pipeline, one row at a time.
 #
-#     python -m scripts.run_bulk_test --tickets tickets.xlsx --history history.csv
+#     python sps.py bulk --tickets tickets.xlsx --history history.csv
 #
 # Reads a sheet where each row is a ticket, resolves every one, and writes a copy
 # carrying **every original column verbatim plus the result columns**. The input
 # is never modified: it stays a clean, re-runnable fixture, and two runs can be
 # diffed against each other.
 #
-# This is the review tool. `run_eval_batch.py` is the calibration tool -- it takes
+# This is the review tool. `sps.py eval` is the calibration tool -- it takes
 # a directory of one-ticket-per-file cases and reports scores, not prose. Use this
 # one to read what the system actually recommended; use that one to decide where a
 # threshold belongs.
@@ -4335,7 +4653,8 @@ BULK_RESULT_COLUMNS = (
     # What the reviewer should read before pasting, when the recommendation is
     # archive text sent unchanged.
     "Cascade_Warnings",
-    # The historical solutions (or 0250 sections) the Actor was actually shown.
+    # The shortlisted historical solutions, or the 0250 sections the Tier-2
+    # Actor was shown.
     # Put beside its recommendation because the commonest question about a bad
     # answer is "what was it looking at?", and answering it from the SPS IDs
     # alone means a lookup per row.
@@ -4530,7 +4849,7 @@ def summarise_bulk(results: Sequence[dict[str, str]]) -> str:
 
 def bulk_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m scripts.run_bulk_test",
+        prog="python sps.py bulk",
         description="Resolve a workbook of tickets and write a copy with the results appended.",
     )
     parser.add_argument("--tickets", required=True, help="Sheet of tickets, one per row")
@@ -4572,8 +4891,7 @@ def bulk_main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
 
-
-    _load_dotenv()
+    load_env_file()
 
     tickets_path = Path(args.tickets)
     history_path = Path(args.history)
@@ -4673,9 +4991,9 @@ def bulk_main(argv: list[str] | None = None) -> int:
 # the threshold and hide exactly the ones you need to decide whether the threshold
 # is right.
 #
-#     python -m scripts.run_eval_batch --test-dir test_cases
-#     python -m scripts.run_eval_batch --test-dir test_cases --history-file master.csv
-#     python -m scripts.run_eval_batch --run-list runs.csv --output-dir results
+#     python sps.py eval --test-dir test_cases
+#     python sps.py eval --test-dir test_cases --history-file master.csv
+#     python sps.py eval --run-list runs.csv --output-dir results
 #
 # Case discovery, in order of precedence:
 #
@@ -4964,7 +5282,7 @@ def summarise_eval(rows: list[Row]) -> str:
 
 def eval_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m scripts.run_eval_batch",
+        prog="python sps.py eval",
         description="Run a directory of test tickets and write eval_results.xlsx.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
@@ -5001,8 +5319,7 @@ def eval_main(argv: list[str] | None = None) -> int:
     # The batch is the run that calibrates the Azure threshold, so it has to
     # see the same credentials the resolver would. Without this every case
     # fails to embed and the batch measures nothing.
-
-    _load_dotenv()
+    load_env_file()
 
     output_dir = Path(args.output_dir)
     shared_history = Path(args.history_file) if args.history_file else None
@@ -5313,7 +5630,7 @@ def verify_azure(checks: "Checks", quiet: bool) -> None:
             f"admitted scores {must_admit:.4f}, below the {must_block:.4f} of one that "
             f"must be blocked. A threshold cannot separate them."
         )
-    print("  One sample each -- widen it with --probe, then scripts/run_eval_batch.py.")
+    print("  One sample each -- widen it with --probe, then python sps.py eval.")
 
 
 # ===========================================================================
@@ -5602,7 +5919,9 @@ def run_probe(pairs_path: Path, out_path: Path | None, checks: "Checks") -> None
 
 
 def check_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify the embedder the pipeline uses")
+    parser = argparse.ArgumentParser(
+        prog="python sps.py check", description="Verify the embedder the pipeline uses"
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress the similarity table")
     parser.add_argument(
         "--probe",

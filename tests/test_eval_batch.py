@@ -15,13 +15,10 @@ import csv
 
 import pytest
 
-pytest.importorskip("pandas")
-pytest.importorskip("openpyxl")
-
-import sps as batch  # noqa: E402
-import sps as resolver  # noqa: E402
-from sps import UnsupportedFileType  # noqa: E402
-from tests.test_resolver import HEADERS, PART, PROBLEM, read_sheet, row  # noqa: E402
+import sps as batch
+import sps as resolver
+from sps import UnsupportedFileType
+from tests.test_resolver import HEADERS, PART, PROBLEM, read_columns, read_sheet, row
 
 
 def write_ticket_csv(path, part=PART, problem=PROBLEM):
@@ -326,13 +323,13 @@ def test_the_workbook_carries_every_column_in_order(tmp_path, scripted):
 
     assert code == batch.EXIT_OK
     sheet = read_sheet(out / batch.RESULTS_FILE)
-    assert list(sheet.columns) == list(batch.EVAL_RESULT_COLUMNS)
-    assert list(sheet["Test_ID"]) == ["case01", "case02"]
-    assert list(sheet["Status"]) == ["PASS", "FAIL"]
-    assert list(sheet["Cleared_Threshold"]) == ["YES", "NO"]
-    assert [float(v) for v in sheet["Confidence_Score"]] == [0.95, 0.5]
-    assert list(sheet["Ticket_File"]) == ["case01_ticket.csv", "case02_ticket.csv"]
-    assert set(sheet["History_File"]) == {"master.csv"}
+    assert read_columns(out / batch.RESULTS_FILE) == list(batch.EVAL_RESULT_COLUMNS)
+    assert [r["Test_ID"] for r in sheet] == ["case01", "case02"]
+    assert [r["Status"] for r in sheet] == ["PASS", "FAIL"]
+    assert [r["Cleared_Threshold"] for r in sheet] == ["YES", "NO"]
+    assert [float(r["Confidence_Score"]) for r in sheet] == [0.95, 0.5]
+    assert [r["Ticket_File"] for r in sheet] == ["case01_ticket.csv", "case02_ticket.csv"]
+    assert {r["History_File"] for r in sheet} == {"master.csv"}
 
 
 def test_a_failing_case_does_not_stop_the_ones_after_it(tmp_path, scripted):
@@ -345,7 +342,7 @@ def test_a_failing_case_does_not_stop_the_ones_after_it(tmp_path, scripted):
     code, out = _run(tmp_path, directory, shared)
 
     sheet = read_sheet(out / batch.RESULTS_FILE)
-    assert list(sheet["Status"]) == ["FAIL", "PASS", "PASS"]
+    assert [r["Status"] for r in sheet] == ["FAIL", "PASS", "PASS"]
     assert code == batch.EXIT_INFRASTRUCTURE
 
 
@@ -396,7 +393,7 @@ def test_a_run_list_drives_the_batch(tmp_path, scripted):
     code = batch.eval_main(["--run-list", str(listing), "--output-dir", str(out)])
 
     assert code == batch.EXIT_OK
-    assert list(read_sheet(out / batch.RESULTS_FILE)["Test_ID"]) == ["A1"]
+    assert [r["Test_ID"] for r in read_sheet(out / batch.RESULTS_FILE)] == ["A1"]
 
 
 def test_a_source_is_required(tmp_path):
@@ -458,11 +455,10 @@ def test_one_encoder_throughout_draws_no_warning():
 
 
 def test_the_batch_loads_dotenv_like_the_resolver_does(tmp_path, scripted, monkeypatch):
-    """The batch IS the Azure calibration run. Without .env it would fall back
-    to the local encoder for every case and measure the wrong distribution --
-    silently, since a fallback is not an error."""
+    """The batch IS the Azure calibration run. Without .env every case would
+    fail to embed and the batch would measure nothing."""
     loaded = []
-    monkeypatch.setattr(resolver, "_load_dotenv", lambda: loaded.append(True))
+    monkeypatch.setattr(resolver, "load_env_file", lambda *a, **k: loaded.append(True))
     directory = make_dir(tmp_path, ["case01"])
     shared = write_history_csv(tmp_path / "master.csv")
     scripted(outcome())

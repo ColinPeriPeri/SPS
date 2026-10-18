@@ -113,6 +113,94 @@ def test_a_real_environment_variable_beats_the_file(tmp_path, monkeypatch):
     assert os.environ["SPS_TEST_ONLY"] == "from-the-machine"
 
 
+def _env(tmp_path, text):
+    path = tmp_path / ".env"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+# The rules of the file itself. It is read with the standard library to
+# python-dotenv 1.0.1's rules, and each expected value below is what
+# python-dotenv produced for the same text, compared side by side before it
+# left the install.
+@pytest.mark.parametrize("text, expected", [
+    ("A=1\nexport B = two words  \n", {"A": "1", "B": "two words"}),
+    ("A=abc # a comment\nB=abc#not-a-comment\n", {"A": "abc", "B": "abc#not-a-comment"}),
+    ("A='kept # in quotes'\nB=\"tab\\there\"\nC='no \\t escape'\n",
+     {"A": "kept # in quotes", "B": "tab\there", "C": "no \\t escape"}),
+    ('A="first\nsecond"\nB=after\n', {"A": "first\nsecond", "B": "after"}),
+    ("# a comment\n\nA\nB=\n", {"A": None, "B": ""}),
+    ("A=1\nA=2\n", {"A": "2"}),
+])
+def test_env_file_rules(tmp_path, text, expected):
+    from sps import read_env_file
+
+    assert read_env_file(_env(tmp_path, text)) == expected
+
+
+def test_a_real_environment_variable_wins_inside_an_expansion_too(tmp_path, monkeypatch):
+    from sps import read_env_file
+
+    monkeypatch.setenv("SPS_TEST_HOST", "machine")
+    monkeypatch.delenv("SPS_TEST_UNSET", raising=False)
+    path = _env(tmp_path, "SPS_TEST_HOST=file\nURL=https://${SPS_TEST_HOST}/x\n"
+                          "FALLBACK=${SPS_TEST_UNSET:-default}\n")
+
+    values = read_env_file(path)
+    assert values["URL"] == "https://machine/x"
+    assert values["FALLBACK"] == "default"
+
+
+def test_a_byte_order_mark_does_not_hide_the_first_variable(tmp_path):
+    """Notepad and PowerShell write one. python-dotenv kept it as part of the
+    first name, so the first variable -- an endpoint, say -- was never set."""
+    import codecs
+
+    from sps import read_env_file
+
+    path = tmp_path / ".env"
+    path.write_bytes(codecs.BOM_UTF8 + b"AZURE_EMBEDDING_ENDPOINT=https://x/\nB=2\n")
+    assert list(read_env_file(path)) == ["AZURE_EMBEDDING_ENDPOINT", "B"]
+
+
+def test_a_utf16_file_is_read(tmp_path):
+    """`echo KEY=value > .env` in Windows PowerShell 5 writes UTF-16, which
+    python-dotenv could not decode at all."""
+    from sps import read_env_file
+
+    path = tmp_path / ".env"
+    path.write_bytes("A=1\r\nB=2\r\n".encode("utf-16"))
+    assert read_env_file(path) == {"A": "1", "B": "2"}
+
+
+def test_a_line_that_cannot_be_parsed_is_named_and_the_rest_load(tmp_path, caplog):
+    from sps import read_env_file
+
+    with caplog.at_level("WARNING"):
+        values = read_env_file(_env(tmp_path, "A=1\n=no key\nB=2\n"))
+
+    assert values == {"A": "1", "B": "2"}
+    assert "line 2" in caplog.text
+
+
+def test_a_file_in_another_encoding_is_skipped_with_an_error(tmp_path, monkeypatch, caplog):
+    """python-dotenv raised here, before status.xlsx existed, with an exit code
+    the robot retries. Skipped, the run reports the settings as missing and
+    exits 2 instead, which asks for the person who has to fix the file."""
+    import sps
+
+    (tmp_path / ".env").write_bytes("# café\nSPS_TEST_ONLY=x\n".encode("cp1252"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sps, "PROJECT_DIR", tmp_path / "elsewhere")
+    monkeypatch.delenv("SPS_TEST_ONLY", raising=False)
+
+    with caplog.at_level("ERROR"):
+        assert sps.load_env_file() is None
+
+    assert "SPS_TEST_ONLY" not in os.environ
+    assert ".env was not read" in caplog.text and "UTF-8" in caplog.text
+
+
 def test_a_missing_file_is_not_an_error(tmp_path, monkeypatch):
     """An absent .env is the normal case for a robot whose variables are set at
     machine level, so it returns None rather than raising."""
@@ -126,7 +214,7 @@ def test_a_missing_file_is_not_an_error(tmp_path, monkeypatch):
     assert found is None or found.exists()
 
 
-@pytest.mark.parametrize("entry", ["resolve", "eval", "check"])
+@pytest.mark.parametrize("entry", ["resolve", "bulk", "eval", "check"])
 def test_every_entry_point_loads_the_env_file(entry, tmp_path, monkeypatch):
     """The bug this guards against: verify_embedder was written later than the
     others, did not know to call the resolver's private loader, and reported
@@ -148,6 +236,7 @@ def test_every_entry_point_loads_the_env_file(entry, tmp_path, monkeypatch):
     argv = {
         "resolve": ["--ticket-file", str(absent), "--history-file", str(absent),
                     "--output-dir", str(tmp_path / "out")],
+        "bulk": ["--tickets", str(absent), "--history", str(absent)],
         "eval": ["--test-dir", str(empty), "--output-dir", str(tmp_path / "out")],
         "check": [],
     }[entry]
@@ -158,3 +247,18 @@ def test_every_entry_point_loads_the_env_file(entry, tmp_path, monkeypatch):
 
     sps.main([entry, *argv])
     assert loaded == [entry], f"`sps.py {entry}` did not load .env"
+
+
+@pytest.mark.parametrize("command", ["resolve", "bulk", "eval", "check"])
+def test_each_command_names_itself_in_its_usage(command, monkeypatch, capsys):
+    """The usage line is what an operator copies when a robot's call fails.
+    After the merge into sps.py, three still named the `python -m scripts.*`
+    module they came from, and `check` named no command at all."""
+    import sps
+
+    monkeypatch.setattr(sps, "load_env_file", lambda *a, **k: None)
+    with pytest.raises(SystemExit) as exit_:
+        sps.main([command, "--help"])
+
+    assert exit_.value.code == 0
+    assert capsys.readouterr().out.startswith(f"usage: python sps.py {command} ")

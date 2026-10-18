@@ -12,11 +12,6 @@ import json
 
 import pytest
 
-# Component C is schema-constrained: the Actor and Judge responses are
-# validated through pydantic models, so pydantic is a hard requirement here.
-# Components A and B stay dependency-free.
-pytest.importorskip("pydantic")
-
 from sps import LLMSettings
 from sps import Candidate, IncomingTicket
 from sps import ActorCriticLoop, LLMError, parse_json_response

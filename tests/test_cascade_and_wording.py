@@ -11,13 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("pandas")
-pytest.importorskip("openpyxl")
-pytest.importorskip("numpy")
-
-import sps as resolver  # noqa: E402
-from sps import NO_RECOMMENDATION, SOLUTION_NOT_FOUND  # noqa: E402
-from tests.test_resolver import (  # noqa: E402
+import sps as resolver
+from sps import NO_RECOMMENDATION, SOLUTION_NOT_FOUND
+from tests.test_resolver import (
     NEAR_PROBLEM,
     PART,
     PROBLEM,
@@ -28,7 +24,7 @@ from tests.test_resolver import (  # noqa: E402
 
 # Imported for its side effect of registering here: a fixture defined in
 # another test module is not visible to this one unless it is in the namespace.
-from tests.test_resolver import passing_llm  # noqa: E402,F401
+from tests.test_resolver import passing_llm  # noqa: F401
 
 # The two shapes that made these guards necessary, verbatim from real output.
 LEAKY_SOLUTION = (
@@ -58,7 +54,7 @@ def test_a_gated_match_is_cascaded_and_marked_weak(tmp_path, passing_llm):
         rows=[row("SPS-1001", problem=NEAR_PROBLEM)],
         threshold=0.99,
     )
-    cell = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
+    cell = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
     assert "SPS-1001" in cell
     assert resolver.WEAK_BANNER in cell
@@ -70,7 +66,7 @@ def test_a_resolved_row_lists_its_sources_rather_than_quoting_them(tmp_path, pas
     several, so quoting one would read as THE source and invite a reviewer to
     check a step against a record it did not come from."""
     _, out = run_cli(tmp_path, threshold=0.5)
-    cell = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
+    cell = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
     assert cell.startswith("Synthesized from")
     assert "SPS-1001" in cell
@@ -85,7 +81,7 @@ def test_the_banner_says_the_text_is_unchecked(tmp_path, passing_llm):
     Only reachable on a refusal now -- a resolved row carries a source list,
     which has no archive text in it to mislabel."""
     _, out = run_cli(tmp_path, rows=[row("SPS-1001", problem=NEAR_PROBLEM)], threshold=0.99)
-    cell = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
+    cell = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
     assert cell.startswith("[RAW HISTORY")
     assert "WEAK MATCH" in cell
@@ -94,7 +90,7 @@ def test_the_banner_says_the_text_is_unchecked(tmp_path, passing_llm):
 def test_an_unknown_part_cascades_nothing(tmp_path, passing_llm):
     """No precedent means an empty cell, not a banner over nothing."""
     _, out = run_cli(tmp_path, part="0099-99999")
-    assert read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"] == ""
+    assert read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"] == ""
 
 
 # ------------------------------------------------- the copy-paste safety line
@@ -116,7 +112,7 @@ def test_raw_archive_text_never_reaches_the_recommendation(tmp_path, passing_llm
         rows=[row("SPS-1001", problem=NEAR_PROBLEM, solution=LEAKY_SOLUTION)],
         threshold=0.99,
     )
-    result = read_sheet(out / "output.xlsx").iloc[0]
+    result = read_sheet(out / "output.xlsx")[0]
 
     recommendation = result["AI_Recommendation"]
     for forbidden in ("ESW#", "attachment", "Per discussed"):
@@ -132,7 +128,7 @@ def test_raw_archive_text_never_reaches_the_recommendation(tmp_path, passing_llm
 
 def test_the_refusal_reads_as_business_copy(tmp_path, passing_llm):
     _, out = run_cli(tmp_path, part="0099-99999")
-    row_ = read_sheet(out / "output.xlsx").iloc[0]
+    row_ = read_sheet(out / "output.xlsx")[0]
 
     assert row_["AI_Recommendation"] == "No recommendation available."
     assert row_["Justification"] == (
@@ -148,7 +144,7 @@ def test_the_justification_leads_with_the_precedent(tmp_path, passing_llm):
         rows=[row("SPS-1001", problem=NEAR_PROBLEM)],
         threshold=0.99,
     )
-    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
+    justification = read_sheet(out / "output.xlsx")[0]["Justification"]
 
     assert justification.startswith("[RAW HISTORY")
     assert "not similar enough to rely on" in justification
@@ -164,8 +160,8 @@ def test_no_diagnostics_leak_into_the_business_field(tmp_path, passing_llm):
         rows=[row("SPS-1001", problem=NEAR_PROBLEM)],
         threshold=0.99,
     )
-    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
-    reason = read_sheet(out / "status.xlsx").iloc[0]["Reason"]
+    justification = read_sheet(out / "output.xlsx")[0]["Justification"]
+    reason = read_sheet(out / "status.xlsx")[0]["Reason"]
 
     for jargon in ("threshold", "cosine", "candidate(s)", "[Azure]"):
         assert jargon not in justification
@@ -180,7 +176,7 @@ def test_the_protocol_sentinel_never_reaches_a_reader(tmp_path, passing_llm):
     nobody outside the pipeline should ever see that phrasing."""
     for part in ("0099-99999", PART):
         _, out = run_cli(tmp_path, part=part)
-        sheet = read_sheet(out / "output.xlsx").iloc[0]
+        sheet = read_sheet(out / "output.xlsx")[0]
         assert SOLUTION_NOT_FOUND not in str(sheet["AI_Recommendation"])
         assert SOLUTION_NOT_FOUND not in str(sheet["Justification"])
 
@@ -239,7 +235,7 @@ def test_no_precedent_means_no_empty_banner(tmp_path, passing_llm):
     """An unknown part has nothing to cascade. The justification should read as
     a sentence, not as a heading over blank space."""
     _, out = run_cli(tmp_path, part="0099-99999")
-    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
+    justification = read_sheet(out / "output.xlsx")[0]["Justification"]
 
     assert "[RAW HISTORY" not in justification
     assert justification == (
@@ -285,7 +281,7 @@ def test_a_resolved_row_names_every_record_it_drew_on(tmp_path, passing_llm):
     """Not just the best. The Actor saw all of them and the answer may combine
     several, so naming one would misreport where it came from."""
     _, out = run_cli(tmp_path, rows=five_records(), threshold=0.1)
-    result = read_sheet(out / "output.xlsx").iloc[0]
+    result = read_sheet(out / "output.xlsx")[0]
 
     listed = result["Closest_Matching_Solution"]
     assert listed.startswith("Synthesized from 5 record(s)")
@@ -298,7 +294,7 @@ def test_a_resolved_row_names_every_record_it_drew_on(tmp_path, passing_llm):
 def test_the_source_list_is_ordered_best_first(tmp_path, passing_llm):
     """So a reviewer who opens only one opens the one most worth opening."""
     _, out = run_cli(tmp_path, rows=five_records(), threshold=0.1)
-    listed = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
+    listed = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
     scores = scores_in(listed)
     assert len(scores) == 5
@@ -309,7 +305,7 @@ def test_a_refusal_shows_three_records_not_one_and_not_all(tmp_path, passing_llm
     """Three is the chosen middle: a near-miss is not hidden behind a
     marginally better one, and the cell stays readable."""
     _, out = run_cli(tmp_path, rows=five_records(), threshold=0.99)
-    cell = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
+    cell = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
     assert "3 closest record(s)" in cell
     assert cell.count("SPS-") == 3
@@ -328,7 +324,7 @@ def test_every_shown_record_carries_its_own_score(tmp_path, passing_llm):
     """A reviewer choosing between three records needs to know which matched
     best; three unlabelled blocks of prose do not say."""
     _, out = run_cli(tmp_path, rows=five_records(), threshold=0.99)
-    cell = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
+    cell = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
     assert len(scores_in(cell)) == 3
 
@@ -337,7 +333,7 @@ def test_the_banner_appears_once_not_per_record(tmp_path, passing_llm):
     """It heads the block. Repeating it between records would read as three
     separate warnings rather than one label on one field."""
     _, out = run_cli(tmp_path, rows=five_records(), threshold=0.99)
-    cell = read_sheet(out / "output.xlsx").iloc[0]["Closest_Matching_Solution"]
+    cell = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
     assert cell.count("RAW HISTORY") == 1
 
@@ -356,7 +352,7 @@ def test_the_matched_solution_is_sent_character_for_character(tmp_path, passing_
     """Not "similar to", not "cleaned up". A reviewer must be able to diff this
     cell against the source record and find no difference at all."""
     _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=LEAKY_SOLUTION)], threshold=0.5)
-    recommendation = read_sheet(out / "output.xlsx").iloc[0]["AI_Recommendation"]
+    recommendation = read_sheet(out / "output.xlsx")[0]["AI_Recommendation"]
 
     assert recommendation == LEAKY_SOLUTION
 
@@ -373,7 +369,7 @@ def test_the_shape_of_the_solution_survives_the_cascade(tmp_path, passing_llm):
     awkward = "1)  Rework the seam.\n\n2)   Re-inspect under 10x."
     _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=awkward)], threshold=0.5)
 
-    assert read_sheet(out / "output.xlsx").iloc[0]["AI_Recommendation"] == awkward
+    assert read_sheet(out / "output.xlsx")[0]["AI_Recommendation"] == awkward
 
 
 def test_only_the_cell_edges_are_trimmed(tmp_path, passing_llm):
@@ -381,7 +377,7 @@ def test_only_the_cell_edges_are_trimmed(tmp_path, passing_llm):
     padded = "   Rework the seam and re-inspect.   "
     _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=padded)], threshold=0.5)
 
-    assert read_sheet(out / "output.xlsx").iloc[0]["AI_Recommendation"] == padded.strip()
+    assert read_sheet(out / "output.xlsx")[0]["AI_Recommendation"] == padded.strip()
 
 
 def test_risky_content_is_flagged_but_not_blocked(tmp_path, passing_llm):
@@ -389,7 +385,7 @@ def test_risky_content_is_flagged_but_not_blocked(tmp_path, passing_llm):
     reviewer is told what is in it -- the flag replaces the gate that used to
     refuse it, and replaces nothing else."""
     _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=LEAKY_SOLUTION)], threshold=0.5)
-    result = read_sheet(out / "output.xlsx").iloc[0]
+    result = read_sheet(out / "output.xlsx")[0]
 
     assert "ESW#20033465" in result["AI_Recommendation"]      # not blocked
     assert "ESW#20033465" in result["Cascade_Warnings"]       # not silent
@@ -400,7 +396,7 @@ def test_a_clean_solution_is_flagged_with_nothing(tmp_path, passing_llm):
     """A warning on every row is a warning on no row."""
     clean = "Grind out the cracked seam to sound metal, then re-weld and re-inspect."
     _, out = run_cli(tmp_path, rows=[row("SPS-1001", solution=clean)], threshold=0.5)
-    result = read_sheet(out / "output.xlsx").iloc[0]
+    result = read_sheet(out / "output.xlsx")[0]
 
     assert result["AI_Recommendation"] == clean
     assert result["Cascade_Warnings"] == ""
@@ -412,7 +408,7 @@ def test_a_cascade_names_only_the_record_it_came_from(tmp_path, passing_llm):
     all five."""
     rows_ = [row("SPS-1001"), row("SPS-1002", problem=NEAR_PROBLEM)]
     _, out = run_cli(tmp_path, rows=rows_, threshold=0.3)
-    result = read_sheet(out / "output.xlsx").iloc[0]
+    result = read_sheet(out / "output.xlsx")[0]
 
     assert result["Referenced_Sources"] == "SPS-1001"
     # The rest are still visible, with their scores, in the source list.
@@ -421,7 +417,7 @@ def test_a_cascade_names_only_the_record_it_came_from(tmp_path, passing_llm):
 
 def test_the_success_justification_names_the_confidence_and_the_source(tmp_path, passing_llm):
     _, out = run_cli(tmp_path, threshold=0.5)
-    justification = read_sheet(out / "output.xlsx").iloc[0]["Justification"]
+    justification = read_sheet(out / "output.xlsx")[0]["Justification"]
 
     assert "95%" in justification
     assert "SPS-1001" in justification

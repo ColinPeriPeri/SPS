@@ -13,14 +13,11 @@ import csv
 
 import pytest
 
-pytest.importorskip("pandas")
-pytest.importorskip("openpyxl")
-
 import sps as bulk
-from sps import NO_RECOMMENDATION  # noqa: E402
-import sps as resolver  # noqa: E402
-from tests.test_resolver import (  # noqa: E402
-    NEAR_PROBLEM, PART, PROBLEM, read_sheet, row, write_history,
+from sps import NO_RECOMMENDATION
+import sps as resolver
+from tests.test_resolver import (
+    NEAR_PROBLEM, PART, PROBLEM, read_columns, read_sheet, row, write_history,
 )
 
 TICKET_COLUMNS = ["SPS_ID", "Part_Number", "Issue_Type", "Problem_Description", "Supplier"]
@@ -119,7 +116,7 @@ def test_every_original_column_survives_verbatim(tmp_path, passing_llm):
     code, out = run(tmp_path, [ticket_row(supplier="Northgate Packaging")])
 
     assert code == bulk.EXIT_OK
-    result = read_sheet(out).iloc[0]
+    result = read_sheet(out)[0]
     assert result["SPS_ID"] == "T-1"
     assert result["Part_Number"] == PART
     assert result["Supplier"] == "Northgate Packaging"
@@ -129,7 +126,7 @@ def test_every_original_column_survives_verbatim(tmp_path, passing_llm):
 def test_the_original_columns_come_first_and_keep_their_order(tmp_path, passing_llm):
     _, out = run(tmp_path, [ticket_row()])
 
-    columns = list(read_sheet(out).columns)
+    columns = read_columns(out)
     assert columns[: len(TICKET_COLUMNS)] == TICKET_COLUMNS
     assert columns[len(TICKET_COLUMNS):] == list(bulk.BULK_RESULT_COLUMNS)
 
@@ -140,7 +137,7 @@ def test_one_output_row_per_input_row_in_order(tmp_path, passing_llm):
 
     sheet = read_sheet(out)
     assert len(sheet) == 5
-    assert list(sheet["SPS_ID"]) == ["T-1", "T-2", "T-3", "T-4", "T-5"]
+    assert [r["SPS_ID"] for r in sheet] == ["T-1", "T-2", "T-3", "T-4", "T-5"]
 
 
 def test_the_input_workbook_is_never_modified(tmp_path, passing_llm):
@@ -156,7 +153,7 @@ def test_the_input_workbook_is_never_modified(tmp_path, passing_llm):
 def test_blank_rows_are_skipped(tmp_path, passing_llm):
     _, out = run(tmp_path, [ticket_row(), ["", "", "", "", ""], ticket_row(sps_id="T-2")])
 
-    assert list(read_sheet(out)["SPS_ID"]) == ["T-1", "T-2"]
+    assert [r["SPS_ID"] for r in read_sheet(out)] == ["T-1", "T-2"]
 
 
 def test_a_whole_float_part_number_is_not_corrupted(tmp_path, passing_llm):
@@ -186,9 +183,9 @@ def test_a_clashing_column_name_is_suffixed(tmp_path, passing_llm, capsys):
     )
 
     sheet = read_sheet(out)
-    assert sheet.iloc[0]["Status"] == "already here"
-    assert "Status_AI" in sheet.columns
-    assert sheet.iloc[0]["Status_AI"] in {"PASS", "FAIL"}
+    assert sheet[0]["Status"] == "already here"
+    assert "Status_AI" in read_columns(out)
+    assert sheet[0]["Status_AI"] in {"PASS", "FAIL"}
 
 
 def test_the_default_output_sits_beside_the_input():
@@ -203,7 +200,7 @@ def test_the_default_output_sits_beside_the_input():
 def test_a_resolved_row_carries_the_recommendation(tmp_path, passing_llm):
     _, out = run(tmp_path, [ticket_row()])
 
-    result = read_sheet(out).iloc[0]
+    result = read_sheet(out)[0]
     assert result["Status"] == "PASS"
     assert result["Status_Code"] == "SUCCESS_HISTORICAL"
     assert "Rework the weld seam" in result["AI_Recommendation"]
@@ -216,7 +213,7 @@ def test_an_unresolved_row_says_so_rather_than_going_blank(tmp_path, passing_llm
     row, and the row says what happened."""
     _, out = run(tmp_path, [ticket_row(part="0099-99999")])
 
-    result = read_sheet(out).iloc[0]
+    result = read_sheet(out)[0]
     assert result["Status"] == "FAIL"
     assert result["Status_Code"] == "NO_MATCHES"
     assert result["AI_Recommendation"] == NO_RECOMMENDATION
@@ -229,7 +226,7 @@ def test_nothing_scored_leaves_the_score_blank(tmp_path, passing_llm):
     that scored badly, which is a different finding."""
     _, out = run(tmp_path, [ticket_row(part="0099-99999")])
 
-    assert read_sheet(out).iloc[0]["Tier1_Score"] == ""
+    assert read_sheet(out)[0]["Tier1_Score"] == ""
 
 
 def test_a_gated_row_reports_how_close_it_came(tmp_path, passing_llm):
@@ -243,7 +240,7 @@ def test_a_gated_row_reports_how_close_it_came(tmp_path, passing_llm):
         "--output", str(out), "--threshold", "0.99",
     ])
 
-    result = read_sheet(out).iloc[0]
+    result = read_sheet(out)[0]
     assert result["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert float(result["Tier1_Score"]) > 0.9
     assert result["AI_Recommendation"] == NO_RECOMMENDATION
@@ -263,7 +260,7 @@ def test_each_row_is_resolved_independently(tmp_path, passing_llm):
         ticket_row(sps_id="T-4", problem=""),
     ])
 
-    codes = dict(zip(read_sheet(out)["SPS_ID"], read_sheet(out)["Status_Code"]))
+    codes = {r["SPS_ID"]: r["Status_Code"] for r in read_sheet(out)}
     assert codes["T-1"] == "SUCCESS_HISTORICAL"
     assert codes["T-2"] == "NO_MATCHES"
     # A blank part number no longer ends the run: Tier 1 cannot filter without
@@ -283,9 +280,9 @@ def test_limit_leaves_the_rest_aligned_and_marked(tmp_path, passing_llm):
 
     sheet = read_sheet(out)
     assert len(sheet) == 4
-    assert list(sheet["Status"])[:2] == ["PASS", "PASS"]
-    assert list(sheet["Status"])[2:] == [bulk.NOT_RUN, bulk.NOT_RUN]
-    assert "--limit" in sheet.iloc[2]["Reason"]
+    assert [r["Status"] for r in sheet][:2] == ["PASS", "PASS"]
+    assert [r["Status"] for r in sheet][2:] == [bulk.NOT_RUN, bulk.NOT_RUN]
+    assert "--limit" in sheet[2]["Reason"]
 
 
 def test_repeated_infrastructure_errors_stop_the_run(tmp_path, monkeypatch, passing_llm):
@@ -304,9 +301,9 @@ def test_repeated_infrastructure_errors_stop_the_run(tmp_path, monkeypatch, pass
     sheet = read_sheet(out)
     assert code == bulk.EXIT_INFRASTRUCTURE
     assert len(sheet) == 6, "every input row still has a row"
-    assert list(sheet["Status_Code"])[:2] == ["INFRASTRUCTURE_ERROR"] * 2
-    assert list(sheet["Status"])[2:] == [bulk.NOT_RUN] * 4
-    assert "consecutive infrastructure errors" in sheet.iloc[2]["Reason"]
+    assert [r["Status_Code"] for r in sheet][:2] == ["INFRASTRUCTURE_ERROR"] * 2
+    assert [r["Status"] for r in sheet][2:] == [bulk.NOT_RUN] * 4
+    assert "consecutive infrastructure errors" in sheet[2]["Reason"]
 
 
 def test_an_isolated_error_does_not_stop_the_run(tmp_path, passing_llm):
@@ -319,7 +316,7 @@ def test_an_isolated_error_does_not_stop_the_run(tmp_path, passing_llm):
     code, out = run(tmp_path, rows, extra=["--stop-after-errors", "1"])
 
     assert code == bulk.EXIT_OK
-    assert bulk.NOT_RUN not in list(read_sheet(out)["Status"])
+    assert bulk.NOT_RUN not in [r["Status"] for r in read_sheet(out)]
 
 
 def test_a_row_that_raises_becomes_a_row(tmp_path, monkeypatch, passing_llm):
@@ -335,8 +332,8 @@ def test_a_row_that_raises_becomes_a_row(tmp_path, monkeypatch, passing_llm):
     code, out = run(tmp_path, [ticket_row(sps_id="T-1"), ticket_row(sps_id="T-2")])
 
     sheet = read_sheet(out)
-    assert "row exploded" in sheet.iloc[0]["Reason"]
-    assert sheet.iloc[1]["Status_Code"] == "NO_MATCHES"
+    assert "row exploded" in sheet[0]["Reason"]
+    assert sheet[1]["Status_Code"] == "NO_MATCHES"
     assert code == bulk.EXIT_INFRASTRUCTURE
 
 
@@ -381,7 +378,7 @@ def test_the_sheet_shows_what_the_actor_was_looking_at(tmp_path, passing_llm):
     Answering it from Referenced_Sources alone means a lookup per row."""
     _, out = run(tmp_path, [ticket_row()])
 
-    matched = read_sheet(out).iloc[0]["Matched_Solutions"]
+    matched = read_sheet(out)[0]["Matched_Solutions"]
     assert "SPS-1001" in matched
     assert "Rework the weld seam" in matched
 
@@ -403,7 +400,7 @@ def test_a_gated_row_shows_nothing_because_nothing_was_shown(tmp_path, passing_l
         "--output", str(out), "--threshold", "0.99",
     ])
 
-    result = read_sheet(out).iloc[0]
+    result = read_sheet(out)[0]
     assert result["Status_Code"] == "BELOW_CONFIDENCE_THRESHOLD"
     assert result["Matched_Solutions"] == ""
     assert float(result["Tier1_Score"]) > 0.9, "the score still says how close"
@@ -412,7 +409,7 @@ def test_a_gated_row_shows_nothing_because_nothing_was_shown(tmp_path, passing_l
 def test_an_unknown_part_has_nothing_to_show(tmp_path, passing_llm):
     _, out = run(tmp_path, [ticket_row(part="0099-99999")])
 
-    assert read_sheet(out).iloc[0]["Matched_Solutions"] == ""
+    assert read_sheet(out)[0]["Matched_Solutions"] == ""
 
 
 def test_the_evidence_never_reaches_the_supplier_facing_sheet():

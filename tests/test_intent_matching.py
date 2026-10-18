@@ -13,14 +13,12 @@ import json
 
 import pytest
 
-pytest.importorskip("pydantic")
-
-from sps import IntentSettings  # noqa: E402
-from sps import Candidate, IncomingTicket  # noqa: E402
-from sps import IntentOutcome, score_intent  # noqa: E402
-from sps import LLMError  # noqa: E402
-from sps_prompts import build_intent_messages  # noqa: E402
-from tests.conftest import ScriptedChatClient  # noqa: E402
+from sps import IntentSettings
+from sps import Candidate, IncomingTicket
+from sps import IntentOutcome, score_intent
+from sps import LLMError
+from sps_prompts import build_intent_messages
+from tests.conftest import ScriptedChatClient
 
 TICKET = IncomingTicket(
     problem_description=(

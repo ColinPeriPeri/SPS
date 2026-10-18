@@ -10,11 +10,8 @@ import csv
 
 import pytest
 
-pytest.importorskip("openpyxl")
-pytest.importorskip("pandas")
-
-import sps as resolver  # noqa: E402
-from sps import (  # noqa: E402
+import sps as resolver
+from sps import (
     EXCEL_SUFFIXES,
     SUPPORTED_SUFFIXES,
     FileReadError,
@@ -25,7 +22,7 @@ from sps import (  # noqa: E402
     read_header_and_rows,
     validate_file_type,
 )
-from tests.test_resolver import (  # noqa: E402
+from tests.test_resolver import (
     HEADERS, NEAR_PROBLEM, PART, PROBLEM, read_sheet, row, write_csv_history,
     write_history, write_ticket,
 )
@@ -173,7 +170,7 @@ def _run(tmp_path, ticket_name="t.xlsx", history_name="h.xlsx", threshold="0.99"
         "--output-dir", str(out),
         "--threshold", threshold,
     ])
-    return code, read_sheet(out / "status.xlsx").iloc[0]
+    return code, read_sheet(out / "status.xlsx")[0]
 
 
 def test_a_bad_history_type_is_invalid_input_and_exits_zero(tmp_path):
@@ -212,7 +209,7 @@ def test_a_missing_but_valid_type_still_exits_two(tmp_path):
         "--output-dir", str(out),
     ])
     assert code == resolver.EXIT_BAD_INPUT
-    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "INVALID_INPUT"
+    assert read_sheet(out / "status.xlsx")[0]["Status_Code"] == "INVALID_INPUT"
 
 
 @pytest.mark.parametrize("history_name", ["h.csv", "h.xlsx"])

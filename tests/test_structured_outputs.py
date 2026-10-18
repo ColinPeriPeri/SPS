@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("pydantic")
-
-from sps import LLMSettings  # noqa: E402
-from sps import AzureOpenAIChatClient, LLMError, validate_json  # noqa: E402
-from sps import ActorDraft, JudgeVerdict  # noqa: E402
+from sps import LLMSettings
+from sps import AzureOpenAIChatClient, LLMError, validate_json
+from sps import ActorDraft, JudgeVerdict
 
 
 class _Message:

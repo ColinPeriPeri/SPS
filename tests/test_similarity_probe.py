@@ -110,7 +110,8 @@ def test_header_only_file_is_rejected(tmp_path):
 
 def test_reads_xlsx_too(tmp_path):
     """Reuses the pipeline's reader, so .xlsx has to work with no extra code."""
-    openpyxl = pytest.importorskip("openpyxl")
+    import openpyxl
+
     path = tmp_path / "pairs.xlsx"
     book = openpyxl.Workbook()
     sheet = book.active

@@ -1,8 +1,7 @@
 """Azure embeddings: the only encoder in the pipeline.
 
-The local bge-small fallback is disabled. Its code is intact in
-sps/embedding.py, but nothing in the retrievers reaches it, so the properties
-that carry the risk here have changed shape:
+The local bge-small fallback is gone, so nothing absorbs an Azure failure any
+more, and the properties that carry the risk here have changed shape:
 
 * a failure ends the run instead of being absorbed -- silently answering from a
   different embedding space, under a different threshold, while still reporting
@@ -16,24 +15,21 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("numpy")
-pytest.importorskip("openpyxl")
-
-from sps import AzureEmbeddingSettings  # noqa: E402
-from sps import IncomingTicket  # noqa: E402
-from sps import (  # noqa: E402
+from sps import AzureEmbeddingSettings
+from sps import IncomingTicket
+from sps import (
     AzureEmbedder,
     AzureEmbeddingError,
     AzureEmbeddingNotConfigured,
 )
-from sps import (  # noqa: E402
+from sps import (
     AZURE_BACKEND,
     AZURE_EMBEDDING_THRESHOLD,
     INJECTED_BACKEND,
     InMemoryRetriever,
 )
-from tests.conftest import TokenOverlapEmbedder  # noqa: E402
-from tests.test_resolver import PART, PROBLEM, row, write_history  # noqa: E402
+from tests.conftest import TokenOverlapEmbedder
+from tests.test_resolver import PART, PROBLEM, row, write_history
 
 CONFIGURED = AzureEmbeddingSettings(
     endpoint="https://x.openai.azure.com/", api_key="k", deployment="text-embedding-3-small"
