@@ -56,6 +56,7 @@ that will tell you whether the shipped thresholds suit your deployment
 | Network to `pypi.org` | | That is the whole list. No model download, no PyTorch index. |
 | Your Azure OpenAI endpoint and keys | | **Required.** Two deployments: one chat, one embedding. There is no local encoder, so nothing resolves without these. See [step 5](#5-configure-env). |
 | Your 0250 standards as `.docx` | | Optional. Tier 2 is skipped entirely if the folder is empty — see [step 10](#10-load-the-0250-standards-tier-2). |
+| Your commodity groups as `.csv` or `.xlsx` | | Optional. Without it a ticket is matched on its own part number only — see [step 11](#11-commodity-families-and-the-history-store). |
 
 No admin rights, no database, no service to install. The whole thing is a
 Python process the UiPath Performer invokes per ticket.
@@ -193,7 +194,7 @@ distribution.
 python -m pytest -q
 ```
 
-Expect **459 passed** in about six seconds, and nothing skipped. Nothing here
+Expect **520 passed** in about ten seconds, and nothing skipped. Nothing here
 needs a server or an Azure key.
 
 A skip would now mean something is wrong: the suite no longer skips itself when
@@ -437,6 +438,65 @@ Three things to check before you trust it:
 
 ---
 
+## 11. Commodity families and the history store
+
+### Commodity groups
+
+A ticket is matched against its part's whole **commodity family** — every part
+whose code (the part number up to its first hyphen) shares a group — when a
+groups file says which codes belong together. Two columns, one row per code:
+
+```
+Commodity_Code,Group
+0011,FASTENERS
+0022,FASTENERS
+```
+
+`samples\commodity_groups.csv` is a worked example. Point the robot at yours
+in `.env`:
+
+```bat
+SPS_COMMODITY_GROUPS=D:\SPS\data\commodity_groups.csv
+```
+
+**Check:** a ticket's `Reason` now says `Matched across commodity family …`.
+If it says `Matched on the part number only: …`, the rest of the sentence says
+why — no file configured, a part number with no hyphen, a code not in the file,
+a code listed under two groups. Save the file as CSV, or format the code column
+as Text in Excel: Excel stores `0011` typed into a General cell as `11`.
+
+### The history store
+
+The history is mirrored into a local SQLite store, which is what lets a family
+of 30,000 records answer in under a second. It needs nothing installed. By
+default it sits beside the history file, as `<history>.<id>.sps-store.sqlite`.
+
+**Local disk only.** If the history export lives on a network share, set:
+
+```bat
+SPS_HISTORY_STORE_DIR=D:\SPS\store
+```
+
+(A store that would land on a share is moved under `%LOCALAPPDATA%` anyway,
+with a warning — but then the robots and `ingest` may not share one.)
+
+### Ingest after each export
+
+```bat
+scripts\run_ingest.cmd D:\SPS\data\history.csv
+echo %ERRORLEVEL%
+```
+
+It reads the export if it changed and embeds every record the store has not
+seen. Schedule it after each export, before the robots start. It is safe to
+re-run: an unchanged file is not read, and an interrupted ingest resumes.
+Expect exit **0** and a summary ending `embedded: N new problem text(s)`.
+
+Skipping it breaks nothing — each ticket embeds its own family's new records —
+but the first ticket on a large family after an export then spends that time.
+
+---
+
 ## Exit codes
 
 The wrappers propagate these verbatim, so the UiPath state machine can branch
@@ -447,6 +507,9 @@ without opening a workbook.
 | `0` | The run completed. `PASS`, or a legitimate `FAIL` — gated ticket, unknown part, wrong file type. | Log a business exception, routed on `Status_Code`. **Do not retry.** |
 | `1` | Infrastructure fault: Azure unreachable, unhandled error. | Retry. |
 | `2` | The ticket or history file could not be read, or the Azure settings are missing. | Alert a human. |
+
+`run_ingest.cmd` uses the same three: 0 the store is up to date, 1 retry (it
+resumes), 2 a person has to fix the file or the settings.
 
 Within exit 0, branch on `Status_Code`: `SUCCESS_HISTORICAL` and
 `SUCCESS_0250_DOC` go to admin review, `NO_MATCHES` to Master Data,
@@ -487,6 +550,11 @@ unambiguous.
 | Tier 2 finds nothing on a defect you know is covered | 0.35 is a guess derived from another guess | Run the batch evaluator and read `Tier2_Score`, then set `SPS_TIER2_THRESHOLD` |
 | Most tickets come back `LLM_AUDIT_REJECTED` | In Tier 1, the intent scorer found no record asking the same question (`No_Recommendation_Reason` `INTENT_BELOW_THRESHOLD`); in Tier 2, the gates or the Judge refused the drafts | Read `No_Recommendation_Reason` and `Matched_Solutions` in the bulk sheet. For Tier 2, extend `KNOWN_TRACKING_PREFIXES` in `sps.py` ("The deterministic gates") with your own systems |
 | `pytest` reports anything skipped | A test skipped itself, which none should | Treat it as a failure and read the reason (`python -m pytest -rs`) |
+| `Reason` says `Matched on the part number only: …` | No groups file configured, or this ticket's code is not usable in it — the sentence says which | Set `SPS_COMMODITY_GROUPS`, or fix the file as the sentence describes |
+| `… is on a network share … keeping the history store in …` | The history export is on a share, and SQLite cannot lock safely there | Set `SPS_HISTORY_STORE_DIR` to a local folder, and run `ingest` with the same setting |
+| `History store failed: database is locked`, exit 1 | Another robot or an ingest held the store longer than ten minutes | Retry. Run `ingest` after each export so robots do not do the embedding themselves |
+| `History store … cannot be used …; reading the history without one` | The store folder is not writable | Set `SPS_HISTORY_STORE_DIR` to a writable local folder. Tickets still resolve meanwhile, just slower |
+| The first ticket after an export is slow | The store is embedding that family's new records | Run `scripts\run_ingest.cmd` after each export |
 
 ---
 

@@ -55,9 +55,9 @@
   <!-- SOURCE 1 -->
   <rect class="box" x="120" y="316" width="450" height="116" fill="#eaf2f9" stroke="#2d6a9f"/>
   <text class="kick" x="144" y="341">SOURCE 1 — WHAT WE DID BEFORE</text>
-  <text class="lbl" x="144" y="366">Past problem sheets for the same part</text>
-  <text class="sub" x="144" y="388">The AI reads the closest records and judges which one asks</text>
-  <text class="sub" x="144" y="405">the same question. Above 75%, that answer is sent as written.</text>
+  <text class="lbl" x="144" y="366">Past problem sheets for the same part family</text>
+  <text class="sub" x="144" y="388">The AI reads the closest records and judges which ask the</text>
+  <text class="sub" x="144" y="405">same question. Up to three above 75% are sent as written.</text>
 
   <!-- SOURCE 2 -->
   <rect class="box" x="630" y="316" width="450" height="116" fill="#eaf2f9" stroke="#2d6a9f"/>

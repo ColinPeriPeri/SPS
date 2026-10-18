@@ -20,6 +20,26 @@ It does need a working `AZURE_EMBEDDING_*` configuration: Azure is the only
 encoder, so there is no offline path. The top score depends on your
 deployment.
 
+## Commodity groups
+
+`commodity_groups.csv` puts commodity codes `0012` and `0013` in one family,
+BRACKETS, and `0034` in PACKAGING:
+
+```
+Commodity_Code,Group
+0012,BRACKETS
+0013,BRACKETS
+0034,PACKAGING
+```
+
+`sample_history.csv` has no records for any `0013` part. Copy
+`sample_ticket.csv`, change its `Part_Number` to `0013-11111`, and run it with
+`--commodity-file samples\commodity_groups.csv`: it is answered from
+`0012-43951`'s records, its `Justification` says the solution was recorded for
+another part in the same family, and its `Reason` says
+`Matched across commodity family BRACKETS (0012, 0013).` Without the flag the
+same ticket finds no history at all (`NO_MATCHES`).
+
 ## Bulk test sheet
 
 `bulk_tickets.csv` is six tickets in one sheet, for `python sps.py bulk`.
