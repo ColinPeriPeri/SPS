@@ -214,7 +214,7 @@ def test_a_missing_file_is_not_an_error(tmp_path, monkeypatch):
     assert found is None or found.exists()
 
 
-@pytest.mark.parametrize("entry", ["resolve", "bulk", "eval", "check"])
+@pytest.mark.parametrize("entry", ["resolve", "bulk", "eval", "ingest", "check"])
 def test_every_entry_point_loads_the_env_file(entry, tmp_path, monkeypatch):
     """The bug this guards against: verify_embedder was written later than the
     others, did not know to call the resolver's private loader, and reported
@@ -237,6 +237,7 @@ def test_every_entry_point_loads_the_env_file(entry, tmp_path, monkeypatch):
         "resolve": ["--ticket-file", str(absent), "--history-file", str(absent),
                     "--output-dir", str(tmp_path / "out")],
         "bulk": ["--tickets", str(absent), "--history", str(absent)],
+        "ingest": ["--history", str(absent)],
         "eval": ["--test-dir", str(empty), "--output-dir", str(tmp_path / "out")],
         "check": [],
     }[entry]
@@ -249,7 +250,7 @@ def test_every_entry_point_loads_the_env_file(entry, tmp_path, monkeypatch):
     assert loaded == [entry], f"`sps.py {entry}` did not load .env"
 
 
-@pytest.mark.parametrize("command", ["resolve", "bulk", "eval", "check"])
+@pytest.mark.parametrize("command", ["resolve", "bulk", "eval", "ingest", "check"])
 def test_each_command_names_itself_in_its_usage(command, monkeypatch, capsys):
     """The usage line is what an operator copies when a robot's call fails.
     After the merge into sps.py, three still named the `python -m scripts.*`
@@ -262,3 +263,36 @@ def test_each_command_names_itself_in_its_usage(command, monkeypatch, capsys):
 
     assert exit_.value.code == 0
     assert capsys.readouterr().out.startswith(f"usage: python sps.py {command} ")
+
+
+def test_a_malformed_number_is_a_configuration_error_not_a_retry(tmp_path, monkeypatch):
+    """A typo in .env used to surface as "Unhandled error", exit 1 -- which a
+    robot retries until a person notices. Exit 2, naming the setting."""
+    import sps
+    from tests.test_resolver import read_sheet, row, write_history, write_ticket
+
+    monkeypatch.setenv("SPS_INTENT_TOP_K", "five")
+    out = tmp_path / "out"
+    code = sps.resolve_main([
+        "--ticket-file", str(write_ticket(tmp_path / "t.xlsx")),
+        "--history-file", str(write_history(tmp_path / "h.xlsx", [row("SPS-1")])),
+        "--output-dir", str(out),
+    ])
+
+    assert code == sps.EXIT_BAD_INPUT
+    reason = read_sheet(out / "status.xlsx")[0]["Reason"]
+    assert "SPS_INTENT_TOP_K='five' is not a whole number" in reason
+
+
+def test_every_other_command_names_a_malformed_setting(tmp_path, monkeypatch, capsys):
+    import sps
+    from tests.test_resolver import row, write_csv_history
+
+    monkeypatch.setenv("AZURE_EMBEDDING_ENDPOINT", "https://x.openai.azure.com/")
+    monkeypatch.setenv("AZURE_EMBEDDING_API_KEY", "k")
+    monkeypatch.setenv("AZURE_EMBEDDING_DEPLOYMENT", "d")
+    monkeypatch.setenv("AZURE_EMBEDDING_TIMEOUT", "twenty")
+    history = write_csv_history(tmp_path / "h.csv", [row("SPS-1")])
+
+    assert sps.main(["ingest", "--history", str(history)]) == sps.EXIT_BAD_INPUT
+    assert "AZURE_EMBEDDING_TIMEOUT='twenty' is not a number" in capsys.readouterr().err

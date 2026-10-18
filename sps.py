@@ -582,14 +582,30 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
 
 
+class SettingError(ValueError):
+    """A setting that is present but unusable. A person has to fix it, so it
+    exits 2 -- never 1, which a robot would retry until someone noticed."""
+
+
+def _env_number(key: str, cast, default):
+    raw = _env(key)
+    if not raw:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        kind = "a whole number" if cast is int else "a number"
+        raise SettingError(
+            f"{key}={raw!r} is not {kind}. Fix it in .env or the machine's environment."
+        ) from None
+
+
 def _env_int(key: str, default: int) -> int:
-    raw = _env(key)
-    return int(raw) if raw else default
+    return _env_number(key, int, default)
 
 
-def _env_float(key: str, default: float) -> float:
-    raw = _env(key)
-    return float(raw) if raw else default
+def _env_float(key: str, default: float | None) -> float | None:
+    return _env_number(key, float, default)
 
 
 
@@ -2188,8 +2204,6 @@ AZURE_BACKEND = "azure"
 # for Azure's.
 INJECTED_BACKEND = "injected"
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-
 
 class HistoryError(ValueError):
     """The history file cannot be used.
@@ -2214,10 +2228,6 @@ class HistoryRow:
     # Derived from part_number when the history is read, so the store can
     # select a whole family by an index rather than by parsing every row.
     commodity_code: str = ""
-
-    def sort_key(self) -> tuple[datetime, str]:
-        """Recency ordering; undated rows sort oldest but stay comparable."""
-        return (self.last_modified_date or _EPOCH, self.sps_id)
 
     def payload(self) -> dict[str, str]:
         return {
@@ -2721,9 +2731,6 @@ class _VectorStoreBase:
 
     location = ""
 
-    def _rows_in(self, scope: MatchScope) -> list[HistoryRow]:
-        raise NotImplementedError
-
     def _rows_and_vectors(self, scope: MatchScope, model: str) -> list[tuple[HistoryRow, bytes | None]]:
         """The scope's rows in file order, each with its stored vector or None."""
         raise NotImplementedError
@@ -2859,46 +2866,75 @@ class SqliteHistoryStore(_VectorStoreBase):
         # overflow pages. Measured at 30k vectors, reads were several times
         # faster this way.
         self._db.execute("PRAGMA page_size=65536")
-        self._db.execute("PRAGMA journal_mode=WAL")
+        if self._db.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+            self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._prepare()
 
     def close(self) -> None:
         self._db.close()
 
+    _OBJECTS = {"meta", "rows", "vectors", "rows_by_code", "rows_by_part", "vectors_by_key"}
+
+    def _ready(self) -> bool:
+        """Every table and index present, under this schema. Reads only."""
+        names = {name for (name,) in self._db.execute("SELECT name FROM sqlite_master")}
+        return self._OBJECTS <= names and self._meta("schema") == str(HISTORY_STORE_SCHEMA)
+
     def _prepare(self) -> None:
+        # A prepared store is opened with reads alone. Even a no-op
+        # CREATE ... IF NOT EXISTS takes the write lock, and every ticket would
+        # then queue behind any robot syncing an export or storing vectors --
+        # measured: a ticket that should have taken milliseconds waited out a
+        # six-second write elsewhere.
+        if self._ready():
+            return
         db = self._db
-        db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        if self._meta("schema") not in (None, str(HISTORY_STORE_SCHEMA)):
-            # Written under other rules: rebuilt rather than misread.
-            logger.warning("History store %s is schema %s; rebuilding as %s",
-                           self.location, self._meta("schema"), HISTORY_STORE_SCHEMA)
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("DROP TABLE IF EXISTS rows")
-            db.execute("DROP TABLE IF EXISTS vectors")
-            db.execute("DELETE FROM meta")
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if self._ready():  # another process prepared it while this one waited
+                db.execute("COMMIT")
+                return
+            db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            found = self._meta("schema")
+            if found not in (None, str(HISTORY_STORE_SCHEMA)):
+                # Written under other rules: rebuilt rather than misread.
+                logger.warning("History store %s is schema %s; rebuilding as %s",
+                               self.location, found, HISTORY_STORE_SCHEMA)
+                db.execute("DROP TABLE IF EXISTS rows")
+                db.execute("DROP TABLE IF EXISTS vectors")
+                db.execute("DELETE FROM meta")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS rows (ordinal INTEGER PRIMARY KEY, "
+                + ", ".join(f"{f} TEXT NOT NULL" for f in _ROW_FIELDS)
+                + ", last_modified TEXT, text_key TEXT NOT NULL)"
+            )
+            db.execute("CREATE INDEX IF NOT EXISTS rows_by_code ON rows (commodity_code)")
+            db.execute("CREATE INDEX IF NOT EXISTS rows_by_part ON rows (part_number)")
+            # A rowid table with a separate index, not a WITHOUT ROWID one keyed
+            # on the hash: keyed that way, vectors are stored in hash order --
+            # which is random -- and reading a family touched pages all over
+            # the file. Stored in the order they were written, they are read
+            # nearly in sequence.
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS vectors (model TEXT NOT NULL, "
+                "text_key TEXT NOT NULL, vec BLOB NOT NULL)"
+            )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS vectors_by_key ON vectors (model, text_key)"
+            )
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('schema', ?)",
+                       (str(HISTORY_STORE_SCHEMA),))
             db.execute("COMMIT")
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS rows (ordinal INTEGER PRIMARY KEY, "
-            + ", ".join(f"{f} TEXT NOT NULL" for f in _ROW_FIELDS)
-            + ", last_modified TEXT, text_key TEXT NOT NULL)"
-        )
-        db.execute("CREATE INDEX IF NOT EXISTS rows_by_code ON rows (commodity_code)")
-        db.execute("CREATE INDEX IF NOT EXISTS rows_by_part ON rows (part_number)")
-        # A rowid table with a separate index, not a WITHOUT ROWID one keyed on
-        # the hash: keyed that way, vectors are stored in hash order -- which
-        # is random -- and reading a family touched pages all over the file.
-        # Stored in the order they were written, they are read nearly in
-        # sequence.
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS vectors (model TEXT NOT NULL, text_key TEXT NOT NULL, "
-            "vec BLOB NOT NULL)"
-        )
-        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS vectors_by_key ON vectors (model, text_key)")
-        db.execute("INSERT OR IGNORE INTO meta VALUES ('schema', ?)", (str(HISTORY_STORE_SCHEMA),))
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
 
     def _meta(self, key: str) -> str | None:
-        found = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        try:
+            found = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        except sqlite3.OperationalError:  # no meta table: a new, empty file
+            return None
         return found[0] if found else None
 
     @staticmethod
@@ -2974,21 +3010,6 @@ class SqliteHistoryStore(_VectorStoreBase):
         found.sort(key=lambda r: r[0])
         rows = self._materialise(r[1:-1] for r in found)
         return [(row, r[-1]) for row, r in zip(rows, found)]
-
-    def _rows_in(self, scope: MatchScope) -> list[HistoryRow]:
-        columns = self._COLUMNS
-        if scope.is_family:
-            marks = ", ".join("?" * len(scope.codes))
-            cursor = self._db.execute(
-                f"SELECT {columns} FROM rows WHERE commodity_code IN ({marks}) ORDER BY ordinal",
-                scope.codes,
-            )
-        else:
-            cursor = self._db.execute(
-                f"SELECT {columns} FROM rows WHERE part_number = ? ORDER BY ordinal",
-                (scope.part_number,),
-            )
-        return self._materialise(cursor)
 
     @staticmethod
     def _materialise(cursor) -> list[HistoryRow]:
@@ -3089,14 +3110,30 @@ def open_history_store(history_path: Path | str) -> HistoryStore:
     try:
         return SqliteHistoryStore(location)
     except Exception as exc:
-        # A read-only folder, a locked file, a disk that is full. Still
-        # answerable -- just without remembering anything.
-        logger.warning(
-            "History store %s cannot be used (%s: %s); reading the history without one "
-            "this run. Set %s to a writable local folder.",
-            location, type(exc).__name__, exc, HISTORY_STORE_DIR_ENV,
-        )
-        return MemoryHistoryStore(location=f"memory (could not open {location})")
+        failure = f"{type(exc).__name__}: {exc}"
+    # A read-only folder, a locked file, a full disk. The local folder next,
+    # because the memory store below embeds a whole family on every ticket --
+    # tolerable for a part, ruinous for 30,000 records.
+    local = _local_store_dir() / location.name
+    if local != location:
+        try:
+            store = SqliteHistoryStore(local)
+        except Exception:
+            pass
+        else:
+            logger.warning(
+                "History store %s cannot be used (%s); using %s instead. Set %s to a "
+                "writable local folder so the robots and ingest share one store.",
+                location, failure, local, HISTORY_STORE_DIR_ENV,
+            )
+            return store
+    # Still answerable -- just without remembering anything.
+    logger.warning(
+        "History store %s cannot be used (%s); reading the history without one this "
+        "run, which embeds the ticket's whole family each time. Set %s to a writable "
+        "local folder.", location, failure, HISTORY_STORE_DIR_ENV,
+    )
+    return MemoryHistoryStore(location=f"memory (could not open {location})")
 
 
 # ---- Retrieval ---------------------------------------------------------------
@@ -4945,12 +4982,8 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
     # environment when set there.
     threshold_override = args.threshold
     if threshold_override is None:
-        raw_threshold = os.environ.get("SPS_CONFIDENCE_THRESHOLD", "").strip()
-        threshold_override = float(raw_threshold) if raw_threshold else None
-
-    def _threshold(name: str, fallback: float) -> float:
-        raw = os.environ.get(name, "").strip()
-        return float(raw) if raw else fallback
+        threshold_override = _env_float("SPS_CONFIDENCE_THRESHOLD", None)
+    _threshold = _env_float
 
     # Constructed before the part-number branch because Tier 2 needs the loop
     # on both paths. Constructing either opens no connection.
@@ -5233,20 +5266,17 @@ def _resolve_from_docs(
         or DEFAULT_DOCS_DIR
     )
 
-    def _threshold(name: str, fallback: float) -> float:
-        raw = os.environ.get(name, "").strip()
-        return float(raw) if raw else fallback
+    _threshold = _env_float
 
     # Deliberately NOT --threshold. That number is calibrated against Tier 1's
-    # ticket-to-ticket distribution, where 0.89 is a normal gate; against
-    # Tier 2's ticket-to-document distribution the same number rejects every
-    # chunk. One override spanning both would be a single number standing for
+    # ticket-to-ticket distribution; against Tier 2's ticket-to-document
+    # distribution, where the right section scores far lower, the same number
+    # could reject every chunk. One override spanning both would be a single number standing for
     # two different embedding spaces, which is the mistake this codebase keeps
     # not making.
     tier2_override = args.tier2_threshold
     if tier2_override is None:
-        raw = os.environ.get("SPS_TIER2_THRESHOLD", "").strip()
-        tier2_override = float(raw) if raw else None
+        tier2_override = _env_float("SPS_TIER2_THRESHOLD", None)
 
     docs = DocRetriever(
         docs_dir=docs_dir,
@@ -5407,6 +5437,9 @@ def resolve_main(argv: list[str] | None = None) -> int:
 
     try:
         outcome = resolve(args, output_dir)
+    except SettingError as exc:
+        logger.error("%s", exc)
+        outcome = ResolveOutcome(CODE_INFRASTRUCTURE, str(exc), EXIT_BAD_INPUT)
     except Exception:
         # status.xlsx is written even here: an unhandled fault must still leave
         # the caller a row explaining why, not an empty directory.
@@ -6997,7 +7030,13 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: python sps.py {" + " | ".join(COMMANDS) + "} [options]", file=sys.stderr)
         print("       python sps.py <command> --help", file=sys.stderr)
         return EXIT_BAD_INPUT
-    return COMMANDS[argv[0]](argv[1:])
+    try:
+        return COMMANDS[argv[0]](argv[1:])
+    except SettingError as exc:
+        # resolve reports this in status.xlsx itself; every other command
+        # stops here, naming the setting, rather than with a traceback.
+        print(str(exc), file=sys.stderr)
+        return EXIT_BAD_INPUT
 
 
 if __name__ == "__main__":

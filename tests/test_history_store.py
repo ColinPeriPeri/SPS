@@ -425,3 +425,60 @@ def test_the_sample_groups_file_makes_a_family_of_0012_and_0013():
     sample = Path(__file__).resolve().parent.parent / "samples" / "commodity_groups.csv"
     scope = match_scope("0013-11111", sample)
     assert (scope.group, scope.codes) == ("BRACKETS", ("0012", "0013"))
+
+
+def test_an_unwritable_store_folder_falls_back_to_the_local_one(tmp_path, monkeypatch, caplog):
+    """Before memory: a memory store embeds a whole family on every ticket."""
+    real = sps.SqliteHistoryStore
+    blocked = tmp_path / "readonly"
+
+    def store(location):
+        if blocked in location.parents:
+            raise PermissionError("read-only folder")
+        return real(location)
+
+    monkeypatch.setattr(sps, "SqliteHistoryStore", store)
+    monkeypatch.setenv("SPS_HISTORY_STORE_DIR", str(blocked))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    with caplog.at_level(logging.WARNING):
+        opened = sps.open_history_store(tmp_path / "h.csv")
+    assert isinstance(opened, real)
+    assert (tmp_path / "local" / "SPS" / "history-store") in __import__("pathlib").Path(opened.location).parents
+    assert "using" in caplog.text and "read-only folder" in caplog.text
+
+
+def test_a_ticket_never_waits_for_another_process_writing_the_store(tmp_path):
+    """WAL lets readers through a writer, but only if opening the store is
+    itself read-only. It was not: every ticket waited out the writer."""
+    import subprocess
+    import sys
+    import time
+
+    history = write_csv_history(tmp_path / "h.csv", [row("SPS-1")])
+    location = tmp_path / "s.sqlite"
+    first = SqliteHistoryStore(location)
+    HistoryRetriever(history_path=history, embedder=TokenOverlapEmbedder(), store=first,
+                     confidence_threshold=0.0).retrieve(ticket())
+    first.close()
+
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sqlite3, sys, time\n"
+         "db = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+         "db.execute('BEGIN IMMEDIATE'); print('locked', flush=True); time.sleep(30)",
+         str(location)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        started = time.perf_counter()
+        store = SqliteHistoryStore(location)
+        found = HistoryRetriever(history_path=history, embedder=TokenOverlapEmbedder(),
+                                 store=store, confidence_threshold=0.0).retrieve(ticket())
+        elapsed = time.perf_counter() - started
+        store.close()
+    finally:
+        holder.kill()
+        holder.wait()
+    assert [c.sps_id for c in found] == ["SPS-1"]
+    assert elapsed < 2.0

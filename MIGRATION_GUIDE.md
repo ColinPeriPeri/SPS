@@ -549,11 +549,13 @@ unambiguous.
 | Every 0250 citation is just the filename | The document's section titles are bold body text, not `Heading 2` | Apply Word's heading styles, then delete `data\0250_docs\0250_cache_*.npz` |
 | Tier 2 finds nothing on a defect you know is covered | 0.35 is a guess derived from another guess | Run the batch evaluator and read `Tier2_Score`, then set `SPS_TIER2_THRESHOLD` |
 | Most tickets come back `LLM_AUDIT_REJECTED` | In Tier 1, the intent scorer found no record asking the same question (`No_Recommendation_Reason` `INTENT_BELOW_THRESHOLD`); in Tier 2, the gates or the Judge refused the drafts | Read `No_Recommendation_Reason` and `Matched_Solutions` in the bulk sheet. For Tier 2, extend `KNOWN_TRACKING_PREFIXES` in `sps.py` ("The deterministic gates") with your own systems |
+| `SETTING='value' is not a number`, exit **2** | A numeric setting in `.env` (a threshold, a timeout, `SPS_INTENT_TOP_K`) holds something that is not a number | Fix the value the message names. It used to surface as an unhandled error with exit 1, retried forever |
 | `pytest` reports anything skipped | A test skipped itself, which none should | Treat it as a failure and read the reason (`python -m pytest -rs`) |
 | `Reason` says `Matched on the part number only: …` | No groups file configured, or this ticket's code is not usable in it — the sentence says which | Set `SPS_COMMODITY_GROUPS`, or fix the file as the sentence describes |
 | `… is on a network share … keeping the history store in …` | The history export is on a share, and SQLite cannot lock safely there | Set `SPS_HISTORY_STORE_DIR` to a local folder, and run `ingest` with the same setting |
-| `History store failed: database is locked`, exit 1 | Another robot or an ingest held the store longer than ten minutes | Retry. Run `ingest` after each export so robots do not do the embedding themselves |
-| `History store … cannot be used …; reading the history without one` | The store folder is not writable | Set `SPS_HISTORY_STORE_DIR` to a writable local folder. Tickets still resolve meanwhile, just slower |
+| `History store failed: database is locked`, exit 1 | A ticket needed to write new records' vectors while another robot or an ingest held the store for over ten minutes | Retry. Run `ingest` after each export so robots do not do the embedding themselves |
+| `History store … cannot be used …; using … instead` | The store folder is not writable, so the store moved to `%LOCALAPPDATA%` | Set `SPS_HISTORY_STORE_DIR` to a writable local folder, so the robots and `ingest` share one store |
+| `History store … cannot be used …; reading the history without one` | Neither the store folder nor `%LOCALAPPDATA%` is writable | Set `SPS_HISTORY_STORE_DIR` to a writable local folder. Tickets still resolve meanwhile, but embed their whole family each time |
 | The first ticket after an export is slow | The store is embedding that family's new records | Run `scripts\run_ingest.cmd` after each export |
 
 ---

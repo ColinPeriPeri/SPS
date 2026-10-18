@@ -196,9 +196,14 @@ library, no server, nothing to install — that mirrors the export:
 The store sits beside the history file by default (`<history>.<id>.sps-store.sqlite`),
 or in `SPS_HISTORY_STORE_DIR`. **Local disk only**: SQLite's locking cannot be
 trusted over a network share, so a store that would land on one is moved under
-`%LOCALAPPDATA%\SPS\history-store` with a warning. If the store cannot be
-created at all — a read-only folder — the run reads the history without one and
-says so; `SPS_HISTORY_STORE=memory` chooses that deliberately.
+`%LOCALAPPDATA%\SPS\history-store` with a warning. A folder where the store
+cannot be created — read-only, say — falls back to that local folder too, and
+only if that also fails does the run read the history without a store, embedding
+the ticket's whole family each time; both are warned about.
+`SPS_HISTORY_STORE=memory` chooses the storeless mode deliberately.
+
+Opening a store that is already set up is read-only, so with WAL a ticket never
+waits for another robot or an ingest writing to it.
 
 `HistoryStore` is the seam: a server-backed store (Qdrant, say) would implement
 the same two methods, and ranking would stay identical.
