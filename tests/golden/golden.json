@@ -1,0 +1,694 @@
+{
+ "boilerplate_history_only": {
+  "calls": [
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nBracket weld seam cracking observed during incoming inspection\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-5001]\nBracket weld seam cracking observed during incoming inspection\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   },
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nOuter carton label misprinted on the shipment packaging\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-5003]\nOuter carton label misprinted on the shipment packaging\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   },
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nNTK holds one ESC unit whose marked revision does not match its actual product specification. We confirmed it satisfies the Rev 02 specification and plan to re-engrave before shipment. We request the issuance of an ESW.\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-5004]\nESC marked revision does not match the actual product specification\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   }
+  ],
+  "sheet": [
+   {
+    "AI_Recommendation": "1. See the feedback in the attachment. 2. Per discussed, rework as attachment shown. 3. After rework, provide photos and related data; it will be waived if the result is ok.",
+    "Cascade_Warnings": "Contains: reference to an attachment: 'attachment'; reference to a prior conversation: 'Per discussed'",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 1 closest record(s):\n\nSPS-5001 (100%): 1. See the feedback in the attachment. 2. Per discussed, rework as attachment shown. 3. After rework, provide photos and related data; it will be waived if the result is ok.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Confidence is 100% against SPS-5001, whose recorded solution is sent unchanged. Token overlap with SPS-5001.",
+    "Matched_Solutions": "SPS-5001: 1. See the feedback in the attachment. 2. Per discussed, rework as attachment shown. 3. After rework, provide photos and related data; it will be waived if the result is ok.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0012-43951",
+    "Problem_Description": "Bracket weld seam cracking observed during incoming inspection",
+    "Reason": "Intent matched SPS-5001 at 100% across 1 record(s); its solution was sent unchanged. Ticket intent: Intent: Bracket weld seam cracking observed duri",
+    "Referenced_Sources": "SPS-5001",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-9001",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "Reprint the carton labels and re-apply them over the originals without obscuring other markings. Verify print quality against a retained sample before release.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 1 closest record(s):\n\nSPS-5003 (100%): Reprint the carton labels and re-apply them over the originals without obscuring other markings. Verify print quality against a retained sample before release.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Packaging",
+    "Justification": "Confidence is 100% against SPS-5003, whose recorded solution is sent unchanged. Token overlap with SPS-5003.",
+    "Matched_Solutions": "SPS-5003: Reprint the carton labels and re-apply them over the originals without obscuring other markings. Verify print quality against a retained sample before release.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0034-11020",
+    "Problem_Description": "Outer carton label misprinted on the shipment packaging",
+    "Reason": "Intent matched SPS-5003 at 100% across 1 record(s); its solution was sent unchanged. Ticket intent: Intent: Outer carton label misprinted on the shi",
+    "Referenced_Sources": "SPS-5003",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-9002",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Northgate Packaging",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "No recommendation available.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 1 closest record(s):\n\nSPS-5004 (28%): 1. Issue an ESW. 2. Do not ship the parts until the ESW is fully approved.",
+    "Confidence_Score": "28%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Confidence is 28% hence we are not recommending the solution, but this is the closest match from historical data.\n\n[RAW HISTORY - WEAK MATCH, below the confidence gate] 1 closest record(s):\n\nSPS-5004 (28%): 1. Issue an ESW. 2. Do not ship the parts until the ESW is fully approved.",
+    "Matched_Solutions": "SPS-5004: 1. Issue an ESW. 2. Do not ship the parts until the ESW is fully approved.",
+    "No_Recommendation_Reason": "INTENT_BELOW_THRESHOLD",
+    "Part_Number": "0010-50850",
+    "Problem_Description": "NTK holds one ESC unit whose marked revision does not match its actual product specification. We confirmed it satisfies the Rev 02 specification and plan to re-engrave before shipment. We request the issuance of an ESW.",
+    "Reason": "Best intent match 28% is below the 75% threshold across 1 record(s). Ticket intent: Intent: NTK holds one ESC unit whose marked revi Tier 2 skipped: no reason codes are configured (SPS_TIER2_REASON_CODES is empty).",
+    "Referenced_Sources": "",
+    "Resolution_Source": "NONE",
+    "SPS_ID": "T-9003",
+    "Status": "FAIL",
+    "Status_Code": "LLM_AUDIT_REJECTED",
+    "Supplier": "NTK",
+    "Tier1_Score": "0.5647",
+    "Tier2_Score": ""
+   }
+  ]
+ },
+ "bulk_history_only": {
+  "calls": [
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nBracket weld seam cracking observed during incoming inspection\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-1001]\nBracket weld seam cracking observed during incoming inspection\n\n[SPS_ID: SPS-1003]\nWeld porosity detected on the bracket joint during inspection\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   },
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nCracks found in the weld seam of the mounting bracket at goods-in\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-1002]\nCracks found in the weld seam of the mounting bracket at goods-in\n\n[SPS_ID: SPS-1003]\nWeld porosity detected on the bracket joint during inspection\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   },
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nOuter carton label misprinted on the shipment packaging\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-2001]\nOuter carton label misprinted on the shipment packaging\n\n[SPS_ID: SPS-2002]\nCarton labels unreadable on arrival at the dock\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   }
+  ],
+  "sheet": [
+   {
+    "AI_Recommendation": "Rework the weld seam per the original joint profile. Re-inspect before shipment.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 2 closest record(s):\n\nSPS-1001 (100%): Rework the weld seam per the original joint profile. Re-inspect before shipment.\n\nSPS-1003 (31%): Grind out the porous region and re-weld to the original profile.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Confidence is 100% against SPS-1001, whose recorded solution is sent unchanged. Token overlap with SPS-1001.",
+    "Matched_Solutions": "SPS-1001: Rework the weld seam per the original joint profile. Re-inspect before shipment.\n\nSPS-1003: Grind out the porous region and re-weld to the original profile.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0012-43951",
+    "Problem_Description": "Bracket weld seam cracking observed during incoming inspection",
+    "Reason": "Intent matched SPS-1001 at 100% across 2 record(s); its solution was sent unchanged. Ticket intent: Intent: Bracket weld seam cracking observed duri",
+    "Referenced_Sources": "SPS-1001",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-1001",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "Segregate the affected lot. Rework the cracked seams and re-inspect each unit.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 2 closest record(s):\n\nSPS-1002 (100%): Segregate the affected lot. Rework the cracked seams and re-inspect each unit.\n\nSPS-1003 (18%): Grind out the porous region and re-weld to the original profile.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Confidence is 100% against SPS-1002, whose recorded solution is sent unchanged. Token overlap with SPS-1002.",
+    "Matched_Solutions": "SPS-1002: Segregate the affected lot. Rework the cracked seams and re-inspect each unit.\n\nSPS-1003: Grind out the porous region and re-weld to the original profile.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0012-43951",
+    "Problem_Description": "Cracks found in the weld seam of the mounting bracket at goods-in",
+    "Reason": "Intent matched SPS-1002 at 100% across 2 record(s); its solution was sent unchanged. Ticket intent: Intent: Cracks found in the weld seam of the mou",
+    "Referenced_Sources": "SPS-1002",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-1002",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "Reprint the carton labels and re-apply them before dispatch.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 2 closest record(s):\n\nSPS-2001 (100%): Reprint the carton labels and re-apply them before dispatch.\n\nSPS-2002 (23%): Reprint and re-apply the labels; verify print quality before release.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Packaging",
+    "Justification": "Confidence is 100% against SPS-2001, whose recorded solution is sent unchanged. Token overlap with SPS-2001.",
+    "Matched_Solutions": "SPS-2001: Reprint the carton labels and re-apply them before dispatch.\n\nSPS-2002: Reprint and re-apply the labels; verify print quality before release.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0034-11020",
+    "Problem_Description": "Outer carton label misprinted on the shipment packaging",
+    "Reason": "Intent matched SPS-2001 at 100% across 2 record(s); its solution was sent unchanged. Ticket intent: Intent: Outer carton label misprinted on the shi",
+    "Referenced_Sources": "SPS-2001",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-1003",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Northgate Packaging",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "No recommendation available.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 3 closest record(s):\n\nSPS-1002 (25%): Segregate the affected lot. Rework the cracked seams and re-inspect each unit.\n\nSPS-1003 (23%): Grind out the porous region and re-weld to the original profile.\n\nSPS-1001 (12%): Rework the weld seam per the original joint profile. Re-inspect before shipment.",
+    "Confidence_Score": "25%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 3 closest record(s):\n\nSPS-1002 (25%): Segregate the affected lot. Rework the cracked seams and re-inspect each unit.\n\nSPS-1003 (23%): Grind out the porous region and re-weld to the original profile.\n\nSPS-1001 (12%): Rework the weld seam per the original joint profile. Re-inspect before shipment.\n\nThis is the closest past problem we found, but it is not similar enough to rely on. Not much historical data to infer the solution or recommendation.",
+    "Matched_Solutions": "",
+    "No_Recommendation_Reason": "BELOW_THRESHOLD",
+    "Part_Number": "0012-43951",
+    "Problem_Description": "Hydraulic pump pressure fluctuating during the acceptance run",
+    "Reason": "Best historical match 0.2572 is below the 0.30 threshold across 3 candidate(s). Tier 2 skipped: no reason codes are configured (SPS_TIER2_REASON_CODES is empty).",
+    "Referenced_Sources": "",
+    "Resolution_Source": "NONE",
+    "SPS_ID": "T-1004",
+    "Status": "FAIL",
+    "Status_Code": "BELOW_CONFIDENCE_THRESHOLD",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "0.2572",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "No recommendation available.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "",
+    "Confidence_Score": "",
+    "Embedding_Model": "",
+    "Issue_Type": "Quality",
+    "Justification": "Not much historical data to infer the solution or recommendation.",
+    "Matched_Solutions": "",
+    "No_Recommendation_Reason": "NO_HISTORY_FOR_PART",
+    "Part_Number": "0099-99999",
+    "Problem_Description": "Bracket weld seam cracking observed during incoming inspection",
+    "Reason": "No usable history for part 0099-99999: 0 row(s) matched the part out of 5 scanned. Tier 2 skipped: no reason codes are configured (SPS_TIER2_REASON_CODES is empty).",
+    "Referenced_Sources": "",
+    "Resolution_Source": "NONE",
+    "SPS_ID": "T-1005",
+    "Status": "FAIL",
+    "Status_Code": "NO_MATCHES",
+    "Supplier": "Unknown Supplier",
+    "Tier1_Score": "",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "No recommendation available.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "",
+    "Confidence_Score": "",
+    "Embedding_Model": "",
+    "Issue_Type": "Quality",
+    "Justification": "No part number was supplied, so the part's own history could not be searched.",
+    "Matched_Solutions": "",
+    "No_Recommendation_Reason": "NO_PART_NUMBER",
+    "Part_Number": "",
+    "Problem_Description": "Bracket weld seam cracking observed during incoming inspection",
+    "Reason": "Part number is missing or blank. Tier 2 skipped: no reason codes are configured (SPS_TIER2_REASON_CODES is empty).",
+    "Referenced_Sources": "",
+    "Resolution_Source": "NONE",
+    "SPS_ID": "T-1006",
+    "Status": "FAIL",
+    "Status_Code": "NO_MATCHES",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "",
+    "Tier2_Score": ""
+   }
+  ]
+ },
+ "bulk_tier2": {
+  "calls": [
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nBracket weld seam cracking observed during incoming inspection\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-1001]\nBracket weld seam cracking observed during incoming inspection\n\n[SPS_ID: SPS-1003]\nWeld porosity detected on the bracket joint during inspection\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   },
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nCracks found in the weld seam of the mounting bracket at goods-in\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-1002]\nCracks found in the weld seam of the mounting bracket at goods-in\n\n[SPS_ID: SPS-1003]\nWeld porosity detected on the bracket joint during inspection\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   },
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nOuter carton label misprinted on the shipment packaging\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-2001]\nOuter carton label misprinted on the shipment packaging\n\n[SPS_ID: SPS-2002]\nCarton labels unreadable on arrival at the dock\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.\n\nThe historical SPS records for this part produced no usable resolution. You are\ntherefore working from a second source: extracts of the company's 0250\nENGINEERING STANDARDS. Each extract is labelled with the document it came from\nand the section within it, in the form [DocumentName.docx § Section Heading].\n\nYour only task is to state what those standards require for this specific\ndefect, as a direct recommendation addressed to the supplier.\n\nHARD CONSTRAINTS -- these override any instinct to be helpful:\n1. ZERO external domain knowledge. Every action, limit, tool, measurement,\n   specification, threshold and step you write MUST appear in the STANDARDS\n   EXTRACTS text. You are restating a written requirement, not advising.\n2. A STANDARD IS NOT AUTOMATICALLY A SOLUTION. An extract that states a limit,\n   a tolerance or an acceptance criterion but does NOT state what to do about a\n   part that violates it has not given you a resolution. Do not derive the\n   disposition yourself, and do not reach for the obvious engineering answer:\n   that is exactly the fabrication you are here to avoid.\n3. NO invented specifics. Never introduce a number, tolerance, torque,\n   temperature, duration, revision, document ID or section number that is not\n   present verbatim in the extracts.\n4. CITE EVERY EXTRACT YOU USE. In \"justification\", name the document and the\n   section exactly as they appear in the bracketed label. Do not abbreviate,\n   renumber or tidy them. Never cite a document or section that is not in the\n   extracts above.\n5. Your \"justification\" MUST begin by acknowledging the history gap, in these\n   words: \"Historical records yielded no resolution.\" Then state which standard\n   sections the recommendation is drawn from and why they apply.\n6. Write for an EXTERNAL SUPPLIER. Never instruct the reader to open, query or\n   update an internal system, use an internal-only tool, or perform a step the\n   standard assigns to internal staff. Where the standard assigns a step to an\n   internal engineer or quality team, state it as an outcome the supplier\n   awaits, never as an instruction to the supplier.\n7. Match the house style of SPS records: minimal, plain, imperative,\n   step-by-step. No preamble, no restatement of the problem, no pleasantries.\n8. NO ONWARD CROSS-REFERENCES. Citing the extract you used is required\n   (constraint 4). Sending the supplier somewhere they cannot go is not. Where\n   an extract says \"in accordance with section 7.1\" and 7.1 is not among your\n   extracts, state the requirement if the extract states it and otherwise omit\n   the step -- do not pass the cross-reference along. The supplier receives your\n   text and nothing else: no attachment, no other section, no prior conversation.\n9. If the extracts do not address THIS SPECIFIC DEFECT -- including when they\n   cover the general subject area but not this failure mode, or state limits\n   without a disposition -- set \"recommendation\" to exactly \"Solution not found.\".\n   A correct refusal is a successful outcome here. A plausible generic\n   engineering fix is the worst possible one.\n\nOUTPUT\nReturn a single JSON object and nothing else:\n{\"recommendation\": \"<numbered step-by-step text, or 'Solution not found.'>\",\n  \"justification\": \"<begins 'Historical records yielded no resolution.' then names the exact document and section relied on>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nHydraulic pump pressure fluctuating during the acceptance run\n\nISSUE TYPE\nQuality\n\nHISTORICAL SPS RECORDS\nNone of the historical records for this part produced a usable resolution.\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 4.1 Scope] \nThis standard defines acceptance criteria and supplier disposition for welded assemblies supplied against a drawing that invokes it. It applies to fillet and butt welds on carbon steel and stainless steel brackets, mounts and frames.\n[relevance: 33%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 30%]\n\n[0250-Packaging-Standards.docx § 2.1 Carton Labelling] \nEach outer carton shall carry a label showing the part number, the drawing revision, the quantity contained, the purchase order number and the date of packing. Labels shall be printed at 300 dpi or better and shall remain legible after transit.\nWhere a label is found unreadable on arrival at the receiving dock, the carton shall be held and the supplier notified. Reprint the labels, apply them over the originals without obscuring any other marking, and verify print quality against a retained sample before release.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 27%]\n\n[0250-Packaging-Standards.docx § 2.4 Barcode Symbology] \nBarcodes shall use Code 128 unless the purchase order specifies otherwise. The encoded value shall match the printed part number exactly, including leading zeros and the dash. A barcode that scans to a different value than the printed text is a rejectable nonconformance and the whole shipment shall be held.\n[relevance: 26%]\n",
+      "role": "user"
+     }
+    ],
+    "schema": "ActorDraft"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.\n\nThe historical SPS records for this part produced no usable resolution. You are\ntherefore working from a second source: extracts of the company's 0250\nENGINEERING STANDARDS. Each extract is labelled with the document it came from\nand the section within it, in the form [DocumentName.docx § Section Heading].\n\nYour only task is to state what those standards require for this specific\ndefect, as a direct recommendation addressed to the supplier.\n\nHARD CONSTRAINTS -- these override any instinct to be helpful:\n1. ZERO external domain knowledge. Every action, limit, tool, measurement,\n   specification, threshold and step you write MUST appear in the STANDARDS\n   EXTRACTS text. You are restating a written requirement, not advising.\n2. A STANDARD IS NOT AUTOMATICALLY A SOLUTION. An extract that states a limit,\n   a tolerance or an acceptance criterion but does NOT state what to do about a\n   part that violates it has not given you a resolution. Do not derive the\n   disposition yourself, and do not reach for the obvious engineering answer:\n   that is exactly the fabrication you are here to avoid.\n3. NO invented specifics. Never introduce a number, tolerance, torque,\n   temperature, duration, revision, document ID or section number that is not\n   present verbatim in the extracts.\n4. CITE EVERY EXTRACT YOU USE. In \"justification\", name the document and the\n   section exactly as they appear in the bracketed label. Do not abbreviate,\n   renumber or tidy them. Never cite a document or section that is not in the\n   extracts above.\n5. Your \"justification\" MUST begin by acknowledging the history gap, in these\n   words: \"Historical records yielded no resolution.\" Then state which standard\n   sections the recommendation is drawn from and why they apply.\n6. Write for an EXTERNAL SUPPLIER. Never instruct the reader to open, query or\n   update an internal system, use an internal-only tool, or perform a step the\n   standard assigns to internal staff. Where the standard assigns a step to an\n   internal engineer or quality team, state it as an outcome the supplier\n   awaits, never as an instruction to the supplier.\n7. Match the house style of SPS records: minimal, plain, imperative,\n   step-by-step. No preamble, no restatement of the problem, no pleasantries.\n8. NO ONWARD CROSS-REFERENCES. Citing the extract you used is required\n   (constraint 4). Sending the supplier somewhere they cannot go is not. Where\n   an extract says \"in accordance with section 7.1\" and 7.1 is not among your\n   extracts, state the requirement if the extract states it and otherwise omit\n   the step -- do not pass the cross-reference along. The supplier receives your\n   text and nothing else: no attachment, no other section, no prior conversation.\n9. If the extracts do not address THIS SPECIFIC DEFECT -- including when they\n   cover the general subject area but not this failure mode, or state limits\n   without a disposition -- set \"recommendation\" to exactly \"Solution not found.\".\n   A correct refusal is a successful outcome here. A plausible generic\n   engineering fix is the worst possible one.\n\nOUTPUT\nReturn a single JSON object and nothing else:\n{\"recommendation\": \"<numbered step-by-step text, or 'Solution not found.'>\",\n  \"justification\": \"<begins 'Historical records yielded no resolution.' then names the exact document and section relied on>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nHydraulic pump pressure fluctuating during the acceptance run\n\nISSUE TYPE\nQuality\n\nHISTORICAL SPS RECORDS\nNone of the historical records for this part produced a usable resolution.\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 4.1 Scope] \nThis standard defines acceptance criteria and supplier disposition for welded assemblies supplied against a drawing that invokes it. It applies to fillet and butt welds on carbon steel and stainless steel brackets, mounts and frames.\n[relevance: 33%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 30%]\n\n[0250-Packaging-Standards.docx § 2.1 Carton Labelling] \nEach outer carton shall carry a label showing the part number, the drawing revision, the quantity contained, the purchase order number and the date of packing. Labels shall be printed at 300 dpi or better and shall remain legible after transit.\nWhere a label is found unreadable on arrival at the receiving dock, the carton shall be held and the supplier notified. Reprint the labels, apply them over the originals without obscuring any other marking, and verify print quality against a retained sample before release.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 27%]\n\n[0250-Packaging-Standards.docx § 2.4 Barcode Symbology] \nBarcodes shall use Code 128 unless the purchase order specifies otherwise. The encoded value shall match the printed part number exactly, including leading zeros and the dash. A barcode that scans to a different value than the printed text is a rejectable nonconformance and the whole shipment shall be held.\n[relevance: 26%]\n\nYOUR PREVIOUS DRAFT WAS REJECTED BY THE COMPLIANCE AUDITOR.\nREJECTED DRAFT\n1. See the feedback in the attachment. 2. Grind out the seam.\n\nAUDITOR CRITIQUE (you must resolve this)\nThe draft carries 1 reference(s) that exist only in the historical record and are not true of this ticket: reference to an attachment: 'attachment'. Remove each one. State the action without the reference where the step is still meaningful on its own, and drop the step entirely where it is not. Being present in the historical solutions does not make these transferable -- they describe a different ticket. If what remains is no action the supplier could actually perform, answer 'Solution not found.' instead.\n\nRewrite the recommendation so the critique no longer applies. Remove the offending content rather than replacing it with something new. If resolving the critique leaves nothing the extracts actually support, answer \"Solution not found.\" instead of finding another way to say the same thing.",
+      "role": "user"
+     }
+    ],
+    "schema": "ActorDraft"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a strict compliance auditor for a Supplier Problem Sheet (SPS) system.\nYou audit a DRAFT recommendation that will be sent to an EXTERNAL SUPPLIER.\nYou are the last gate before a human admin sees it. Be adversarial; the cost of\npassing a bad draft is far higher than the cost of one more revision.\n\nThis draft was written from 0250 ENGINEERING STANDARDS extracts, because the\nhistorical SPS records produced no resolution. You are given the incoming\nproblem, the verbatim extracts that are the only permitted source, and the DRAFT.\n\nRun all four checks:\n\nCHECK 1 -- DOMAIN HALLUCINATION\nFAIL if the draft contains any step, action, cause, tool, measurement,\nspecification, numeric value, threshold or requirement that does not appear in\nthe STANDARDS EXTRACTS. Paraphrase and condensation are acceptable; new\nsubstance is not.\n\nCHECK 2 -- INTERNAL TOOL LEAKAGE\nFAIL if the draft directs the supplier to access an internal system or database,\nuse an internal-only tool or portal, consult internal documentation, or perform\nany task the standard assigns to an internal engineer, buyer or quality team.\nNaming an internal step as an outcome the supplier will receive is acceptable;\ninstructing the supplier to perform it is not.\n\nCHECK 3 -- CITATION INTEGRITY\nFAIL if the justification cites a document name or section heading that does not\nappear verbatim in the bracketed labels of the extracts, or if the draft gives a\nsubstantive recommendation while citing no section at all. An invented or\naltered citation is worse than no answer: it sends a supplier to a document that\ndoes not say what they were told it says.\n\nCHECK 4 -- UNGROUNDED DISPOSITION\nFAIL if the draft tells the supplier what to DO about the defect while the\nextracts only state a limit, tolerance or acceptance criterion without a\ndisposition. A recommendation to rework, scrap, segregate, re-inspect or repair\nmust be traceable to text that actually says so. This is the most likely way a\nwrong answer reaches a supplier here, because the fabricated step is usually the\nengineering-plausible one.\n\nCHECK 5 -- ONWARD CROSS-REFERENCES\nFAIL if the draft sends the supplier to something they were not given: another\nsection of the standard, a different document, an attachment, or a prior\nconversation. Citing the extract a step was drawn from is required and correct;\ninstructing the supplier to go and consult something outside the extracts is\nnot, because they receive your text and nothing else.\n\nAs with check 3, being quoted accurately from an extract is not a defence. \"Re-inspect\nin accordance with section 7.1\" may be verbatim and still unusable if 7.1 is not\namong the extracts above.\n\nCHECK 6 -- RESPONSIVENESS\nFAIL if the draft does not answer what the ticket actually asks. Where the\nincoming problem requests a DECISION -- accept as-is, rework then ship, scrap,\nreturn -- a draft that restates a requirement without addressing that request is\nnot an answer to it, however well cited it is.\n\nJudge only these six checks. Do not fail a draft for terseness, formatting,\ntone or missing detail. An empty or \"Solution not found.\" draft passes -- the\nActor is expected to refuse when the standards do not cover the defect.\n\nOUTPUT\nReturn a single JSON object and nothing else.\nOn pass: {\"status\": \"PASS\"}\nOn fail: {\"status\": \"FAIL\", \"critique\": \"<specific, actionable instruction naming the exact offending text and what to do about it>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nHydraulic pump pressure fluctuating during the acceptance run\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 4.1 Scope] \nThis standard defines acceptance criteria and supplier disposition for welded assemblies supplied against a drawing that invokes it. It applies to fillet and butt welds on carbon steel and stainless steel brackets, mounts and frames.\n[relevance: 33%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 30%]\n\n[0250-Packaging-Standards.docx § 2.1 Carton Labelling] \nEach outer carton shall carry a label showing the part number, the drawing revision, the quantity contained, the purchase order number and the date of packing. Labels shall be printed at 300 dpi or better and shall remain legible after transit.\nWhere a label is found unreadable on arrival at the receiving dock, the carton shall be held and the supplier notified. Reprint the labels, apply them over the originals without obscuring any other marking, and verify print quality against a retained sample before release.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 27%]\n\n[0250-Packaging-Standards.docx § 2.4 Barcode Symbology] \nBarcodes shall use Code 128 unless the purchase order specifies otherwise. The encoded value shall match the printed part number exactly, including leading zeros and the dash. A barcode that scans to a different value than the printed text is a rejectable nonconformance and the whole shipment shall be held.\n[relevance: 26%]\n\nDRAFT RECOMMENDATION UNDER AUDIT\n1. Grind out the cracked seam to sound metal, then re-weld.\n",
+      "role": "user"
+     }
+    ],
+    "schema": "JudgeVerdict"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.\n\nThe historical SPS records for this part produced no usable resolution. You are\ntherefore working from a second source: extracts of the company's 0250\nENGINEERING STANDARDS. Each extract is labelled with the document it came from\nand the section within it, in the form [DocumentName.docx § Section Heading].\n\nYour only task is to state what those standards require for this specific\ndefect, as a direct recommendation addressed to the supplier.\n\nHARD CONSTRAINTS -- these override any instinct to be helpful:\n1. ZERO external domain knowledge. Every action, limit, tool, measurement,\n   specification, threshold and step you write MUST appear in the STANDARDS\n   EXTRACTS text. You are restating a written requirement, not advising.\n2. A STANDARD IS NOT AUTOMATICALLY A SOLUTION. An extract that states a limit,\n   a tolerance or an acceptance criterion but does NOT state what to do about a\n   part that violates it has not given you a resolution. Do not derive the\n   disposition yourself, and do not reach for the obvious engineering answer:\n   that is exactly the fabrication you are here to avoid.\n3. NO invented specifics. Never introduce a number, tolerance, torque,\n   temperature, duration, revision, document ID or section number that is not\n   present verbatim in the extracts.\n4. CITE EVERY EXTRACT YOU USE. In \"justification\", name the document and the\n   section exactly as they appear in the bracketed label. Do not abbreviate,\n   renumber or tidy them. Never cite a document or section that is not in the\n   extracts above.\n5. Your \"justification\" MUST begin by acknowledging the history gap, in these\n   words: \"Historical records yielded no resolution.\" Then state which standard\n   sections the recommendation is drawn from and why they apply.\n6. Write for an EXTERNAL SUPPLIER. Never instruct the reader to open, query or\n   update an internal system, use an internal-only tool, or perform a step the\n   standard assigns to internal staff. Where the standard assigns a step to an\n   internal engineer or quality team, state it as an outcome the supplier\n   awaits, never as an instruction to the supplier.\n7. Match the house style of SPS records: minimal, plain, imperative,\n   step-by-step. No preamble, no restatement of the problem, no pleasantries.\n8. NO ONWARD CROSS-REFERENCES. Citing the extract you used is required\n   (constraint 4). Sending the supplier somewhere they cannot go is not. Where\n   an extract says \"in accordance with section 7.1\" and 7.1 is not among your\n   extracts, state the requirement if the extract states it and otherwise omit\n   the step -- do not pass the cross-reference along. The supplier receives your\n   text and nothing else: no attachment, no other section, no prior conversation.\n9. If the extracts do not address THIS SPECIFIC DEFECT -- including when they\n   cover the general subject area but not this failure mode, or state limits\n   without a disposition -- set \"recommendation\" to exactly \"Solution not found.\".\n   A correct refusal is a successful outcome here. A plausible generic\n   engineering fix is the worst possible one.\n\nOUTPUT\nReturn a single JSON object and nothing else:\n{\"recommendation\": \"<numbered step-by-step text, or 'Solution not found.'>\",\n  \"justification\": \"<begins 'Historical records yielded no resolution.' then names the exact document and section relied on>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nBracket weld seam cracking observed during incoming inspection\n\nISSUE TYPE\nQuality\n\nHISTORICAL SPS RECORDS\nNone of the historical records for this part produced a usable resolution.\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 7.1 Re-inspection After Repair] \nEvery repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 24%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 24%]\n\n[0250-Surface-Finish.docx § 3.2 Surface Finish] \nMachined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n[relevance: 19%]\n\n[0250-Weld-Standards.docx § 4.4 Weld Undercut] \nUndercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.\n[relevance: 18%]\n",
+      "role": "user"
+     }
+    ],
+    "schema": "ActorDraft"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.\n\nThe historical SPS records for this part produced no usable resolution. You are\ntherefore working from a second source: extracts of the company's 0250\nENGINEERING STANDARDS. Each extract is labelled with the document it came from\nand the section within it, in the form [DocumentName.docx § Section Heading].\n\nYour only task is to state what those standards require for this specific\ndefect, as a direct recommendation addressed to the supplier.\n\nHARD CONSTRAINTS -- these override any instinct to be helpful:\n1. ZERO external domain knowledge. Every action, limit, tool, measurement,\n   specification, threshold and step you write MUST appear in the STANDARDS\n   EXTRACTS text. You are restating a written requirement, not advising.\n2. A STANDARD IS NOT AUTOMATICALLY A SOLUTION. An extract that states a limit,\n   a tolerance or an acceptance criterion but does NOT state what to do about a\n   part that violates it has not given you a resolution. Do not derive the\n   disposition yourself, and do not reach for the obvious engineering answer:\n   that is exactly the fabrication you are here to avoid.\n3. NO invented specifics. Never introduce a number, tolerance, torque,\n   temperature, duration, revision, document ID or section number that is not\n   present verbatim in the extracts.\n4. CITE EVERY EXTRACT YOU USE. In \"justification\", name the document and the\n   section exactly as they appear in the bracketed label. Do not abbreviate,\n   renumber or tidy them. Never cite a document or section that is not in the\n   extracts above.\n5. Your \"justification\" MUST begin by acknowledging the history gap, in these\n   words: \"Historical records yielded no resolution.\" Then state which standard\n   sections the recommendation is drawn from and why they apply.\n6. Write for an EXTERNAL SUPPLIER. Never instruct the reader to open, query or\n   update an internal system, use an internal-only tool, or perform a step the\n   standard assigns to internal staff. Where the standard assigns a step to an\n   internal engineer or quality team, state it as an outcome the supplier\n   awaits, never as an instruction to the supplier.\n7. Match the house style of SPS records: minimal, plain, imperative,\n   step-by-step. No preamble, no restatement of the problem, no pleasantries.\n8. NO ONWARD CROSS-REFERENCES. Citing the extract you used is required\n   (constraint 4). Sending the supplier somewhere they cannot go is not. Where\n   an extract says \"in accordance with section 7.1\" and 7.1 is not among your\n   extracts, state the requirement if the extract states it and otherwise omit\n   the step -- do not pass the cross-reference along. The supplier receives your\n   text and nothing else: no attachment, no other section, no prior conversation.\n9. If the extracts do not address THIS SPECIFIC DEFECT -- including when they\n   cover the general subject area but not this failure mode, or state limits\n   without a disposition -- set \"recommendation\" to exactly \"Solution not found.\".\n   A correct refusal is a successful outcome here. A plausible generic\n   engineering fix is the worst possible one.\n\nOUTPUT\nReturn a single JSON object and nothing else:\n{\"recommendation\": \"<numbered step-by-step text, or 'Solution not found.'>\",\n  \"justification\": \"<begins 'Historical records yielded no resolution.' then names the exact document and section relied on>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nBracket weld seam cracking observed during incoming inspection\n\nISSUE TYPE\nQuality\n\nHISTORICAL SPS RECORDS\nNone of the historical records for this part produced a usable resolution.\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 7.1 Re-inspection After Repair] \nEvery repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 24%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 24%]\n\n[0250-Surface-Finish.docx § 3.2 Surface Finish] \nMachined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n[relevance: 19%]\n\n[0250-Weld-Standards.docx § 4.4 Weld Undercut] \nUndercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.\n[relevance: 18%]\n\nYOUR PREVIOUS DRAFT WAS REJECTED BY THE COMPLIANCE AUDITOR.\nREJECTED DRAFT\n1. See the feedback in the attachment. 2. Grind out the seam.\n\nAUDITOR CRITIQUE (you must resolve this)\nThe draft carries 1 reference(s) that exist only in the historical record and are not true of this ticket: reference to an attachment: 'attachment'. Remove each one. State the action without the reference where the step is still meaningful on its own, and drop the step entirely where it is not. Being present in the historical solutions does not make these transferable -- they describe a different ticket. If what remains is no action the supplier could actually perform, answer 'Solution not found.' instead.\n\nRewrite the recommendation so the critique no longer applies. Remove the offending content rather than replacing it with something new. If resolving the critique leaves nothing the extracts actually support, answer \"Solution not found.\" instead of finding another way to say the same thing.",
+      "role": "user"
+     }
+    ],
+    "schema": "ActorDraft"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a strict compliance auditor for a Supplier Problem Sheet (SPS) system.\nYou audit a DRAFT recommendation that will be sent to an EXTERNAL SUPPLIER.\nYou are the last gate before a human admin sees it. Be adversarial; the cost of\npassing a bad draft is far higher than the cost of one more revision.\n\nThis draft was written from 0250 ENGINEERING STANDARDS extracts, because the\nhistorical SPS records produced no resolution. You are given the incoming\nproblem, the verbatim extracts that are the only permitted source, and the DRAFT.\n\nRun all four checks:\n\nCHECK 1 -- DOMAIN HALLUCINATION\nFAIL if the draft contains any step, action, cause, tool, measurement,\nspecification, numeric value, threshold or requirement that does not appear in\nthe STANDARDS EXTRACTS. Paraphrase and condensation are acceptable; new\nsubstance is not.\n\nCHECK 2 -- INTERNAL TOOL LEAKAGE\nFAIL if the draft directs the supplier to access an internal system or database,\nuse an internal-only tool or portal, consult internal documentation, or perform\nany task the standard assigns to an internal engineer, buyer or quality team.\nNaming an internal step as an outcome the supplier will receive is acceptable;\ninstructing the supplier to perform it is not.\n\nCHECK 3 -- CITATION INTEGRITY\nFAIL if the justification cites a document name or section heading that does not\nappear verbatim in the bracketed labels of the extracts, or if the draft gives a\nsubstantive recommendation while citing no section at all. An invented or\naltered citation is worse than no answer: it sends a supplier to a document that\ndoes not say what they were told it says.\n\nCHECK 4 -- UNGROUNDED DISPOSITION\nFAIL if the draft tells the supplier what to DO about the defect while the\nextracts only state a limit, tolerance or acceptance criterion without a\ndisposition. A recommendation to rework, scrap, segregate, re-inspect or repair\nmust be traceable to text that actually says so. This is the most likely way a\nwrong answer reaches a supplier here, because the fabricated step is usually the\nengineering-plausible one.\n\nCHECK 5 -- ONWARD CROSS-REFERENCES\nFAIL if the draft sends the supplier to something they were not given: another\nsection of the standard, a different document, an attachment, or a prior\nconversation. Citing the extract a step was drawn from is required and correct;\ninstructing the supplier to go and consult something outside the extracts is\nnot, because they receive your text and nothing else.\n\nAs with check 3, being quoted accurately from an extract is not a defence. \"Re-inspect\nin accordance with section 7.1\" may be verbatim and still unusable if 7.1 is not\namong the extracts above.\n\nCHECK 6 -- RESPONSIVENESS\nFAIL if the draft does not answer what the ticket actually asks. Where the\nincoming problem requests a DECISION -- accept as-is, rework then ship, scrap,\nreturn -- a draft that restates a requirement without addressing that request is\nnot an answer to it, however well cited it is.\n\nJudge only these six checks. Do not fail a draft for terseness, formatting,\ntone or missing detail. An empty or \"Solution not found.\" draft passes -- the\nActor is expected to refuse when the standards do not cover the defect.\n\nOUTPUT\nReturn a single JSON object and nothing else.\nOn pass: {\"status\": \"PASS\"}\nOn fail: {\"status\": \"FAIL\", \"critique\": \"<specific, actionable instruction naming the exact offending text and what to do about it>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nBracket weld seam cracking observed during incoming inspection\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 7.1 Re-inspection After Repair] \nEvery repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 24%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 24%]\n\n[0250-Surface-Finish.docx § 3.2 Surface Finish] \nMachined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n[relevance: 19%]\n\n[0250-Weld-Standards.docx § 4.4 Weld Undercut] \nUndercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.\n[relevance: 18%]\n\nDRAFT RECOMMENDATION UNDER AUDIT\n1. Grind out the cracked seam to sound metal, then re-weld.\n",
+      "role": "user"
+     }
+    ],
+    "schema": "JudgeVerdict"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.\n\nThe historical SPS records for this part produced no usable resolution. You are\ntherefore working from a second source: extracts of the company's 0250\nENGINEERING STANDARDS. Each extract is labelled with the document it came from\nand the section within it, in the form [DocumentName.docx § Section Heading].\n\nYour only task is to state what those standards require for this specific\ndefect, as a direct recommendation addressed to the supplier.\n\nHARD CONSTRAINTS -- these override any instinct to be helpful:\n1. ZERO external domain knowledge. Every action, limit, tool, measurement,\n   specification, threshold and step you write MUST appear in the STANDARDS\n   EXTRACTS text. You are restating a written requirement, not advising.\n2. A STANDARD IS NOT AUTOMATICALLY A SOLUTION. An extract that states a limit,\n   a tolerance or an acceptance criterion but does NOT state what to do about a\n   part that violates it has not given you a resolution. Do not derive the\n   disposition yourself, and do not reach for the obvious engineering answer:\n   that is exactly the fabrication you are here to avoid.\n3. NO invented specifics. Never introduce a number, tolerance, torque,\n   temperature, duration, revision, document ID or section number that is not\n   present verbatim in the extracts.\n4. CITE EVERY EXTRACT YOU USE. In \"justification\", name the document and the\n   section exactly as they appear in the bracketed label. Do not abbreviate,\n   renumber or tidy them. Never cite a document or section that is not in the\n   extracts above.\n5. Your \"justification\" MUST begin by acknowledging the history gap, in these\n   words: \"Historical records yielded no resolution.\" Then state which standard\n   sections the recommendation is drawn from and why they apply.\n6. Write for an EXTERNAL SUPPLIER. Never instruct the reader to open, query or\n   update an internal system, use an internal-only tool, or perform a step the\n   standard assigns to internal staff. Where the standard assigns a step to an\n   internal engineer or quality team, state it as an outcome the supplier\n   awaits, never as an instruction to the supplier.\n7. Match the house style of SPS records: minimal, plain, imperative,\n   step-by-step. No preamble, no restatement of the problem, no pleasantries.\n8. NO ONWARD CROSS-REFERENCES. Citing the extract you used is required\n   (constraint 4). Sending the supplier somewhere they cannot go is not. Where\n   an extract says \"in accordance with section 7.1\" and 7.1 is not among your\n   extracts, state the requirement if the extract states it and otherwise omit\n   the step -- do not pass the cross-reference along. The supplier receives your\n   text and nothing else: no attachment, no other section, no prior conversation.\n9. If the extracts do not address THIS SPECIFIC DEFECT -- including when they\n   cover the general subject area but not this failure mode, or state limits\n   without a disposition -- set \"recommendation\" to exactly \"Solution not found.\".\n   A correct refusal is a successful outcome here. A plausible generic\n   engineering fix is the worst possible one.\n\nOUTPUT\nReturn a single JSON object and nothing else:\n{\"recommendation\": \"<numbered step-by-step text, or 'Solution not found.'>\",\n  \"justification\": \"<begins 'Historical records yielded no resolution.' then names the exact document and section relied on>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nBracket weld seam cracking observed during incoming inspection\n\nISSUE TYPE\nQuality\n\nHISTORICAL SPS RECORDS\nNone of the historical records for this part produced a usable resolution.\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 7.1 Re-inspection After Repair] \nEvery repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 24%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 24%]\n\n[0250-Surface-Finish.docx § 3.2 Surface Finish] \nMachined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n[relevance: 19%]\n\n[0250-Weld-Standards.docx § 4.4 Weld Undercut] \nUndercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.\n[relevance: 18%]\n",
+      "role": "user"
+     }
+    ],
+    "schema": "ActorDraft"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a closed-book data synthesizer for a Supplier Problem Sheet (SPS) system.\n\nThe historical SPS records for this part produced no usable resolution. You are\ntherefore working from a second source: extracts of the company's 0250\nENGINEERING STANDARDS. Each extract is labelled with the document it came from\nand the section within it, in the form [DocumentName.docx § Section Heading].\n\nYour only task is to state what those standards require for this specific\ndefect, as a direct recommendation addressed to the supplier.\n\nHARD CONSTRAINTS -- these override any instinct to be helpful:\n1. ZERO external domain knowledge. Every action, limit, tool, measurement,\n   specification, threshold and step you write MUST appear in the STANDARDS\n   EXTRACTS text. You are restating a written requirement, not advising.\n2. A STANDARD IS NOT AUTOMATICALLY A SOLUTION. An extract that states a limit,\n   a tolerance or an acceptance criterion but does NOT state what to do about a\n   part that violates it has not given you a resolution. Do not derive the\n   disposition yourself, and do not reach for the obvious engineering answer:\n   that is exactly the fabrication you are here to avoid.\n3. NO invented specifics. Never introduce a number, tolerance, torque,\n   temperature, duration, revision, document ID or section number that is not\n   present verbatim in the extracts.\n4. CITE EVERY EXTRACT YOU USE. In \"justification\", name the document and the\n   section exactly as they appear in the bracketed label. Do not abbreviate,\n   renumber or tidy them. Never cite a document or section that is not in the\n   extracts above.\n5. Your \"justification\" MUST begin by acknowledging the history gap, in these\n   words: \"Historical records yielded no resolution.\" Then state which standard\n   sections the recommendation is drawn from and why they apply.\n6. Write for an EXTERNAL SUPPLIER. Never instruct the reader to open, query or\n   update an internal system, use an internal-only tool, or perform a step the\n   standard assigns to internal staff. Where the standard assigns a step to an\n   internal engineer or quality team, state it as an outcome the supplier\n   awaits, never as an instruction to the supplier.\n7. Match the house style of SPS records: minimal, plain, imperative,\n   step-by-step. No preamble, no restatement of the problem, no pleasantries.\n8. NO ONWARD CROSS-REFERENCES. Citing the extract you used is required\n   (constraint 4). Sending the supplier somewhere they cannot go is not. Where\n   an extract says \"in accordance with section 7.1\" and 7.1 is not among your\n   extracts, state the requirement if the extract states it and otherwise omit\n   the step -- do not pass the cross-reference along. The supplier receives your\n   text and nothing else: no attachment, no other section, no prior conversation.\n9. If the extracts do not address THIS SPECIFIC DEFECT -- including when they\n   cover the general subject area but not this failure mode, or state limits\n   without a disposition -- set \"recommendation\" to exactly \"Solution not found.\".\n   A correct refusal is a successful outcome here. A plausible generic\n   engineering fix is the worst possible one.\n\nOUTPUT\nReturn a single JSON object and nothing else:\n{\"recommendation\": \"<numbered step-by-step text, or 'Solution not found.'>\",\n  \"justification\": \"<begins 'Historical records yielded no resolution.' then names the exact document and section relied on>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nBracket weld seam cracking observed during incoming inspection\n\nISSUE TYPE\nQuality\n\nHISTORICAL SPS RECORDS\nNone of the historical records for this part produced a usable resolution.\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 7.1 Re-inspection After Repair] \nEvery repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 24%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 24%]\n\n[0250-Surface-Finish.docx § 3.2 Surface Finish] \nMachined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n[relevance: 19%]\n\n[0250-Weld-Standards.docx § 4.4 Weld Undercut] \nUndercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.\n[relevance: 18%]\n\nYOUR PREVIOUS DRAFT WAS REJECTED BY THE COMPLIANCE AUDITOR.\nREJECTED DRAFT\n1. See the feedback in the attachment. 2. Grind out the seam.\n\nAUDITOR CRITIQUE (you must resolve this)\nThe draft carries 1 reference(s) that exist only in the historical record and are not true of this ticket: reference to an attachment: 'attachment'. Remove each one. State the action without the reference where the step is still meaningful on its own, and drop the step entirely where it is not. Being present in the historical solutions does not make these transferable -- they describe a different ticket. If what remains is no action the supplier could actually perform, answer 'Solution not found.' instead.\n\nRewrite the recommendation so the critique no longer applies. Remove the offending content rather than replacing it with something new. If resolving the critique leaves nothing the extracts actually support, answer \"Solution not found.\" instead of finding another way to say the same thing.",
+      "role": "user"
+     }
+    ],
+    "schema": "ActorDraft"
+   },
+   {
+    "messages": [
+     {
+      "content": "You are a strict compliance auditor for a Supplier Problem Sheet (SPS) system.\nYou audit a DRAFT recommendation that will be sent to an EXTERNAL SUPPLIER.\nYou are the last gate before a human admin sees it. Be adversarial; the cost of\npassing a bad draft is far higher than the cost of one more revision.\n\nThis draft was written from 0250 ENGINEERING STANDARDS extracts, because the\nhistorical SPS records produced no resolution. You are given the incoming\nproblem, the verbatim extracts that are the only permitted source, and the DRAFT.\n\nRun all four checks:\n\nCHECK 1 -- DOMAIN HALLUCINATION\nFAIL if the draft contains any step, action, cause, tool, measurement,\nspecification, numeric value, threshold or requirement that does not appear in\nthe STANDARDS EXTRACTS. Paraphrase and condensation are acceptable; new\nsubstance is not.\n\nCHECK 2 -- INTERNAL TOOL LEAKAGE\nFAIL if the draft directs the supplier to access an internal system or database,\nuse an internal-only tool or portal, consult internal documentation, or perform\nany task the standard assigns to an internal engineer, buyer or quality team.\nNaming an internal step as an outcome the supplier will receive is acceptable;\ninstructing the supplier to perform it is not.\n\nCHECK 3 -- CITATION INTEGRITY\nFAIL if the justification cites a document name or section heading that does not\nappear verbatim in the bracketed labels of the extracts, or if the draft gives a\nsubstantive recommendation while citing no section at all. An invented or\naltered citation is worse than no answer: it sends a supplier to a document that\ndoes not say what they were told it says.\n\nCHECK 4 -- UNGROUNDED DISPOSITION\nFAIL if the draft tells the supplier what to DO about the defect while the\nextracts only state a limit, tolerance or acceptance criterion without a\ndisposition. A recommendation to rework, scrap, segregate, re-inspect or repair\nmust be traceable to text that actually says so. This is the most likely way a\nwrong answer reaches a supplier here, because the fabricated step is usually the\nengineering-plausible one.\n\nCHECK 5 -- ONWARD CROSS-REFERENCES\nFAIL if the draft sends the supplier to something they were not given: another\nsection of the standard, a different document, an attachment, or a prior\nconversation. Citing the extract a step was drawn from is required and correct;\ninstructing the supplier to go and consult something outside the extracts is\nnot, because they receive your text and nothing else.\n\nAs with check 3, being quoted accurately from an extract is not a defence. \"Re-inspect\nin accordance with section 7.1\" may be verbatim and still unusable if 7.1 is not\namong the extracts above.\n\nCHECK 6 -- RESPONSIVENESS\nFAIL if the draft does not answer what the ticket actually asks. Where the\nincoming problem requests a DECISION -- accept as-is, rework then ship, scrap,\nreturn -- a draft that restates a requirement without addressing that request is\nnot an answer to it, however well cited it is.\n\nJudge only these six checks. Do not fail a draft for terseness, formatting,\ntone or missing detail. An empty or \"Solution not found.\" draft passes -- the\nActor is expected to refuse when the standards do not cover the defect.\n\nOUTPUT\nReturn a single JSON object and nothing else.\nOn pass: {\"status\": \"PASS\"}\nOn fail: {\"status\": \"FAIL\", \"critique\": \"<specific, actionable instruction naming the exact offending text and what to do about it>\"}\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING PROBLEM STATEMENT\nBracket weld seam cracking observed during incoming inspection\n\n0250 STANDARDS EXTRACTS (the only permitted source of content)\n[0250-Weld-Standards.docx § 7.1 Re-inspection After Repair] \nEvery repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n[relevance: 28%]\n\n[0250-Weld-Standards.docx § 4.2 Weld Seam Cracking] \nCracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment.\n[relevance: 24%]\n\n[0250-Weld-Standards.docx § 4.3 Weld Porosity Limits] \nPorosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance.\n[relevance: 24%]\n\n[0250-Surface-Finish.docx § 3.2 Surface Finish] \nMachined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n[relevance: 19%]\n\n[0250-Weld-Standards.docx § 4.4 Weld Undercut] \nUndercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.\n[relevance: 18%]\n\nDRAFT RECOMMENDATION UNDER AUDIT\n1. Grind out the cracked seam to sound metal, then re-weld.\n",
+      "role": "user"
+     }
+    ],
+    "schema": "JudgeVerdict"
+   }
+  ],
+  "sheet": [
+   {
+    "AI_Recommendation": "Rework the weld seam per the original joint profile. Re-inspect before shipment.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 2 closest record(s):\n\nSPS-1001 (100%): Rework the weld seam per the original joint profile. Re-inspect before shipment.\n\nSPS-1003 (31%): Grind out the porous region and re-weld to the original profile.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Confidence is 100% against SPS-1001, whose recorded solution is sent unchanged. Token overlap with SPS-1001.",
+    "Matched_Solutions": "SPS-1001: Rework the weld seam per the original joint profile. Re-inspect before shipment.\n\nSPS-1003: Grind out the porous region and re-weld to the original profile.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0012-43951",
+    "Problem_Description": "Bracket weld seam cracking observed during incoming inspection",
+    "Problem_Reason_Code": "RC-EQUIV",
+    "Reason": "Intent matched SPS-1001 at 100% across 2 record(s); its solution was sent unchanged. Ticket intent: Intent: Bracket weld seam cracking observed duri",
+    "Referenced_Sources": "SPS-1001",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-1001",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "Segregate the affected lot. Rework the cracked seams and re-inspect each unit.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 2 closest record(s):\n\nSPS-1002 (100%): Segregate the affected lot. Rework the cracked seams and re-inspect each unit.\n\nSPS-1003 (18%): Grind out the porous region and re-weld to the original profile.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Confidence is 100% against SPS-1002, whose recorded solution is sent unchanged. Token overlap with SPS-1002.",
+    "Matched_Solutions": "SPS-1002: Segregate the affected lot. Rework the cracked seams and re-inspect each unit.\n\nSPS-1003: Grind out the porous region and re-weld to the original profile.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0012-43951",
+    "Problem_Description": "Cracks found in the weld seam of the mounting bracket at goods-in",
+    "Problem_Reason_Code": "RC-EQUIV",
+    "Reason": "Intent matched SPS-1002 at 100% across 2 record(s); its solution was sent unchanged. Ticket intent: Intent: Cracks found in the weld seam of the mou",
+    "Referenced_Sources": "SPS-1002",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-1002",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "Reprint the carton labels and re-apply them before dispatch.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 2 closest record(s):\n\nSPS-2001 (100%): Reprint the carton labels and re-apply them before dispatch.\n\nSPS-2002 (23%): Reprint and re-apply the labels; verify print quality before release.",
+    "Confidence_Score": "100%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Packaging",
+    "Justification": "Confidence is 100% against SPS-2001, whose recorded solution is sent unchanged. Token overlap with SPS-2001.",
+    "Matched_Solutions": "SPS-2001: Reprint the carton labels and re-apply them before dispatch.\n\nSPS-2002: Reprint and re-apply the labels; verify print quality before release.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0034-11020",
+    "Problem_Description": "Outer carton label misprinted on the shipment packaging",
+    "Problem_Reason_Code": "RC-EQUIV",
+    "Reason": "Intent matched SPS-2001 at 100% across 2 record(s); its solution was sent unchanged. Ticket intent: Intent: Outer carton label misprinted on the shi",
+    "Referenced_Sources": "SPS-2001",
+    "Resolution_Source": "HISTORICAL_DATA",
+    "SPS_ID": "T-1003",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL",
+    "Supplier": "Northgate Packaging",
+    "Tier1_Score": "1.0",
+    "Tier2_Score": ""
+   },
+   {
+    "AI_Recommendation": "1. Grind out the cracked seam to sound metal, then re-weld.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - WEAK MATCH, below the confidence gate] 3 closest record(s):\n\nSPS-1002 (25%): Segregate the affected lot. Rework the cracked seams and re-inspect each unit.\n\nSPS-1003 (23%): Grind out the porous region and re-weld to the original profile.\n\nSPS-1001 (12%): Rework the weld seam per the original joint profile. Re-inspect before shipment.",
+    "Confidence_Score": "33%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Historical records yielded no resolution. Per 0250-Weld-Standards.docx § 4.1 Scope.\n\nSynthesized from 5 record(s): 0250-Weld-Standards.docx § 4.1 Scope (33%), 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits (30%), 0250-Packaging-Standards.docx § 2.1 Carton Labelling (28%), 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking (27%), 0250-Packaging-Standards.docx § 2.4 Barcode Symbology (26%)",
+    "Matched_Solutions": "0250-Weld-Standards.docx § 4.1 Scope: This standard defines acceptance criteria and supplier disposition for welded assemblies supplied against a drawing that invokes it. It applies to fillet and butt welds on carbon steel and stainless steel brackets, mounts and frames.\n\n0250-Weld-Standards.docx § 4.3 Weld Porosity Limits: Porosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard. Condition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface Where porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original join…\n\n0250-Packaging-Standards.docx § 2.1 Carton Labelling: Each outer carton shall carry a label showing the part number, the drawing revision, the quantity contained, the purchase order number and the date of packing. Labels shall be printed at 300 dpi or better and shall remain legible after transit. Where a label is found unreadable on arrival at the receiving dock, the carton shall be held and the supplier notified. Reprint the labels, apply them over the originals without obscuring any other marking, and verify print quality against a retained sam…\n\n0250-Weld-Standards.docx § 4.2 Weld Seam Cracking: Cracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition. The cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the b…\n\n0250-Packaging-Standards.docx § 2.4 Barcode Symbology: Barcodes shall use Code 128 unless the purchase order specifies otherwise. The encoded value shall match the printed part number exactly, including leading zeros and the dash. A barcode that scans to a different value than the printed text is a rejectable nonconformance and the whole shipment shall be held.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0012-43951",
+    "Problem_Description": "Hydraulic pump pressure fluctuating during the acceptance run",
+    "Problem_Reason_Code": "RC-EQUIV",
+    "Reason": "Best historical match 0.2572 is below the 0.30 threshold across 3 candidate(s). Resolved instead from 5 0250 section(s) at 33% confidence: 0250-Weld-Standards.docx § 4.1 Scope, 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits, 0250-Packaging-Standards.docx § 2.1 Carton Labelling, 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking, 0250-Packaging-Standards.docx § 2.4 Barcode Symbology.",
+    "Referenced_Sources": "0250-Weld-Standards.docx § 4.1 Scope, 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits, 0250-Packaging-Standards.docx § 2.1 Carton Labelling, 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking, 0250-Packaging-Standards.docx § 2.4 Barcode Symbology",
+    "Resolution_Source": "0250_DOCUMENTATION",
+    "SPS_ID": "T-1004",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_0250_DOC",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "0.2572",
+    "Tier2_Score": "0.3356"
+   },
+   {
+    "AI_Recommendation": "1. Grind out the cracked seam to sound metal, then re-weld.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - not checked for supplier use] 3 closest record(s):\n\n0250-Weld-Standards.docx § 7.1 Re-inspection After Repair (28%): Every repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n\n0250-Weld-Standards.docx § 4.2 Weld Seam Cracking (24%): Cracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition. The cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the b…\n\n0250-Weld-Standards.docx § 4.3 Weld Porosity Limits (24%): Porosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard. Condition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface Where porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original join…",
+    "Confidence_Score": "28%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Historical records yielded no resolution. Per 0250-Weld-Standards.docx § 7.1 Re-inspection After Repair.\n\nSynthesized from 5 record(s): 0250-Weld-Standards.docx § 7.1 Re-inspection After Repair (28%), 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking (24%), 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits (24%), 0250-Surface-Finish.docx § 3.2 Surface Finish (19%), 0250-Weld-Standards.docx § 4.4 Weld Undercut (18%)",
+    "Matched_Solutions": "0250-Weld-Standards.docx § 7.1 Re-inspection After Repair: Every repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n\n0250-Weld-Standards.docx § 4.2 Weld Seam Cracking: Cracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition. The cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the b…\n\n0250-Weld-Standards.docx § 4.3 Weld Porosity Limits: Porosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard. Condition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface Where porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original join…\n\n0250-Surface-Finish.docx § 3.2 Surface Finish: Machined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n\n0250-Weld-Standards.docx § 4.4 Weld Undercut: Undercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "0099-99999",
+    "Problem_Description": "Bracket weld seam cracking observed during incoming inspection",
+    "Problem_Reason_Code": "RC-EQUIV",
+    "Reason": "No usable history for part 0099-99999: 0 row(s) matched the part out of 5 scanned. Resolved instead from 5 0250 section(s) at 28% confidence: 0250-Weld-Standards.docx § 7.1 Re-inspection After Repair, 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking, 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits, 0250-Surface-Finish.docx § 3.2 Surface Finish, 0250-Weld-Standards.docx § 4.4 Weld Undercut.",
+    "Referenced_Sources": "0250-Weld-Standards.docx § 7.1 Re-inspection After Repair, 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking, 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits, 0250-Surface-Finish.docx § 3.2 Surface Finish, 0250-Weld-Standards.docx § 4.4 Weld Undercut",
+    "Resolution_Source": "0250_DOCUMENTATION",
+    "SPS_ID": "T-1005",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_0250_DOC",
+    "Supplier": "Unknown Supplier",
+    "Tier1_Score": "",
+    "Tier2_Score": "0.2829"
+   },
+   {
+    "AI_Recommendation": "1. Grind out the cracked seam to sound metal, then re-weld.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "[RAW HISTORY - not checked for supplier use] 3 closest record(s):\n\n0250-Weld-Standards.docx § 7.1 Re-inspection After Repair (28%): Every repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n\n0250-Weld-Standards.docx § 4.2 Weld Seam Cracking (24%): Cracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition. The cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the b…\n\n0250-Weld-Standards.docx § 4.3 Weld Porosity Limits (24%): Porosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard. Condition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface Where porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original join…",
+    "Confidence_Score": "28%",
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Issue_Type": "Quality",
+    "Justification": "Historical records yielded no resolution. Per 0250-Weld-Standards.docx § 7.1 Re-inspection After Repair.\n\nSynthesized from 5 record(s): 0250-Weld-Standards.docx § 7.1 Re-inspection After Repair (28%), 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking (24%), 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits (24%), 0250-Surface-Finish.docx § 3.2 Surface Finish (19%), 0250-Weld-Standards.docx § 4.4 Weld Undercut (18%)",
+    "Matched_Solutions": "0250-Weld-Standards.docx § 7.1 Re-inspection After Repair: Every repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment.\n\n0250-Weld-Standards.docx § 4.2 Weld Seam Cracking: Cracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition. The cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the b…\n\n0250-Weld-Standards.docx § 4.3 Weld Porosity Limits: Porosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard. Condition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface Where porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original join…\n\n0250-Surface-Finish.docx § 3.2 Surface Finish: Machined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface.\n\n0250-Weld-Standards.docx § 4.4 Weld Undercut: Undercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended.",
+    "No_Recommendation_Reason": "",
+    "Part_Number": "",
+    "Problem_Description": "Bracket weld seam cracking observed during incoming inspection",
+    "Problem_Reason_Code": "RC-EQUIV",
+    "Reason": "Part number is missing or blank. Resolved instead from 5 0250 section(s) at 28% confidence: 0250-Weld-Standards.docx § 7.1 Re-inspection After Repair, 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking, 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits, 0250-Surface-Finish.docx § 3.2 Surface Finish, 0250-Weld-Standards.docx § 4.4 Weld Undercut.",
+    "Referenced_Sources": "0250-Weld-Standards.docx § 7.1 Re-inspection After Repair, 0250-Weld-Standards.docx § 4.2 Weld Seam Cracking, 0250-Weld-Standards.docx § 4.3 Weld Porosity Limits, 0250-Surface-Finish.docx § 3.2 Surface Finish, 0250-Weld-Standards.docx § 4.4 Weld Undercut",
+    "Resolution_Source": "0250_DOCUMENTATION",
+    "SPS_ID": "T-1006",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_0250_DOC",
+    "Supplier": "Acme Fabrication",
+    "Tier1_Score": "",
+    "Tier2_Score": "0.2829"
+   }
+  ]
+ },
+ "docx_chunks": [
+  {
+   "document": "0250-Packaging-Standards.docx",
+   "section": "2.1 Carton Labelling",
+   "text": "Each outer carton shall carry a label showing the part number, the drawing revision, the quantity contained, the purchase order number and the date of packing. Labels shall be printed at 300 dpi or better and shall remain legible after transit.\nWhere a label is found unreadable on arrival at the receiving dock, the carton shall be held and the supplier notified. Reprint the labels, apply them over the originals without obscuring any other marking, and verify print quality against a retained sample before release."
+  },
+  {
+   "document": "0250-Packaging-Standards.docx",
+   "section": "2.4 Barcode Symbology",
+   "text": "Barcodes shall use Code 128 unless the purchase order specifies otherwise. The encoded value shall match the printed part number exactly, including leading zeros and the dash. A barcode that scans to a different value than the printed text is a rejectable nonconformance and the whole shipment shall be held."
+  },
+  {
+   "document": "0250-Surface-Finish.docx",
+   "section": "3.2 Surface Finish",
+   "text": "Machined surfaces called out on the drawing shall achieve a surface roughness of Ra 1.6 micrometres or better. Surfaces not called out shall be free of burrs, raised edges and loose swarf. Roughness shall be measured with a calibrated profilometer over a 12 mm evaluation length, taking the arithmetic mean of three readings spaced along the surface."
+  },
+  {
+   "document": "0250-Weld-Standards.docx",
+   "section": "4.1 Scope",
+   "text": "This standard defines acceptance criteria and supplier disposition for welded assemblies supplied against a drawing that invokes it. It applies to fillet and butt welds on carbon steel and stainless steel brackets, mounts and frames."
+  },
+  {
+   "document": "0250-Weld-Standards.docx",
+   "section": "4.2 Weld Seam Cracking",
+   "text": "Cracking in a fillet or butt weld seam is cause for rejection of the affected part. Transverse cracks, longitudinal cracks and crater cracks shall all be treated as rejectable regardless of length. On discovery at incoming inspection, segregate the affected lot and quarantine it pending disposition.\nThe cracked seam shall be ground out to sound metal for the full length of the crack plus 25 mm beyond each visible end. Re-weld to the original joint profile using the qualified procedure for the base material. After re-welding, the repaired region shall be re-inspected by dye penetrant in accordance with section 7.1.\nA part that fails re-inspection twice shall be scrapped and shall not be reworked a third time. Record each repair against the lot traveller and return the traveller with the shipment."
+  },
+  {
+   "document": "0250-Weld-Standards.docx",
+   "section": "4.3 Weld Porosity Limits",
+   "text": "Porosity shall be assessed visually at 10x magnification over the full length of the seam. The limits below apply to every weld covered by this standard.\nCondition | Limit Scattered porosity | 2 percent by area maximum over any 25 mm of seam Clustered porosity | Rejectable at any level Wormholes and blowholes | Rejectable at any level Crater pipe | Rejectable where it breaks the surface\nWhere porosity exceeds the limit, grind out the porous region to sound metal and re-weld to the original joint profile. Verify shielding gas flow rate and base material cleanliness before the next production run, and state the corrective action taken on the certificate of conformance."
+  },
+  {
+   "document": "0250-Weld-Standards.docx",
+   "section": "4.4 Weld Undercut",
+   "text": "Undercut deeper than 0.5 mm, or exceeding 10 percent of the base material thickness where that is less, is rejectable. Undercut within the limit requires no rework and shall not be blended."
+  },
+  {
+   "document": "0250-Weld-Standards.docx",
+   "section": "7.1 Re-inspection After Repair",
+   "text": "Every repaired weld shall be re-inspected before the part is released. Dye penetrant inspection is the default method. Radiographic inspection is required where the joint is a full penetration butt weld carrying a primary load path. Re-inspection results shall accompany the shipment."
+  }
+ ],
+ "resolver_first_ticket": {
+  "calls": [
+   {
+    "messages": [
+     {
+      "content": "You assess whether past Supplier Problem Sheet (SPS) records address the same\nINTENT as an incoming ticket. You do not write recommendations and you do not\njudge solutions. You answer one question per record: is this past problem the\nsame request as the new one?\n\nFIRST, state the incoming ticket's intent in one sentence.\n\nThe intent is WHAT THE SUPPLIER IS ASKING FOR, not what happened to the part.\nMost tickets are mostly background -- lot numbers, dates, how the defect was\nfound -- and the request is often a single sentence near the end. Two tickets\ncan describe an identical defect and ask for opposite things:\n\n  \"we will re-engrave the units, and request an ESW to cover those already\n   produced\"                                    -> asks to REWORK, then ship\n  \"we have no experience with that rework, and request approval to ship these\n   units as-is\"                                 -> asks to USE AS-IS\n\nThose are different intents. A record answering one does not answer the other,\nhowever similar the two tickets read.\n\nTHEN, score each record 0-100 on how well ITS problem shares that intent.\n\n  90-100  The same request about the same kind of defect.\n  75-89   The same request; the defect differs in detail but not in kind.\n  50-74   Related, but the request differs -- a different disposition asked\n          for, or a different stage of the process.\n  0-49    A different problem, or the same words about a different request.\n\nRULES\n\n1. Score the PROBLEM, never the solution. If a record's problem matches the\n   ticket exactly, it scores high even when its recorded solution is unusable\n   boilerplate. Someone downstream needs to see that the closest precedent is\n   empty; scoring it low would hide that behind \"no match found\".\n2. Wording is not intent. Identical phrasing asking for a different outcome is\n   a low score. Completely different phrasing asking for the same outcome is a\n   high score. That distinction is the whole reason you are being asked.\n3. Judge only what is written. Do not assume an unstated request because it is\n   the usual one for this kind of defect.\n4. Where a ticket states no clear request, say so in ticket_intent and score on\n   the defect alone. Do not invent a request to score against.\n5. Return exactly one entry per record supplied, with its SPS ID copied\n   verbatim. Never invent, merge or omit a record.\n",
+      "role": "system"
+     },
+     {
+      "content": "INCOMING TICKET\nBracket weld seam cracking observed during incoming inspection\n\nPAST RECORDS TO SCORE\n[SPS_ID: SPS-1001]\nBracket weld seam cracking observed during incoming inspection\n\n[SPS_ID: SPS-1003]\nWeld porosity detected on the bracket joint during inspection\n",
+      "role": "user"
+     }
+    ],
+    "schema": "IntentAssessment"
+   }
+  ],
+  "exit_code": 0,
+  "output": [
+   {
+    "AI_Recommendation": "Rework the weld seam per the original joint profile. Re-inspect before shipment.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "Synthesized from 2 record(s): SPS-1001 (100%), SPS-1003 (31%)",
+    "Confidence_Score": "100%",
+    "Justification": "Confidence is 100% against SPS-1001, whose recorded solution is sent unchanged. Token overlap with SPS-1001.",
+    "Part_Number": "0012-43951",
+    "Referenced_Sources": "SPS-1001",
+    "Resolution_Source": "HISTORICAL_DATA"
+   }
+  ],
+  "status": [
+   {
+    "Embedding_Model": "azure:text-embedding-3-large",
+    "Reason": "Intent matched SPS-1001 at 100% across 2 record(s); its solution was sent unchanged. Ticket intent: Intent: Bracket weld seam cracking observed duri [Azure]",
+    "Status": "PASS",
+    "Status_Code": "SUCCESS_HISTORICAL"
+   }
+  ]
+ },
+ "resolver_unknown_part": {
+  "calls": [],
+  "exit_code": 0,
+  "output": [
+   {
+    "AI_Recommendation": "No recommendation available.",
+    "Cascade_Warnings": "",
+    "Closest_Matching_Solution": "",
+    "Confidence_Score": "",
+    "Justification": "Not much historical data to infer the solution or recommendation.",
+    "Part_Number": "0099-99999",
+    "Referenced_Sources": "",
+    "Resolution_Source": "NONE"
+   }
+  ],
+  "status": [
+   {
+    "Embedding_Model": "",
+    "Reason": "No usable history for part 0099-99999: 0 row(s) matched the part out of 5 scanned. Tier 2 skipped: no reason codes are configured (SPS_TIER2_REASON_CODES is empty).",
+    "Status": "FAIL",
+    "Status_Code": "NO_MATCHES"
+   }
+  ]
+ }
+}

@@ -987,8 +987,10 @@ def _resolve_from_docs(
                 CODE_INFRASTRUCTURE,
                 outcome.failure_reason,
                 EXIT_INFRASTRUCTURE,
-                **measured,
-                **tier2_measured,
+                # Merged, not double-splatted: both can carry closest_match
+                # when Tier 1 found no history, and two ** expansions with the
+                # same key are a TypeError rather than an override.
+                **{**measured, **tier2_measured},
             )
         return _no_resolution(
             f"{outcome.failure_reason} Best 0250 match "
@@ -1015,8 +1017,12 @@ def _resolve_from_docs(
         EXIT_OK,
         resolution_source=result.resolution_source,
         result=result,
-        **measured,
-        **tier2_measured,
+        # Merged for the same reason as the infrastructure path above. A part
+        # with no history whose standards lookup SUCCEEDED crashed here with
+        # "got multiple values for keyword argument 'closest_match'" -- and
+        # reported it as an infrastructure fault, so the robot retried a
+        # ticket that would fail identically every time.
+        **{**measured, **tier2_measured},
     )
 
 

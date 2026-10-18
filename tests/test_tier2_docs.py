@@ -695,6 +695,29 @@ def test_tier2_answers_when_tier1_finds_nothing(tmp_path, tiered_llm):
     assert "§" in result["Referenced_Sources"]
 
 
+def test_a_part_with_no_history_can_still_be_answered_from_the_standards(tmp_path, tiered_llm):
+    """The case the test above misses, because its part HAS history.
+
+    With no history at all, Tier 1 leaves closest_match empty but present, and
+    Tier 2 then supplies its own. Both reached ResolveOutcome as separate **
+    expansions, which is a TypeError -- reported as an infrastructure fault, so
+    the robot retried a ticket that would crash identically every time. Found
+    by the golden master, not by any test that existed.
+    """
+    tiered_llm(
+        tier1=_Outcome(failure_reason="unused: no history to score"),
+        tier2=_Outcome(_Draft("1. Grind out the cracked seam.", "Historical records "
+                              "yielded no resolution. Per 0250-Weld-Standards.docx.")),
+    )
+    docs = weld_corpus(tmp_path / "0250")
+
+    code, out = run_cli(tmp_path, docs_dir=docs, part="0099-99999", tier2_threshold=0.05)
+
+    assert code == resolver.EXIT_OK
+    assert read_sheet(out / "status.xlsx").iloc[0]["Status_Code"] == "SUCCESS_0250_DOC"
+    assert read_sheet(out / "output.xlsx").iloc[0]["Resolution_Source"] == "0250_DOCUMENTATION"
+
+
 def test_the_citations_come_from_retrieval_not_from_the_model(tmp_path, tiered_llm):
     """The same reason confidence and SPS IDs are supplied from measurement in
     Tier 1: a model asked to author its own citation can invent one."""
