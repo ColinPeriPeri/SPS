@@ -543,27 +543,18 @@ def test_reason_is_a_single_line(tmp_path, passing_llm):
 # ------------------------------------------------------------------ threshold
 
 
-def test_each_embedding_space_has_its_own_threshold():
-    """A threshold belongs to one embedding space. Two encoders means two
-    numbers, and the gate must apply whichever produced the vectors."""
-    from sps import (
-        AZURE_EMBEDDING_THRESHOLD,
-        LOCAL_EMBEDDING_THRESHOLD,
-        InMemoryRetriever,
-    )
+def test_the_tier1_gate_is_one_number():
+    """One embedding space in production, so one default gate. A threshold
+    measured for one encoder means nothing for another, which is why bge-small's
+    0.89 left with bge-small rather than lingering as a second default."""
+    from sps import AZURE_EMBEDDING_THRESHOLD, InMemoryRetriever
 
-    assert LOCAL_EMBEDDING_THRESHOLD == 0.89
     fields = InMemoryRetriever.__dataclass_fields__
-    assert fields["local_threshold"].default == LOCAL_EMBEDDING_THRESHOLD
+    assert "local_threshold" not in fields
     assert fields["azure_threshold"].default == AZURE_EMBEDDING_THRESHOLD
-    # The Azure value is deliberately not pinned to a literal. It is a recall
-    # filter feeding the intent scorer rather than a decision, so it is
-    # expected to move; what must not move is that the two spaces keep
-    # separate numbers.
-    assert AZURE_EMBEDDING_THRESHOLD != LOCAL_EMBEDDING_THRESHOLD
-    # No override by default: the backend decides.
+    # No override by default: the operator's --threshold is the only thing above it.
     assert fields["confidence_threshold"].default is None
-    assert resolver.DEFAULT_THRESHOLD == 0.89
+    assert not hasattr(resolver, "DEFAULT_THRESHOLD")
 
 
 def test_threshold_precedence(tmp_path, monkeypatch, passing_llm):

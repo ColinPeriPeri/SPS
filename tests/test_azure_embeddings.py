@@ -29,8 +29,7 @@ from sps import (  # noqa: E402
 from sps import (  # noqa: E402
     AZURE_BACKEND,
     AZURE_EMBEDDING_THRESHOLD,
-    LOCAL_BACKEND,
-    LOCAL_EMBEDDING_THRESHOLD,
+    INJECTED_BACKEND,
     InMemoryRetriever,
 )
 from tests.conftest import TokenOverlapEmbedder  # noqa: E402
@@ -264,9 +263,6 @@ def test_the_azure_threshold_is_the_one_that_applies(tmp_path, monkeypatch):
         'a recall filter must admit generously; the intent scorer rejects'
     )
     assert candidates, "0.6 clears the Azure gate"
-    # The same score would have been rejected by the local threshold, which is
-    # precisely why a silent fallback was dangerous.
-    assert retriever.stats.top_score < LOCAL_EMBEDDING_THRESHOLD
 
 
 def test_an_explicit_override_beats_the_backend_default(tmp_path, monkeypatch):
@@ -278,18 +274,18 @@ def test_an_explicit_override_beats_the_backend_default(tmp_path, monkeypatch):
     assert retriever.stats.threshold_used == 0.95
 
 
-def test_the_local_threshold_is_dormant_not_deleted():
-    """It stays beside the engine so re-wiring the local model is a code change
-    in one place, not a re-measurement."""
-    assert LOCAL_EMBEDDING_THRESHOLD == 0.89
+def test_the_retriever_has_one_gate_not_one_per_encoder():
+    """bge-small's 0.89 left with bge-small. A threshold belongs to one
+    embedding space, and production has one."""
     fields = InMemoryRetriever.__dataclass_fields__
-    assert fields["local_threshold"].default == 0.89
-    # Reachable only through an injected encoder, which the pipeline never sets.
-    assert "local_embedder_factory" not in fields
+    assert "local_threshold" not in fields
+    assert fields["azure_threshold"].default == AZURE_EMBEDDING_THRESHOLD
 
 
-def test_an_injected_encoder_still_uses_the_local_threshold(tmp_path):
-    """The seam the local model would be wired back through."""
+def test_an_injected_encoder_is_labelled_as_such_and_gated_like_azure(tmp_path):
+    """The seam the tests use. Named for what it is, so a stand-in can never be
+    mistaken for the deployment in the status sheet; and gated by the
+    production default, because no other number has been measured for it."""
     retriever = InMemoryRetriever(
         history_path=write_history(tmp_path / "h.xlsx", [row("SPS-1")]),
         embedder=TokenOverlapEmbedder(),
@@ -297,8 +293,8 @@ def test_an_injected_encoder_still_uses_the_local_threshold(tmp_path):
 
     retriever.retrieve(_ticket())
 
-    assert retriever.stats.backend == LOCAL_BACKEND
-    assert retriever.stats.threshold_used == LOCAL_EMBEDDING_THRESHOLD
+    assert retriever.stats.backend == INJECTED_BACKEND
+    assert retriever.stats.threshold_used == AZURE_EMBEDDING_THRESHOLD
 
 
 def test_stats_record_the_backend_for_the_status_sheet(tmp_path, monkeypatch):

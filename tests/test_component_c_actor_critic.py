@@ -1,4 +1,10 @@
-"""Component C -- Actor, Judge, refinement and the circuit breaker."""
+"""Component C -- Actor, Judge, refinement and the circuit breaker.
+
+Tier 2 is the only path that drafts and audits now -- Tier 1 scores intent and
+sends a precedent verbatim -- so these run the loop with a Tier-2 grounding. The
+loop itself is shared code: the breaker, both gates and the fail-closed Judge
+behave identically whatever grounding it is handed.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +20,7 @@ pytest.importorskip("pydantic")
 from sps import LLMSettings
 from sps import Candidate, IncomingTicket
 from sps import ActorCriticLoop, LLMError, parse_json_response
-from sps_prompts import build_actor_messages, build_judge_messages
+from sps import DocChunk, ScoredChunk, documentation_grounding
 from tests.conftest import ScriptedChatClient
 
 TICKET = IncomingTicket(
@@ -49,6 +55,23 @@ CANDIDATES = [
 ]
 
 
+# The same texts as CANDIDATES, as standards extracts, so every assertion about
+# what the model was grounded in reads the same as it did against history.
+CHUNKS = [
+    ScoredChunk(
+        chunk=DocChunk(document="0250-Weld-Standards.docx", section="4.2 Weld Seam Cracking",
+                       text="Rework the weld seam. Re-inspect under 10x magnification."),
+        score=0.95,
+    ),
+    ScoredChunk(
+        chunk=DocChunk(document="0250-Weld-Standards.docx", section="7.1 Re-inspection",
+                       text="Scrap the affected lot and ship a replacement."),
+        score=0.89,
+    ),
+]
+GROUNDING = documentation_grounding(CHUNKS)
+
+
 def actor(recommendation: str, justification: str = "Based on SPS-100.") -> str:
     return json.dumps({"recommendation": recommendation, "justification": justification})
 
@@ -72,7 +95,7 @@ def loop(*responses, max_attempts: int = 3):
 
 async def test_draft_passing_the_judge_is_returned_immediately():
     engine, client = loop(actor("1. Rework the weld seam."), PASS)
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.attempts == 1
@@ -92,7 +115,7 @@ async def test_failed_draft_is_refined_and_can_pass_on_retry():
         actor("1. Rework the weld seam."),
         PASS,
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.attempts == 2
@@ -106,7 +129,7 @@ async def test_critique_and_rejected_draft_are_fed_back_to_the_actor():
         actor("1. Rework the weld seam."),
         PASS,
     )
-    await engine.run(TICKET, CANDIDATES)
+    await engine.run_grounded(TICKET, GROUNDING)
 
     second_actor_prompt = client.calls[2][1]["content"]
     assert "Remove the invented torque value." in second_actor_prompt
@@ -120,7 +143,7 @@ async def test_third_attempt_can_still_succeed():
         actor("draft two"), fail("c2"),
         actor("draft three"), PASS,
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.attempts == 3
@@ -137,7 +160,7 @@ async def test_circuit_breaker_stops_after_three_attempts():
         actor("draft two"), fail("c2"),
         actor("draft three"), fail("c3"),
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert not result.succeeded
     assert result.draft is None
@@ -150,7 +173,7 @@ async def test_circuit_breaker_stops_after_three_attempts():
 
 async def test_abstention_short_circuits_without_retrying():
     engine, client = loop(actor("Solution not found."))
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert not result.succeeded
     assert result.attempts == 1
@@ -171,7 +194,7 @@ async def test_judge_outage_does_not_ship_an_unaudited_draft():
             raise LLMError("Azure timeout")
 
     engine = ActorCriticLoop(BrokenJudge([]), LLMSettings())
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert not result.succeeded
     assert "audit unavailable" in result.failure_reason.lower()
@@ -179,13 +202,13 @@ async def test_judge_outage_does_not_ship_an_unaudited_draft():
 
 async def test_unrecognised_judge_status_is_not_treated_as_a_pass():
     engine, _ = loop(actor("1. Rework."), json.dumps({"status": "MAYBE"}))
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
     assert not result.succeeded
 
 
 async def test_actor_returning_no_recommendation_fails_gracefully():
     engine, _ = loop(json.dumps({"justification": "nothing here"}))
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert not result.succeeded
     assert "Generation failed" in result.failure_reason
@@ -196,7 +219,7 @@ async def test_judge_failing_without_a_critique_still_yields_actionable_text():
         actor("d1"), json.dumps({"status": "FAIL"}),
         actor("d2"), PASS,
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
     assert result.succeeded
     assert result.critiques[0]
 
@@ -222,39 +245,17 @@ def test_unusable_model_output_raises(raw):
 # --------------------------------------------------------------------------
 
 
-def test_actor_context_contains_solutions_but_no_hidden_metadata():
-    messages = build_actor_messages(TICKET, CANDIDATES)
-    user = messages[1]["content"]
+def test_history_metadata_cannot_reach_the_intent_scorer():
+    """The scorer is shown the incoming problem and each record's problem text,
+    nothing else. Candidate carries metadata -- reason codes, part descriptions,
+    item status -- but the builder reads named attributes only, so a field
+    added to history can never reach the model.
 
-    assert TICKET.problem_description in user
-    assert "Rework the weld seam." in user
-    assert "SPS-100" in user
-    # The Actor is never shown internal-ish payload fields it could echo.
-    assert "Mounting bracket" not in user
-    assert "RC-WELD" not in user
-
-
-def test_actor_system_prompt_states_the_grounding_and_leakage_rules():
-    system = build_actor_messages(TICKET, CANDIDATES)[0]["content"]
-    assert "ZERO external domain knowledge" in system
-    assert "EXTERNAL SUPPLIER" in system
-
-
-def test_judge_prompt_carries_both_mandated_checks():
-    system = build_judge_messages(TICKET, CANDIDATES, "some draft")[0]["content"]
-    assert "DOMAIN HALLUCINATION" in system
-    assert "INTERNAL TOOL LEAKAGE" in system
-
-    user = build_judge_messages(TICKET, CANDIDATES, "some draft")[1]["content"]
-    assert "some draft" in user
-    assert "Rework the weld seam." in user  # the source of truth it audits against
-
-
-def test_history_metadata_cannot_reach_the_actor_or_judge():
-    """The Actor is shown the incoming problem and the historical solution text,
-    nothing else. Candidate carries metadata, but the prompt builders read named
-    attributes only, so a field added to history can never reach the model."""
+    Ported from the Tier-1 Actor/Judge test of the same property when that path
+    was removed: the guarantee belongs to whatever builds the history prompt.
+    """
     from sps import HistoryRow, _to_candidate
+    from sps_prompts import build_intent_messages
 
     secret = "INTERNAL-MES-REF-9931"
     candidate = _to_candidate(
@@ -271,16 +272,12 @@ def test_history_metadata_cannot_reach_the_actor_or_judge():
         0.93,
     )
 
-    for messages in (
-        build_actor_messages(TICKET, [candidate]),
-        build_judge_messages(TICKET, [candidate], "draft"),
-    ):
-        blob = "".join(m["content"] for m in messages)
-        assert secret not in blob
-    # What the model *is* shown: the SPS ID and the solution text.
-    user = build_actor_messages(TICKET, [candidate])[1]["content"]
-    assert "SPS-100" in user
-    assert "Rework the weld seam" in user
+    blob = "".join(m["content"] for m in build_intent_messages(TICKET, [candidate]))
+    assert secret not in blob
+    # What the scorer IS shown: the id and the problem -- never the solution.
+    assert "SPS-100" in blob
+    assert "Weld seam cracking on the bracket" in blob
+    assert "Rework the weld seam" not in blob
 
 
 # --------------------------------------------------------------------------
@@ -307,7 +304,7 @@ async def test_a_leaking_draft_never_reaches_the_judge():
     paid call that had already passed this exact text."""
     engine, client = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert not result.succeeded
     # Three Actor calls and no Judge call: a PASS was never scripted, and the
@@ -318,7 +315,7 @@ async def test_a_leaking_draft_never_reaches_the_judge():
 async def test_the_leaked_work_request_trips_the_circuit_breaker():
     engine, _ = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.draft is None, "this must never reach a supplier"
     assert result.attempts == 3
@@ -330,7 +327,7 @@ async def test_the_failure_reason_says_which_gate_kept_failing():
     reference carried forward: they want different follow-ups."""
     engine, _ = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert "ESW#20033465" in result.failure_reason
 
@@ -338,7 +335,7 @@ async def test_the_failure_reason_says_which_gate_kept_failing():
 async def test_the_actor_is_told_exactly_what_to_remove():
     engine, _ = loop(actor(LEAKING_DRAFT), actor(LEAKING_DRAFT), actor(LEAKING_DRAFT))
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
     critique = result.critiques[0]
 
     assert "attachment" in critique.lower()
@@ -351,7 +348,7 @@ async def test_a_rewrite_that_drops_the_references_passes():
     """The gate is a rewrite prompt, not only a refusal."""
     engine, client = loop(actor(LEAKING_DRAFT), actor(CLEAN_DRAFT), PASS)
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.attempts == 2
@@ -362,7 +359,7 @@ async def test_a_rewrite_that_drops_the_references_passes():
 async def test_the_rejected_draft_is_shown_to_the_actor_on_the_retry():
     engine, client = loop(actor(LEAKING_DRAFT), actor(CLEAN_DRAFT), PASS)
 
-    await engine.run(TICKET, CANDIDATES)
+    await engine.run_grounded(TICKET, GROUNDING)
 
     retry = client.calls[1][-1]["content"]
     assert "ESW#20033465" in retry, "the actor must see what it wrote"
@@ -373,7 +370,7 @@ async def test_a_clean_draft_is_untouched_by_the_gate():
     """The gate must not cost a round trip on text that was always fine."""
     engine, client = loop(actor(CLEAN_DRAFT), PASS)
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.attempts == 1
@@ -402,7 +399,7 @@ async def test_telling_the_supplier_to_issue_an_esw_is_rejected():
         actor(MISATTRIBUTED_DRAFT), actor(MISATTRIBUTED_DRAFT), actor(MISATTRIBUTED_DRAFT)
     )
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.draft is None
     # No Judge call was scripted, and none was needed: the gate is local.
@@ -412,7 +409,7 @@ async def test_telling_the_supplier_to_issue_an_esw_is_rejected():
 async def test_the_critique_shows_the_required_rephrasing():
     engine, _ = loop(actor(MISATTRIBUTED_DRAFT), actor(REPHRASED_DRAFT), PASS)
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert "An ESW has been requested" in result.critiques[0]
@@ -423,7 +420,7 @@ async def test_rephrasing_as_an_awaited_outcome_passes():
     """The fix is a rewrite, not only a refusal -- and step 2 was always fine."""
     engine, _ = loop(actor(MISATTRIBUTED_DRAFT), actor(REPHRASED_DRAFT), PASS)
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert "Do not ship the parts" in result.draft.recommendation
@@ -436,7 +433,7 @@ async def test_both_kinds_of_problem_cost_one_attempt_not_two():
     both = "1. Issue an ESW.\n2. Per discussed, see the attachment."
     engine, _ = loop(actor(both), actor(REPHRASED_DRAFT), PASS)
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.attempts == 2
@@ -456,7 +453,7 @@ async def test_both_kinds_of_problem_cost_one_attempt_not_two():
 
 async def test_abstention_reports_its_own_stop_reason():
     engine, _ = loop(actor("Solution not found."))
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.stop_reason == "ACTOR_ABSTAINED"
 
@@ -467,7 +464,7 @@ async def test_a_leaked_reference_is_attributed_to_the_transferability_gate():
     leaky = "1. Per discussed, see the attachment. 2. ESW#20033465 is submitted."
     engine, client = loop(actor(leaky), actor(leaky), actor(leaky))
 
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.stop_reason == "GATE_UNTRANSFERABLE"
     assert client.call_count == 3  # three Actor calls, zero Judge calls
@@ -475,7 +472,7 @@ async def test_a_leaked_reference_is_attributed_to_the_transferability_gate():
 
 async def test_telling_the_supplier_to_act_is_attributed_to_the_other_gate():
     engine, _ = loop(*[actor("1. Issue an ESW.")] * 3)
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.stop_reason == "GATE_MISATTRIBUTED"
 
@@ -486,7 +483,7 @@ async def test_a_judge_rejection_is_attributed_to_the_judge():
         actor("draft two"), fail("c2"),
         actor("draft three"), fail("c3"),
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.stop_reason == "JUDGE_REFUSED"
 
@@ -495,7 +492,7 @@ async def test_an_outage_is_not_recorded_as_a_content_refusal():
     """The tally exists to say whether our checks or the data are the
     constraint. An Azure failure is neither, and must not inflate either."""
     engine, _ = loop(actor("1. Rework the seam."), "not json at all")
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.stop_reason == "INFRASTRUCTURE"
     assert result.infrastructure_failure
@@ -503,7 +500,7 @@ async def test_an_outage_is_not_recorded_as_a_content_refusal():
 
 async def test_a_success_records_no_stop_reason():
     engine, _ = loop(actor("1. Rework the weld seam."), PASS)
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.stop_reason == ""
@@ -517,7 +514,7 @@ async def test_the_last_gate_to_fire_is_the_one_reported():
         actor("1. Rework the seam."), fail("c2"),          # judge
         actor("1. Re-inspect the seam."), fail("c3"),      # judge
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.stop_reason == "JUDGE_REFUSED"
 
@@ -544,7 +541,7 @@ async def test_a_leaking_justification_is_discarded():
         draft_with("Based on SPS-100, for which ESW#20033465 was submitted; see the attachment."),
         PASS,
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.succeeded
     assert result.draft.justification == ""
@@ -555,7 +552,7 @@ async def test_the_recommendation_survives_a_dirty_justification():
     its rationale was careless -- the resolver substitutes generated text for
     the empty justification and the recommendation ships untouched."""
     engine, client = loop(draft_with("Per discussed, see ESW#20033465."), PASS)
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.draft.recommendation == CLEAN_REC
     assert result.attempts == 1
@@ -567,7 +564,7 @@ async def test_a_clean_justification_is_left_alone():
     reviewer the one sentence explaining where the answer came from."""
     reason = "Drawn from SPS-100, which records the same weld seam defect on this part."
     engine, _ = loop(draft_with(reason), PASS)
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.draft.justification == reason
 
@@ -577,14 +574,14 @@ async def test_an_esw_stated_as_an_outcome_survives_in_a_justification():
     describes what happened; only "Issue an ESW" tells someone to do it."""
     reason = "The record notes an ESW was issued before shipment was released."
     engine, _ = loop(draft_with(reason), PASS)
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.draft.justification == reason
 
 
 async def test_a_misattributed_action_in_a_justification_is_discarded():
     engine, _ = loop(draft_with("The supplier should issue an ESW for this unit."), PASS)
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.draft.justification == ""
     assert result.draft.recommendation == CLEAN_REC
@@ -599,7 +596,7 @@ async def test_a_refused_draft_is_unaffected():
         draft_with("ESW#20033465."), fail("c2"),
         draft_with("ESW#20033465."), fail("c3"),
     )
-    result = await engine.run(TICKET, CANDIDATES)
+    result = await engine.run_grounded(TICKET, GROUNDING)
 
     assert result.draft is None
     assert result.stop_reason == "JUDGE_REFUSED"

@@ -11,32 +11,24 @@ import os
 
 import pytest
 
-from sps import MAX_ATTEMPTS, EmbeddingSettings, LLMSettings
+from sps import MAX_ATTEMPTS, LLMSettings
 
 
 def test_settings_load_from_a_bare_environment(monkeypatch):
-    for key in ("SPS_EMBEDDING_MODEL", "SPS_EMBEDDING_DIM", "SPS_EMBEDDING_DEVICE",
-                "SPS_EMBEDDING_ENCODE_BATCH", "AZURE_OPENAI_API_VERSION", "SPS_LLM_TIMEOUT"):
+    for key in ("AZURE_OPENAI_API_VERSION", "SPS_LLM_TIMEOUT"):
         monkeypatch.delenv(key, raising=False)
 
-    embedding = EmbeddingSettings.from_env()
-    assert embedding.model_name == "BAAI/bge-small-en-v1.5"
-    assert embedding.dimension == 384
-    assert isinstance(embedding.device, str)
-    assert isinstance(embedding.encode_batch_size, int)
     assert isinstance(LLMSettings.from_env().request_timeout, float)
 
 
-def test_the_local_model_settings_survive_being_out_of_the_pipeline():
-    """The bge-small defaults stay single-sourced in config even though nothing
-    reaches them: the resolver no longer names a local model at all, so config
-    is now the only place that does."""
-    import sps as resolver
+def test_the_local_encoder_is_gone():
+    """Removed rather than kept dormant: it needed torch to run at all, and its
+    settings and thresholds were calibrations for a model nothing loads."""
+    import sps
 
-    assert EmbeddingSettings().model_name == "BAAI/bge-small-en-v1.5"
-    assert EmbeddingSettings().dimension == 384
-    # The resolver used to re-declare both to build its fallback factory.
-    assert not hasattr(resolver, "DEFAULT_MODEL")
+    for name in ("BGEEmbedder", "EmbeddingSettings", "BGE_QUERY_INSTRUCTION",
+                 "LOCAL_EMBEDDING_THRESHOLD", "TIER2_LOCAL_THRESHOLD"):
+        assert not hasattr(sps, name), name
 
 
 def test_inference_settings_are_deterministic_by_default():
@@ -47,19 +39,9 @@ def test_inference_settings_are_deterministic_by_default():
 
 
 def test_environment_overrides_are_applied(monkeypatch):
-    monkeypatch.setenv("SPS_EMBEDDING_MODEL", "custom/model")
-    monkeypatch.setenv("SPS_EMBEDDING_DIM", "512")
     monkeypatch.setenv("SPS_LLM_TEMPERATURE", "0.2")
 
-    assert EmbeddingSettings.from_env().model_name == "custom/model"
-    assert EmbeddingSettings.from_env().dimension == 512
     assert LLMSettings.from_env().temperature == 0.2
-
-
-@pytest.mark.parametrize("raw,expected", [("true", True), ("false", False), ("1", True), ("0", False)])
-def test_boolean_env_parsing(monkeypatch, raw, expected):
-    monkeypatch.setenv("SPS_USE_BGE_QUERY_INSTRUCTION", raw)
-    assert EmbeddingSettings.from_env().use_query_instruction is expected
 
 
 def test_credentials_are_never_defaulted():

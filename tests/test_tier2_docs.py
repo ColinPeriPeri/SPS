@@ -23,7 +23,6 @@ from sps import IncomingTicket  # noqa: E402
 from sps import (  # noqa: E402
     CACHE_FILENAMES,
     TIER2_AZURE_THRESHOLD,
-    TIER2_LOCAL_THRESHOLD,
     DocRetriever,
     ScoredChunk,
     build_query,
@@ -310,11 +309,11 @@ def test_editing_a_document_invalidates_the_cache(tmp_path):
 
 def test_each_encoder_gets_its_own_cache_file(tmp_path):
     """A vector belongs to one embedding space; one file could not hold two."""
-    assert CACHE_FILENAMES["azure"] != CACHE_FILENAMES["local"]
+    assert CACHE_FILENAMES["azure"] != CACHE_FILENAMES["injected"]
     weld_corpus(tmp_path)
     DocRetriever(docs_dir=tmp_path, embedder=TokenOverlapEmbedder()).retrieve(ticket())
 
-    assert (tmp_path / CACHE_FILENAMES["local"]).exists()
+    assert (tmp_path / CACHE_FILENAMES["injected"]).exists()
     assert not (tmp_path / CACHE_FILENAMES["azure"]).exists()
 
 
@@ -322,7 +321,7 @@ def test_a_changed_model_invalidates_the_cache(tmp_path):
     """Two Azure deployments share a filename but not an embedding space, so
     the model that wrote the vectors is recorded and checked."""
     chunks = [DocChunk("d.docx", "4.2", CRACKING)]
-    path = tmp_path / CACHE_FILENAMES["local"]
+    path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, chunks, [[0.1, 0.2]], {
         "format": 2, "corpus_hash": "abc", "model": "azure:text-embedding-3-large",
     })
@@ -332,7 +331,7 @@ def test_a_changed_model_invalidates_the_cache(tmp_path):
 
 
 def test_a_stale_hash_invalidates_the_cache(tmp_path):
-    path = tmp_path / CACHE_FILENAMES["local"]
+    path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, [DocChunk("d.docx", "4.2", CRACKING)], [[0.1, 0.2]],
                {"format": 2, "corpus_hash": "abc", "model": "m"})
 
@@ -341,7 +340,7 @@ def test_a_stale_hash_invalidates_the_cache(tmp_path):
 
 def test_a_corrupt_cache_is_a_rebuild_not_a_crash(tmp_path, caplog):
     """The documents on disk are always the source of truth."""
-    path = tmp_path / CACHE_FILENAMES["local"]
+    path = tmp_path / CACHE_FILENAMES["injected"]
     path.write_bytes(b"this is not an npz archive")
 
     with caplog.at_level("WARNING"):
@@ -354,7 +353,7 @@ def test_the_cache_round_trips_chunks_exactly(tmp_path):
         DocChunk("0250-Weld-Standards.docx", "4.2 Weld Seam Cracking", CRACKING),
         DocChunk("0250-Packaging-Standards.docx", "2.1 Carton Labelling", PACKAGING),
     ]
-    path = tmp_path / CACHE_FILENAMES["local"]
+    path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, chunks, [[1.0, 0.0], [0.0, 1.0]],
                {"format": 2, "corpus_hash": "h", "model": "m"})
 
@@ -367,7 +366,7 @@ def test_the_cache_is_never_unpickled(tmp_path):
     """A cache file is data. A pickle loader would execute whatever it held."""
     import numpy as np
 
-    path = tmp_path / CACHE_FILENAMES["local"]
+    path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, [DocChunk("d.docx", "s", CRACKING)], [[1.0]],
                {"format": 2, "corpus_hash": "h", "model": "m"})
 
@@ -403,18 +402,14 @@ def test_a_ticket_without_an_issue_type_still_queries():
     assert build_query(ticket(issue="")) == f"Defect: {PROBLEM}"
 
 
-def test_tier2_has_its_own_thresholds():
-    """Tier 1's 0.89 was calibrated on two short defect sentences. A 300-word
-    standards chunk that genuinely answers the ticket measures 0.78, so sharing
-    the number would reject every chunk and the tier would never fire."""
-    from sps import LOCAL_EMBEDDING_THRESHOLD
-
-    assert TIER2_LOCAL_THRESHOLD == 0.62
+def test_tier2_has_its_own_threshold():
+    """A 300-word standards chunk that genuinely answers the ticket scores far
+    lower than two matching defect sentences do, so Tier 2 cannot share Tier 1's
+    number. One per tier -- and none per encoder, since production has one."""
     assert TIER2_AZURE_THRESHOLD == 0.35
-    assert TIER2_LOCAL_THRESHOLD < LOCAL_EMBEDDING_THRESHOLD
 
     fields = DocRetriever.__dataclass_fields__
-    assert fields["local_threshold"].default == TIER2_LOCAL_THRESHOLD
+    assert "local_threshold" not in fields
     assert fields["azure_threshold"].default == TIER2_AZURE_THRESHOLD
     assert fields["confidence_threshold"].default is None
 
@@ -552,10 +547,9 @@ def test_the_rendered_context_shows_each_citation():
 
 
 def test_the_tier2_grounding_carries_its_own_abstention_reason():
-    from sps import documentation_grounding, historical_grounding
+    from sps import documentation_grounding
 
     assert "0250" in documentation_grounding([]).abstention_reason
-    assert "Historical" in historical_grounding([]).abstention_reason
 
 
 # -------------------------------------------------------- through the CLI

@@ -59,9 +59,7 @@ import traceback
 import unicodedata
 
 from sps_prompts import (
-    build_actor_messages,
     build_intent_messages,
-    build_judge_messages,
     build_tier2_actor_messages,
     build_tier2_judge_messages,
     SOLUTION_NOT_FOUND,
@@ -386,21 +384,9 @@ class PipelineResult:
 
 MAX_ATTEMPTS = 3  # 1 initial draft + 2 refinement retries
 
-# BGE-v1.5 retrieval convention: queries carry an instruction prefix, indexed
-# passages do not. This is a model-level encoding convention, not metadata
-# concatenation -- the embedded text is still only the Problem_Description.
-BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
-
 # Defaults are module constants rather than class attributes: with
 # @dataclass(slots=True) the class attribute is a slot descriptor, not the
 # default value, so from_env() cannot read defaults off `cls`.
-# bge-small: 384 dimensions, roughly ten times faster than bge-large on CPU
-# (about 1 s versus 11 s to encode 300 short texts), which is what makes
-# embedding at query time viable at all.
-DEFAULT_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-DEFAULT_DIMENSION = 384
-DEFAULT_DEVICE = "cpu"
-DEFAULT_ENCODE_BATCH = 16
 # 2024-10-21 is the first GA version with json_schema structured outputs;
 # 2024-06-01 silently lacks them and would take the JSON-mode fallback.
 DEFAULT_API_VERSION = "2024-10-21"
@@ -467,11 +453,6 @@ def _env_float(key: str, default: float) -> float:
     return float(raw) if raw else default
 
 
-def _env_bool(key: str, default: bool) -> bool:
-    raw = _env(key).lower()
-    if not raw:
-        return default
-    return raw in {"1", "true", "yes", "on"}
 
 
 def _env_list(key: str) -> tuple[str, ...]:
@@ -529,25 +510,6 @@ class IntentSettings:
 
 
 @dataclass(frozen=True, slots=True)
-class EmbeddingSettings:
-    model_name: str = DEFAULT_MODEL_NAME
-    dimension: int = DEFAULT_DIMENSION
-    device: str = DEFAULT_DEVICE
-    encode_batch_size: int = DEFAULT_ENCODE_BATCH  # inner batch per forward pass
-    use_query_instruction: bool = True
-
-    @classmethod
-    def from_env(cls) -> "EmbeddingSettings":
-        return cls(
-            model_name=_env("SPS_EMBEDDING_MODEL", DEFAULT_MODEL_NAME),
-            dimension=_env_int("SPS_EMBEDDING_DIM", DEFAULT_DIMENSION),
-            device=_env("SPS_EMBEDDING_DEVICE", DEFAULT_DEVICE),
-            encode_batch_size=_env_int("SPS_EMBEDDING_ENCODE_BATCH", DEFAULT_ENCODE_BATCH),
-            use_query_instruction=_env_bool("SPS_USE_BGE_QUERY_INSTRUCTION", True),
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class LLMSettings:
     endpoint: str = ""
     api_key: str = ""
@@ -578,7 +540,7 @@ class AzureEmbeddingSettings:
 
     Separate from LLMSettings: the embedding deployment is its own resource,
     and the resolver must be able to lose it (bad key, throttling, network)
-    and fall back to the local model without the chat path being affected.
+    without the chat path being affected.
 
     The timeout is deliberately shorter than the chat timeout. A slow embedding
     call has a working alternative one exception away, so waiting a full minute
@@ -867,10 +829,8 @@ class JudgeVerdict(BaseModel):
 # Embedding
 # =============================================================================
 #
-# BAAI/bge-large-en-v1.5 embedding wrapper (local, CPU-only).
-#
-# sentence-transformers/torch are imported lazily so the rest of the package --
-# and its tests -- import cleanly on a machine without the ML stack.
+# The Azure embedding client, and the Embedder protocol through which tests
+# inject a deterministic stand-in.
 
 @runtime_checkable
 class Embedder(Protocol):
@@ -885,87 +845,10 @@ class Embedder(Protocol):
         """Embed a single incoming problem statement for retrieval."""
 
 
-class BGEEmbedder:
-    """sentence-transformers implementation pinned to CPU inference.
-
-    Vectors are L2-normalized at encode time, which makes the vector DB's
-    cosine similarity a plain dot product and keeps scores in [-1, 1].
-    """
-
-    def __init__(self, settings: EmbeddingSettings | None = None) -> None:
-        self.settings = settings or EmbeddingSettings()
-        self.dimension = self.settings.dimension
-        self._model = None  # loaded on first use (~1.3 GB resident)
-
-    @property
-    def model(self):
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer
-
-            self._model = SentenceTransformer(
-                self.settings.model_name,
-                device=self.settings.device,
-            )
-            actual = self._model.get_sentence_embedding_dimension()
-            if actual != self.dimension:
-                raise ValueError(
-                    f"{self.settings.model_name} produced {actual}-dim vectors, "
-                    f"expected {self.dimension}"
-                )
-        return self._model
-
-    def _encode(self, texts: Sequence[str]) -> list[list[float]]:
-        # convert_to_tensor, not convert_to_numpy: the torch->numpy bridge is an
-        # ABI coupling that breaks outright ("Numpy is not available") whenever
-        # the installed numpy major version differs from the one torch was built
-        # against. The output is converted to plain lists for the vector DB
-        # either way, so routing through numpy buys nothing and adds a
-        # dependency-resolution failure mode to the hot path.
-        vectors = self.model.encode(
-            list(texts),
-            batch_size=self.settings.encode_batch_size,
-            normalize_embeddings=True,
-            convert_to_tensor=True,
-            show_progress_bar=False,
-        )
-        return vectors.detach().cpu().tolist()
-
-    def embed_passages(self, texts: Sequence[str]) -> list[list[float]]:
-        """Index side: the raw Problem_Description only.
-
-        Per Component A.4 nothing is appended -- no metadata, no solution text,
-        and (per BGE's own convention) no instruction prefix on passages.
-        """
-        if not texts:
-            return []
-        return self._encode(texts)
-
-    def embed_query(self, text: str) -> list[float]:
-        """Query side: optional BGE retrieval instruction prefix.
-
-        The prefix is how bge-*-v1.5 was trained to encode queries and lifts
-        recall measurably. It is a fixed encoding instruction, not record
-        metadata, so Component A.4's "no appended metadata" rule is unaffected.
-        Disable with SPS_USE_BGE_QUERY_INSTRUCTION=false to embed queries and
-        passages identically.
-        """
-        prepared = (
-            f"{BGE_QUERY_INSTRUCTION}{text}"
-            if self.settings.use_query_instruction
-            else text
-        )
-        return self._encode([prepared])[0]
-
-    def unload(self) -> None:
-        """Release model memory -- used by the indexer on shutdown."""
-        self._model = None
-
-
 class AzureEmbeddingError(RuntimeError):
     """The Azure embedding call failed.
 
-    With the local encoder out of the pipeline there is nothing to fall back
-    to, so this now ends the run. It stays a single base class because most
+    There is no other encoder to fall back to, so this ends the run. It stays a single base class because most
     callers only need "embedding did not happen".
     """
 
@@ -981,14 +864,13 @@ class AzureEmbeddingNotConfigured(AzureEmbeddingError):
 
 
 class AzureEmbedder:
-    """Azure OpenAI embeddings, used as the primary encoder.
+    """Azure OpenAI embeddings, the only encoder.
 
-    Two differences from the local BGE path that matter for correctness:
+    Two properties that matter for correctness:
 
-    * **No instruction prefix.** "Represent this sentence for searching relevant
-      passages: " is a convention `bge-*-v1.5` was trained with. Azure's
-      embedding models were not, so prepending it here would inject a constant
-      meaningless string and shift every query vector for no benefit.
+    * **No instruction prefix.** Some open models (bge-*-v1.5, which this
+      pipeline once used) are trained to expect one on queries. Azure's are
+      not, so prepending one would shift every query vector for no benefit.
     * **Vectors are normalised defensively.** OpenAI returns unit-length
       embeddings today, but the ranking is a bare dot product that silently
       stops being a cosine if that ever changes. Normalising costs nothing at
@@ -1087,12 +969,12 @@ def _unit(vector: Sequence[float]) -> list[float]:
 DOCX_SUFFIX = ".docx"
 LEGACY_DOC_SUFFIX = ".doc"
 
-# 250-350 words per the standard's own guidance. At ~1.1 tokens per word for
-# technical prose that is 270-390 tokens, comfortably inside bge-small's 512
-# limit even once the citation prefix is added -- measured at 382 tokens for
-# 350 words, leaving ~130 tokens of headroom.
+# 250-350 words per the standard's own guidance. Sized originally for the
+# since-removed bge-small's 512-token window (382 tokens measured for 350
+# words with the citation prefix). Azure's input limit is far larger; the size
+# stays because a chunk of about one section keeps each citation pointing at
+# what the supplier is actually being sent to.
 TARGET_CHUNK_WORDS = 300
-MIN_CHUNK_WORDS = 250
 MAX_CHUNK_WORDS = 350
 
 # Below this a "chunk" is a heading with nothing under it, or a stray caption.
@@ -1382,15 +1264,14 @@ def iter_doc_files(directory: Path | str) -> list[Path]:
 # vectors in milliseconds.
 #
 # Two caches, never one. A threshold and a vector both belong to a single
-# embedding space, so `0250_cache_azure.npz` and `0250_cache_local.npz` are
+# embedding space, so `0250_cache_azure.npz` and `0250_cache_injected.npz` are
 # separate files and a run reads whichever matches the encoder that actually
 # answered. Mixing them would compute cosines between unrelated spaces and return
 # numbers that look like similarities.
 #
-# Only the azure cache is written at present: the local encoder is out of the
-# pipeline, so `0250_cache_local.npz` is reachable only through an injected
-# embedder. The filename stays reserved rather than removed, so a corpus embedded
-# by a re-wired local model can never land in the Azure file.
+# Only the azure cache is written in production. An encoder passed through the
+# `embedder=` seam writes `0250_cache_injected.npz` instead, so vectors from a
+# stand-in can never be read back as though they shared Azure's space.
 
 # Where the standards live. Relative to the working directory, so the UiPath
 # Performer's project folder is the root, same as every other path the robot
@@ -1399,7 +1280,7 @@ DEFAULT_DOCS_DIR = Path("data/0250_docs")
 
 CACHE_FILENAMES = {
     "azure": "0250_cache_azure.npz",
-    "local": "0250_cache_local.npz",
+    "injected": "0250_cache_injected.npz",
 }
 
 
@@ -1409,36 +1290,23 @@ CACHE_FILENAMES = {
 TIER2_TOP_K = 5
 
 
-# Tier-2 thresholds are NOT Tier-1's, and the gap is not a detail.
+# Tier 2 has its own threshold, not Tier 1's, and the gap is not a detail.
 #
-# Measured with bge-small on a representative 0250 section: the enriched query
-# against a chunk that genuinely answers it scores 0.7800, an adjacent section
-# of the same standard 0.6681, and an unrelated standard 0.5237. Tier 1's local
-# gate is 0.89 -- reusing it would reject the correct chunk on every ticket and
-# the tier would never fire once.
+# The comparison differs in kind. Tier 1 matches one short defect sentence
+# against another; Tier 2 matches a defect sentence against 300 words of
+# standards prose that answers it without resembling it, so its scores run
+# structurally lower. Measured with the since-removed bge-small encoder: a
+# chunk that genuinely answered the ticket scored 0.78, an adjacent section
+# 0.67 and an unrelated standard 0.52, against a Tier-1 gate of 0.89 that
+# would have rejected the right chunk on every ticket.
 #
-# The distribution is lower because the comparison is different in kind: Tier 1
-# matches one short defect sentence against another, while Tier 2 matches a
-# defect sentence against 300 words of standards prose that answers it without
-# resembling it.
-#
-# 0.62 sits below the adjacent-section score and well above the unrelated one.
-# It is deliberately permissive: Tier 2 only runs when Tier 1 has already
-# failed, and the Actor's grounding check is the gate that actually decides
-# whether a chunk answers the defect. Measured on one document -- widen the
-# eval set before treating it as settled.
-TIER2_LOCAL_THRESHOLD = 0.62
-
-# PROVISIONAL, and doubly so: derived from Tier 1's Azure threshold, which is
-# itself unmeasured, scaled by the local Tier-1:Tier-2 ratio (0.62/0.89). Run
-# the batch evaluator against the real deployment before trusting it.
+# PROVISIONAL, and doubly so: never measured on Azure, and derived from Tier
+# 1's former Azure gate of 0.50 scaled by that bge-small Tier-1:Tier-2 ratio
+# (0.62/0.89). Run the batch evaluator against the real deployment before
+# trusting it.
 TIER2_AZURE_THRESHOLD = 0.35
 
 CACHE_FORMAT = 2
-
-
-class DocCacheError(RuntimeError):
-    """The corpus could not be prepared."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1468,7 +1336,6 @@ class Tier2Stats:
     cache_state: str = "absent"
     backend: str = ""
     backend_detail: str = ""
-    fallback_reason: str = ""
     threshold_used: float = 0.0
     top_score: float = 0.0
     qualified: int = 0
@@ -1485,7 +1352,6 @@ class Tier2Stats:
             "cache_state": self.cache_state,
             "backend": self.backend,
             "backend_detail": self.backend_detail,
-            "fallback_reason": self.fallback_reason,
             "threshold_used": self.threshold_used,
             "top_score": round(self.top_score, 4),
             "qualified": self.qualified,
@@ -1628,11 +1494,9 @@ class DocRetriever:
     cache_dir: Path | str | None = None
     azure_settings: Any = None
     azure_threshold: float = TIER2_AZURE_THRESHOLD
-    local_threshold: float = TIER2_LOCAL_THRESHOLD
     confidence_threshold: float | None = None
     top_k: int = TIER2_TOP_K
-    # Injection seam for tests, and where a locally-hosted encoder would be
-    # supplied if one is wired back in. The pipeline never sets it.
+    # Injection seam for tests. The pipeline never sets it.
     #
     # `force_backend` used to live here, to stop Tier 2 re-probing Azure after
     # Tier 1 had already fallen back. With no fallback there is nothing to
@@ -1685,11 +1549,10 @@ class DocRetriever:
 
         threshold = self.confidence_threshold
         if threshold is None:
-            threshold = (
-                self.azure_threshold
-                if self.stats.backend == AZURE_BACKEND
-                else self.local_threshold
-            )
+            # One embedding space in production, so one default gate. An
+            # injected encoder has no measured threshold of its own; a caller
+            # that needs a different one passes confidence_threshold.
+            threshold = self.azure_threshold
         self.stats.threshold_used = threshold
 
         similarities = matrix @ query_vector
@@ -1795,21 +1658,16 @@ class DocRetriever:
         Raises AzureEmbeddingError if the encoder is unavailable.
         """
         if self.embedder is not None:
-            # ---- LOCAL MODEL DISABLED -------------------------------------
-            # The Azure-primary / local-fallback branch used to live here. To
-            # restore it: re-add `local_embedder_factory` to this dataclass and
-            # fall through to it when the Azure call below raises. The model
-            # wrapper is untouched in sps/embedding.py, as are the TIER2_LOCAL_*
-            # thresholds above.
-            # ---------------------------------------------------------------
+            # An explicitly supplied encoder: the seam tests use. The pipeline
+            # never sets it.
             detail = getattr(
                 getattr(self.embedder, "settings", None),
                 "model_name",
                 type(self.embedder).__name__,
             )
-            self.stats.backend = LOCAL_BACKEND
+            self.stats.backend = INJECTED_BACKEND
             self.stats.backend_detail = detail
-            return LOCAL_BACKEND, f"local:{detail}", self.embedder.embed_query(query)
+            return INJECTED_BACKEND, f"injected:{detail}", self.embedder.embed_query(query)
 
         settings, vectors = self._embed_azure([query])
         self.stats.backend = AZURE_BACKEND
@@ -1888,14 +1746,8 @@ MAX_CANDIDATES = 300
 CASCADE_LIMIT = 3
 
 # A threshold is a property of one embedding space and does not survive a change
-# of model. Two encoders means two thresholds, and the gate must apply whichever
-# one actually produced the vectors.
+# of model -- swap the Azure deployment and this number must be re-measured.
 #
-# Local: calibrated for bge-small-en-v1.5, which scores systematically higher
-# than bge-large -- a materially different defect reaches 0.8442 here against
-# 0.7831 there, so carrying bge-large's 0.82 across would loosen the gate.
-LOCAL_EMBEDDING_THRESHOLD = 0.89
-
 # Azure: a RECALL filter, not a decision.
 #
 # This number used to decide whether a ticket got an answer. It no longer does
@@ -1911,11 +1763,11 @@ LOCAL_EMBEDDING_THRESHOLD = 0.89
 # slightly longer prompt; too high costs answers, silently.
 AZURE_EMBEDDING_THRESHOLD = 0.30
 
-# Retained under the old name so existing callers keep working.
-DEFAULT_CONFIDENCE_THRESHOLD = LOCAL_EMBEDDING_THRESHOLD
-
 AZURE_BACKEND = "azure"
-LOCAL_BACKEND = "local"
+# Anything passed through the `embedder=` seam. Its own label, and its own
+# Tier-2 cache file, so vectors from a stand-in encoder are never mistaken
+# for Azure's.
+INJECTED_BACKEND = "injected"
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -1969,11 +1821,9 @@ class RetrievalStats:
     embed_seconds: float = 0.0
     qualified: int = 0
     top_score: float = 0.0
-    # Which encoder produced the vectors, and why if it was not the primary.
-    # Support needs this to see how often the fallback is firing.
+    # Which encoder produced the vectors.
     backend: str = ""
     backend_detail: str = ""
-    fallback_reason: str = ""
     threshold_used: float = 0.0
     # The best-scoring candidates, whether or not they cleared the gate.
     #
@@ -1998,7 +1848,6 @@ class RetrievalStats:
             "top_score": round(self.top_score, 4),
             "backend": self.backend,
             "backend_detail": self.backend_detail,
-            "fallback_reason": self.fallback_reason,
             "threshold_used": self.threshold_used,
         }
 
@@ -2167,18 +2016,15 @@ def cap_to_newest(rows: list[HistoryRow], limit: int = MAX_CANDIDATES) -> list[H
 class InMemoryRetriever:
     """Filter, embed and rank one part's history per ticket.
 
-    Azure embeddings are the only encoder. The local bge-small fallback is
-    disabled -- the wrapper still exists in sps/embedding.py but nothing here
-    reaches it -- so an Azure failure ends the run instead of being absorbed.
-    That is the safer direction: a silent fallback changed which threshold
-    applied and which embedding space the scores lived in, and did it inside a
+    Azure embeddings are the only encoder, and an Azure failure ends the run
+    rather than falling back to anything. A silent fallback would change which
+    threshold applied and which embedding space the scores lived in, inside a
     run that still reported success.
     """
 
     history_path: Path | str
     azure_settings: Any = None
     azure_threshold: float = AZURE_EMBEDDING_THRESHOLD
-    local_threshold: float = LOCAL_EMBEDDING_THRESHOLD
     # An explicit override wins over both. Used by --threshold, which is a
     # deliberate operator instruction and should not be second-guessed by the
     # backend that happened to answer.
@@ -2192,8 +2038,7 @@ class InMemoryRetriever:
     max_context_records: int = 5
     min_text_length: int = 15
     stats: RetrievalStats = field(default_factory=RetrievalStats)
-    # Injection seam for tests, and where a locally-hosted encoder would be
-    # supplied if one is wired back in. The pipeline never sets it.
+    # Injection seam for tests. The pipeline never sets it.
     embedder: Embedder | None = None
 
     def retrieve(self, ticket: IncomingTicket) -> list[Candidate]:
@@ -2223,15 +2068,12 @@ class InMemoryRetriever:
         candidates_matrix, query_vector = self._embed(query_text, passages)
         self.stats.embed_seconds = time.time() - started
 
-        # The gate must use the threshold belonging to whichever model actually
-        # produced these vectors.
         threshold = self.confidence_threshold
         if threshold is None:
-            threshold = (
-                self.azure_threshold
-                if self.stats.backend == AZURE_BACKEND
-                else self.local_threshold
-            )
+            # One embedding space in production, so one default gate. An
+            # injected encoder has no measured threshold of its own; a caller
+            # that needs a different one passes confidence_threshold.
+            threshold = self.azure_threshold
         self.stats.threshold_used = threshold
 
         # Both sides are L2-normalised, so the dot product is the cosine and the
@@ -2270,19 +2112,9 @@ class InMemoryRetriever:
         import numpy as np
 
         if self.embedder is not None:
-            # An explicitly supplied encoder. The pipeline never sets this --
-            # it is the injection seam for tests, and the seam the local model
-            # would be wired back through.
-            #
-            # ---- LOCAL MODEL DISABLED -------------------------------------
-            # The Azure-primary / local-fallback branch used to live here. To
-            # restore it: re-add `local_embedder_factory` to this dataclass,
-            # catch AzureEmbeddingError below instead of letting it out, and
-            # encode through `_encode_injected` with a BGEEmbedder. The model
-            # wrapper itself is untouched in sps/embedding.py, as are the
-            # LOCAL_* thresholds above.
-            # ---------------------------------------------------------------
-            self.stats.backend = LOCAL_BACKEND
+            # An explicitly supplied encoder: the seam tests use. The pipeline
+            # never sets it.
+            self.stats.backend = INJECTED_BACKEND
             self.stats.backend_detail = type(self.embedder).__name__
             matrix, query = self._encode_injected(self.embedder, query_text, passages)
             return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
@@ -2316,9 +2148,7 @@ class InMemoryRetriever:
 
     @staticmethod
     def _encode_injected(embedder: Embedder, query_text: str, passages: list[str]):
-        """Two calls, not one: a bge query carries an instruction prefix and the
-        passages must not, so they cannot share an encode call. Kept in that
-        shape so the local model drops straight back in."""
+        """The Embedder protocol: passages and the query encoded separately."""
         return embedder.embed_passages(passages), embedder.embed_query(query_text)
 
 
@@ -2948,21 +2778,6 @@ class Grounding:
     tier: str = TIER_HISTORICAL
 
 
-def historical_grounding(candidates: Sequence[Candidate]) -> Grounding:
-    """DORMANT. Tier 1 scores intent and cascades; it no longer drafts.
-
-    Kept so re-enabling the Actor/Judge on the historical path is a wiring
-    change in resolve() rather than a rewrite. See the note in prompts.py.
-    """
-    return Grounding(
-        items=candidates,
-        actor_messages=build_actor_messages,
-        judge_messages=build_judge_messages,
-        abstention_reason="Historical records did not address the reported problem.",
-        tier=TIER_HISTORICAL,
-    )
-
-
 def documentation_grounding(chunks: Sequence[Any]) -> Grounding:
     return Grounding(
         items=chunks,
@@ -3053,14 +2868,6 @@ class ActorCriticLoop:
     ) -> None:
         self.client = client
         self.settings = settings or LLMSettings()
-
-    async def run(
-        self,
-        ticket: IncomingTicket,
-        candidates: Sequence[Candidate],
-    ) -> LoopOutcome:
-        """Tier 1: generate from historical precedent."""
-        return await self.run_grounded(ticket, historical_grounding(candidates))
 
     async def run_grounded(
         self,
@@ -3456,9 +3263,9 @@ def write_rows(path: Path | str, columns: Sequence[str], rows: Sequence[dict[str
 #
 #   status.xlsx   ALWAYS, including an early abort or an unhandled exception.
 #                 Execution_Timestamp, Status (PASS/FAIL), Status_Code, Reason,
-#                 Embedding_Model. The last names the encoder that actually ran,
-#                 so support can see how often the Azure fallback fires; it is
-#                 blank when the run aborted before anything was encoded.
+#                 Embedding_Model. The last names the embedding deployment that
+#                 ran; it is blank when the run aborted before anything was
+#                 encoded.
 #   output.xlsx   Whenever the run REACHED A CONCLUSION, which includes
 #                 concluding that neither tier had an answer. Part_Number,
 #                 AI_Recommendation, Justification, Confidence_Score,
@@ -3488,14 +3295,6 @@ def write_rows(path: Path | str, columns: Sequence[str], rows: Sequence[dict[str
 # then gate, then the LLM. Tier 2 only runs after all of that has failed, which is
 # why it can afford to parse and embed a document corpus.
 
-# A threshold is a property of the embedding space, defined once beside the
-# code that owns it. The LOCAL_* pair is dormant while the local encoder is out
-# of the pipeline, and is imported so the constants stay in one place.
-DEFAULT_THRESHOLD = DEFAULT_CONFIDENCE_THRESHOLD
-
-# Tier 2 has its own thresholds because a 300-word standards chunk and a
-# one-sentence defect score far lower than two defect sentences do -- measured
-# at 0.78 for a chunk that answers the ticket, against Tier 1's 0.89 gate.
 
 
 EXIT_OK = 0
@@ -3571,8 +3370,8 @@ def resolve_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--tier2-threshold",
         type=float,
         default=None,
-        help=f"Tier-2 gate (default {TIER2_LOCAL_THRESHOLD} local / "
-        f"{TIER2_AZURE_THRESHOLD} azure, or SPS_TIER2_THRESHOLD). Separate from "
+        help=f"Tier-2 gate (default {TIER2_AZURE_THRESHOLD}, or SPS_TIER2_THRESHOLD). "
+        "Separate from "
         "--threshold because the two tiers score in different ranges.",
     )
     parser.add_argument(
@@ -3694,8 +3493,8 @@ def _reason_with_marker(reason: str, embedding_model: str) -> str:
 def _describe_backend(stats) -> str:
     """One short token naming the encoder, for the status sheet.
 
-    Support reads this to see how often the fallback is firing, so it names the
-    model rather than just "azure" or "local".
+    Names the deployment rather than just "azure", so a run against the wrong
+    embedding deployment is visible in the sheet rather than only in its scores.
     """
     if not stats.backend:
         return ""
@@ -3995,13 +3794,6 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         raw_threshold = os.environ.get("SPS_CONFIDENCE_THRESHOLD", "").strip()
         threshold_override = float(raw_threshold) if raw_threshold else None
 
-    # ---- LOCAL MODEL DISABLED ------------------------------------------
-    # A `local_embedder()` factory was passed to both retrievers here, so an
-    # Azure failure fell back to bge-small. Restoring it means re-adding that
-    # factory and the `local_embedder_factory=` arguments below; the wrapper
-    # itself is untouched in sps/embedding.py.
-    # ---------------------------------------------------------------------
-
     def _threshold(name: str, fallback: float) -> float:
         raw = os.environ.get(name, "").strip()
         return float(raw) if raw else fallback
@@ -4034,7 +3826,6 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         history_path=history_path,
         confidence_threshold=threshold_override,
         azure_threshold=_threshold("AZURE_EMBEDDING_THRESHOLD", AZURE_EMBEDDING_THRESHOLD),
-        local_threshold=_threshold("LOCAL_EMBEDDING_THRESHOLD", LOCAL_EMBEDDING_THRESHOLD),
     )
 
     try:
@@ -4285,7 +4076,6 @@ def _resolve_from_docs(
         docs_dir=docs_dir,
         confidence_threshold=tier2_override,
         azure_threshold=_threshold("TIER2_AZURE_THRESHOLD", TIER2_AZURE_THRESHOLD),
-        local_threshold=_threshold("TIER2_LOCAL_THRESHOLD", TIER2_LOCAL_THRESHOLD),
     )
 
     if not docs.available:
@@ -4321,9 +4111,8 @@ def _resolve_from_docs(
 
     # Tier 1 can stop before encoding anything -- an unknown part scans the
     # history, matches no row and never reaches the model. If Tier 2 then
-    # encoded, the status sheet must name the encoder that actually ran:
-    # support counts Azure fallbacks from this column, and a run where only
-    # Tier 2 embedded would otherwise report no encoder at all.
+    # encoded, the status sheet must name the encoder that actually ran, or a
+    # run where only Tier 2 embedded would report no encoder at all.
     #
     # Rebinding rather than mutating, and _no_resolution reads `measured` from
     # this scope when it is called, so every later return picks this up.
@@ -5158,10 +4947,9 @@ def summarise_eval(rows: list[Row]) -> str:
             "cases you judged wrong and below the ones you judged right."
         )
 
-    # A threshold belongs to one embedding space. If Azure answered for some
-    # cases and the local fallback for others, the percentiles above pool two
-    # distributions and describe neither -- and nothing else in the run flags
-    # it, because falling back is normal behaviour rather than an error.
+    # A threshold belongs to one embedding space. If cases were scored by
+    # different deployments, the percentiles above pool two distributions and
+    # describe neither, and nothing else in the run would flag it.
     encoders = {r.embedding_model for r in rows if r.embedding_model}
     if len(encoders) > 1:
         lines.append(
@@ -5211,9 +4999,8 @@ def eval_main(argv: list[str] | None = None) -> int:
     )
 
     # The batch is the run that calibrates the Azure threshold, so it has to
-    # see the same credentials the resolver would. Without this the whole batch
-    # falls back to the local encoder and measures the wrong distribution --
-    # quietly, because falling back is normal behaviour, not an error.
+    # see the same credentials the resolver would. Without this every case
+    # fails to embed and the batch measures nothing.
 
     _load_dotenv()
 
@@ -5282,10 +5069,9 @@ def eval_main(argv: list[str] | None = None) -> int:
 # fastest way to find out whether a threshold is anywhere near right on a new
 # deployment.
 #
-#     python -m scripts.verify_embedder                # the Azure deployment
-#     python -m scripts.verify_embedder --quiet
-#     python -m scripts.verify_embedder --local        # the dormant bge-small path
-#     python -m scripts.verify_embedder --probe        # the calibration sweep
+#     python sps.py check                # the Azure deployment
+#     python sps.py check --quiet
+#     python sps.py check --probe        # the calibration sweep
 #
 # AZURE (the default, and the only encoder in the pipeline) checks that the
 # deployment is reachable, that its vectors are unit length so the NumPy matmul
@@ -5299,10 +5085,6 @@ def eval_main(argv: list[str] | None = None) -> int:
 # gap between the weakest pair you called a match and the strongest you did not.
 # That gap is the only thing a threshold can live in. If it is negative, no
 # threshold works and the probe says so instead of suggesting one.
-#
-# LOCAL is the bge-small path, kept working but out of the pipeline. It needs
-# torch and sentence-transformers, which the pruned requirements.txt no longer
-# installs, so it reports what to install rather than dying on an ImportError.
 
 TOLERANCE = 1e-5
 
@@ -5823,12 +5605,6 @@ def check_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify the embedder the pipeline uses")
     parser.add_argument("--quiet", action="store_true", help="suppress the similarity table")
     parser.add_argument(
-        "--local",
-        action="store_true",
-        help="check the dormant bge-small path instead of Azure "
-        "(needs torch + sentence-transformers, which requirements.txt no longer installs)",
-    )
-    parser.add_argument(
         "--probe",
         nargs="?",
         const=str(DEFAULT_PAIRS),
@@ -5852,28 +5628,15 @@ def check_main(argv: list[str] | None = None) -> int:
 
     checks = Checks()
     if args.probe:
-        if args.local:
-            parser.error("--probe runs against Azure; it does not support --local")
         print("Probing the Azure embedding deployment.")
         print(f"  .env: {env_file if env_file else 'not found -- using the environment only'}\n")
         run_probe(Path(args.probe), Path(args.out) if args.out else None, checks)
         return _report(checks)
 
-    if not args.local:
-        print("Checking the Azure embedding deployment.")
-        print(f"  .env: {env_file if env_file else 'not found -- using the environment only'}\n")
-        verify_azure(checks, args.quiet)
-        return _report(checks)
-
-    try:
-        import sentence_transformers  # noqa: F401
-    except ImportError as exc:
-        print(f"The local path needs torch and sentence-transformers: {exc}")
-        print("  pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu")
-        print("  pip install sentence-transformers==3.0.1")
-        return 1
-
-    return _verify_local(checks, args, BGEEmbedder)
+    print("Checking the Azure embedding deployment.")
+    print(f"  .env: {env_file if env_file else 'not found -- using the environment only'}\n")
+    verify_azure(checks, args.quiet)
+    return _report(checks)
 
 
 def _report(checks: "Checks") -> int:
@@ -5883,131 +5646,6 @@ def _report(checks: "Checks") -> int:
         return 1
     print("All embedder checks passed.")
     return 0
-
-
-def _verify_local(checks: "Checks", args, BGEEmbedder) -> int:
-    settings = EmbeddingSettings()
-
-    print(f"Loading {settings.model_name} on {settings.device} ...")
-    started = time.time()
-    embedder = BGEEmbedder(settings)
-    _ = embedder.model  # force the download / load
-    print(f"Loaded in {time.time() - started:.1f}s\n")
-
-    # ---------------------------------------------------------------- 1. dims
-    print("1. Dimensions")
-    reported = embedder.model.get_sentence_embedding_dimension()
-    checks.check("model reports 384 dimensions", reported == 384, f"got {reported}")
-
-    passages = embedder.embed_passages([PROBLEM, PARAPHRASE, UNRELATED])
-    checks.check(
-        "embed_passages returns 384-dim vectors",
-        all(len(v) == 384 for v in passages),
-        f"lengths {[len(v) for v in passages]}",
-    )
-    query_vec = embedder.embed_query(PROBLEM)
-    checks.check("embed_query returns a 384-dim vector", len(query_vec) == 384,
-                 f"got {len(query_vec)}")
-    checks.check("configured dimension matches the model", embedder.dimension == reported)
-
-    # --------------------------------------------------------- 2. normalization
-    print("\n2. Normalization")
-    norms = [l2(v) for v in passages]
-    checks.check(
-        "passage vectors are unit length",
-        all(abs(n - 1.0) < TOLERANCE for n in norms),
-        f"norms {[round(n, 8) for n in norms]}",
-    )
-    checks.check(
-        "query vector is unit length",
-        abs(l2(query_vec) - 1.0) < TOLERANCE,
-        f"norm {l2(query_vec):.8f}",
-    )
-    # If vectors are normalized, dot product == cosine -- the assumption the
-    # NumPy matmul ranking and the 0.89 gate both rest on.
-    d, c = dot(passages[0], passages[1]), cosine(passages[0], passages[1])
-    checks.check(
-        "dot product equals cosine similarity",
-        abs(d - c) < TOLERANCE,
-        f"dot={d:.8f} cosine={c:.8f}",
-    )
-
-    # ------------------------------------------------------ 3. query instruction
-    print("\n3. BGE query-instruction prefix")
-    plain = replace(settings, use_query_instruction=False)
-    plain_embedder = BGEEmbedder(plain)
-    plain_embedder._model = embedder.model  # reuse the loaded weights
-
-    prefixed_q = embedder.embed_query(PROBLEM)
-    plain_q = plain_embedder.embed_query(PROBLEM)
-    checks.check(
-        "prefix changes the query vector (it is actually applied)",
-        cosine(prefixed_q, plain_q) < 0.9999,
-        f"cosine(prefixed, plain) = {cosine(prefixed_q, plain_q):.6f}",
-    )
-
-    # The passage side must be identical to an unprefixed query: proof that
-    # embed_passages never prepends the instruction.
-    passage_only = embedder.embed_passages([PROBLEM])[0]
-    checks.check(
-        "embed_passages applies NO prefix",
-        cosine(passage_only, plain_q) > 1 - TOLERANCE,
-        f"cosine(passage, unprefixed query) = {cosine(passage_only, plain_q):.8f}",
-    )
-    checks.check(
-        "prefix constant is the documented BGE string",
-        BGE_QUERY_INSTRUCTION == "Represent this sentence for searching relevant passages: ",
-    )
-
-    # ------------------------------------------------- 4. retrieval sanity/calibration
-    print("\n4. Cosine behaviour on real SPS text")
-    corpus = {"exact": PROBLEM, "paraphrase": PARAPHRASE, "near": NEAR, "unrelated": UNRELATED}
-    vectors = dict(zip(corpus, embedder.embed_passages(list(corpus.values()))))
-
-    scored_prefixed = {k: cosine(prefixed_q, v) for k, v in vectors.items()}
-    scored_plain = {k: cosine(plain_q, v) for k, v in vectors.items()}
-
-    if not args.quiet:
-        print(f"\n    {'candidate':12s} {'with prefix':>12s} {'no prefix':>12s}")
-        for key in corpus:
-            print(f"    {key:12s} {scored_prefixed[key]:12.4f} {scored_plain[key]:12.4f}")
-        print()
-
-    checks.check(
-        "exact match outranks the unrelated record",
-        scored_prefixed["exact"] > scored_prefixed["unrelated"],
-        f"{scored_prefixed['exact']:.4f} > {scored_prefixed['unrelated']:.4f}",
-    )
-    checks.check(
-        "paraphrase outranks the unrelated record",
-        scored_prefixed["paraphrase"] > scored_prefixed["unrelated"],
-        f"{scored_prefixed['paraphrase']:.4f} > {scored_prefixed['unrelated']:.4f}",
-    )
-    checks.check(
-        "exact match clears the 0.89 gate",
-        scored_prefixed["exact"] >= 0.89,
-        f"{scored_prefixed['exact']:.4f}",
-    )
-    checks.check(
-        "unrelated record is blocked by the 0.89 gate",
-        scored_prefixed["unrelated"] < 0.89,
-        f"{scored_prefixed['unrelated']:.4f}",
-    )
-    checks.check(
-        "ordering is identical with and without the prefix",
-        sorted(scored_prefixed, key=scored_prefixed.get, reverse=True)
-        == sorted(scored_plain, key=scored_plain.get, reverse=True),
-    )
-
-    # --------------------------------------------------------------- 5. determinism
-    print("\n5. Determinism")
-    again = embedder.embed_query(PROBLEM)
-    checks.check(
-        "repeated encoding is bit-stable",
-        all(abs(a - b) < 1e-9 for a, b in zip(prefixed_q, again)),
-    )
-
-    return _report(checks)
 
 
 # =============================================================================
