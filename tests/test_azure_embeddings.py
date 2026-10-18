@@ -26,7 +26,7 @@ from sps import (
     AZURE_BACKEND,
     AZURE_EMBEDDING_THRESHOLD,
     INJECTED_BACKEND,
-    InMemoryRetriever,
+    HistoryRetriever,
 )
 from tests.conftest import TokenOverlapEmbedder
 from tests.test_resolver import PART, PROBLEM, row, write_history
@@ -147,7 +147,7 @@ def _retriever(tmp_path, monkeypatch, *, azure_client=None, azure_settings=CONFI
             lambda settings, _real=real: _real(settings, client=azure_client),
         )
 
-    return InMemoryRetriever(
+    return HistoryRetriever(
         history_path=write_history(
             tmp_path / "h.xlsx", rows or [row("SPS-1"), row("SPS-2", minutes=1)]
         ),
@@ -169,16 +169,46 @@ def test_azure_answers_and_names_itself(tmp_path, monkeypatch):
     assert retriever.stats.backend_detail == "text-embedding-3-small"
 
 
-def test_query_and_candidates_go_in_one_request(tmp_path, monkeypatch):
+TWO_RECORDS = [
+    row("SPS-1"),
+    row("SPS-2", problem="Cracks found in the weld seam of the mounting bracket", minutes=1),
+]
+
+
+def test_query_and_new_records_go_in_one_request(tmp_path, monkeypatch):
     client = FakeAzureClient(vectors=[[1.0, 0, 0]] * 3)
-    retriever = _retriever(tmp_path, monkeypatch, azure_client=client)
+    retriever = _retriever(tmp_path, monkeypatch, azure_client=client, rows=TWO_RECORDS)
 
     retriever.retrieve(_ticket())
 
     assert len(client.calls) == 1
     sent = client.calls[0]
     assert sent[0] == PROBLEM          # query first, so its position is known
-    assert len(sent) == 3              # query + two candidates
+    assert len(sent) == 3              # query + the two records the store had not seen
+
+
+def test_a_second_ticket_sends_only_its_query(tmp_path, monkeypatch):
+    """The records are in the store after the first ticket; only the new
+    question needs encoding."""
+    client = FakeAzureClient(vectors=[[1.0, 0, 0]] * 3)
+    first = _retriever(tmp_path, monkeypatch, azure_client=client, rows=TWO_RECORDS)
+    first.retrieve(_ticket())
+    second = HistoryRetriever(history_path=first.history_path, azure_settings=CONFIGURED)
+
+    second.retrieve(_ticket())
+
+    assert client.calls[1] == [PROBLEM]
+    assert second.stats.embedded_now == 0
+
+
+def test_identical_problem_texts_are_embedded_once(tmp_path, monkeypatch):
+    client = FakeAzureClient(vectors=[[1.0, 0, 0]] * 2)
+    retriever = _retriever(tmp_path, monkeypatch, azure_client=client)  # two rows, one text
+
+    candidates = retriever.retrieve(_ticket())
+
+    assert client.calls == [[PROBLEM, PROBLEM]]   # the query, then the one shared text
+    assert {c.sps_id for c in candidates} == {"SPS-1", "SPS-2"}
 
 
 def test_a_transport_failure_ends_the_run(tmp_path, monkeypatch):
@@ -273,7 +303,7 @@ def test_an_explicit_override_beats_the_backend_default(tmp_path, monkeypatch):
 def test_the_retriever_has_one_gate_not_one_per_encoder():
     """bge-small's 0.89 left with bge-small. A threshold belongs to one
     embedding space, and production has one."""
-    fields = InMemoryRetriever.__dataclass_fields__
+    fields = HistoryRetriever.__dataclass_fields__
     assert "local_threshold" not in fields
     assert fields["azure_threshold"].default == AZURE_EMBEDDING_THRESHOLD
 
@@ -282,7 +312,7 @@ def test_an_injected_encoder_is_labelled_as_such_and_gated_like_azure(tmp_path):
     """The seam the tests use. Named for what it is, so a stand-in can never be
     mistaken for the deployment in the status sheet; and gated by the
     production default, because no other number has been measured for it."""
-    retriever = InMemoryRetriever(
+    retriever = HistoryRetriever(
         history_path=write_history(tmp_path / "h.xlsx", [row("SPS-1")]),
         embedder=TokenOverlapEmbedder(),
     )

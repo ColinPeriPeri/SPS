@@ -25,3 +25,9 @@ test_output.xlsx
 # the bulk runner writes <tickets>_results.xlsx beside its input by default.
 *_results.xlsx
 eval_results.xlsx
+
+# History stores. A local mirror of a history export, rebuilt from it whenever
+# it changes, and hundreds of MB at scale. The -wal and -shm files are SQLite's.
+*.sps-store.sqlite
+*.sps-store.sqlite-wal
+*.sps-store.sqlite-shm

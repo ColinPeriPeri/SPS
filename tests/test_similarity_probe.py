@@ -169,11 +169,15 @@ def test_positive_margin_is_separable():
     assert sep.strongest_no_match.pair.label == "negation"
 
 
-def test_suggested_threshold_sits_just_above_the_no_match_ceiling():
-    """Not the midpoint. A missed match is a refusal a reviewer sees; a false
-    match is a wrong instruction that looks exactly like a right one."""
-    sep = separation(scored(("m", 0.90, MATCH), ("n", 0.61, NO_MATCH)))
-    assert sep.suggested == 0.62
+def test_the_suggested_gate_sits_just_below_the_weakest_match():
+    """The Tier-1 cosine is a recall filter: what it admits, the intent scorer
+    judges, and what it blocks nobody ever judges. So it sits under the weakest
+    match -- not above the strongest no-match, as it did when it decided."""
+    sep = separation(scored(("m", 0.90, MATCH), ("w", 0.74, MATCH), ("n", 0.61, NO_MATCH)))
+    assert sep.suggested == 0.73
+    # A negative margin no longer leaves it with nothing to suggest.
+    overlapping = separation(scored(("w", 0.74, MATCH), ("n", 0.94, NO_MATCH)))
+    assert overlapping.suggested == 0.73
 
 
 def test_negative_margin_is_not_separable():
@@ -217,31 +221,32 @@ def test_report_names_every_overlapping_pair(capsys, tmp_path):
     assert "NEGATIVE" in out
     # Both no-match pairs above the weakest match, and not the one below it.
     assert "negation" in out and "changed-ask" in out
-    assert "2 pair(s)" in out
-    assert "retrieval itself has to change" in out
+    assert "2 no-match pair(s)" in out
+    # Reported as the scorer's work, not as a reason to rebuild retrieval.
+    assert "why the intent scorer decides" in out
+    assert "Suggested recall gate: 0.73" in out
 
 
-def test_report_states_the_recall_cost_of_the_suggested_gate(capsys, tmp_path):
-    """A margin narrower than the 0.01 safety epsilon is still positive, so a
-    gate exists -- but the one suggested sits above the weakest match and eats
-    it. Saying "a gate exists" without saying that would be a half-truth."""
+def test_report_names_the_no_match_pairs_the_scorer_must_turn_down(capsys, tmp_path):
+    """The suggested gate admits them by design; naming them says what the
+    intent scorer's evaluation set has to include."""
     report_probe(
         scored(
             ("lexical", 0.88, MATCH),
-            ("verbose", 0.505, MATCH),
-            ("negation", 0.50, NO_MATCH),
+            ("verbose", 0.60, MATCH),
+            ("negation", 0.70, NO_MATCH),
+            ("unrelated", 0.20, NO_MATCH),
         ),
         gate=0.50,
         source=tmp_path / "pairs.csv",
     )
     out = capsys.readouterr().out
-    assert "A gate exists" in out
-    assert "0.51" in out
-    assert "would also block 1 pair(s)" in out
-    assert "verbose" in out
+    assert "Suggested recall gate: 0.59" in out
+    assert "admits 1 pair(s) you called no-match" in out
+    assert "    negation" in out and "    unrelated" not in out
 
 
-def test_report_flags_pairs_the_current_gate_gets_wrong(capsys, tmp_path):
+def test_report_marks_the_no_match_pairs_the_gate_admits(capsys, tmp_path):
     report_probe(
         scored(("negation", 0.94, NO_MATCH), ("lexical", 0.88, MATCH)),
         gate=0.50,
@@ -250,8 +255,16 @@ def test_report_flags_pairs_the_current_gate_gets_wrong(capsys, tmp_path):
     lines = capsys.readouterr().out.splitlines()
     negation = next(l for l in lines if l.strip().startswith("negation"))
     lexical = next(l for l in lines if l.strip().startswith("lexical"))
-    assert "WRONG" in negation  # admitted, but labelled no-match
-    assert "WRONG" not in lexical
+    assert "(scorer)" in negation   # admitted: the intent scorer's to turn down
+    assert "MISSED" not in lexical
+
+
+def test_only_a_blocked_match_is_flagged_as_missed(capsys, tmp_path):
+    report_probe(scored(("paraphrase", 0.40, MATCH), ("n", 0.10, NO_MATCH)),
+                 gate=0.50, source=tmp_path / "pairs.csv")
+    paraphrase = next(l for l in capsys.readouterr().out.splitlines()
+                      if l.strip().startswith("paraphrase"))
+    assert "MISSED" in paraphrase
 
 
 def test_report_survives_one_sided_input(capsys, tmp_path):
@@ -334,3 +347,64 @@ def test_shipped_pair_set_covers_the_two_failures_that_motivated_it():
     shared = "engraved with revision C"
     assert shared in changed.text_a and shared in changed.text_b
     assert changed.text_a != changed.text_b
+
+
+# ------------------------------------------------------------ check's gates
+
+
+def _fake_deployment(monkeypatch, near=0.70, unrelated=0.10):
+    """An AzureEmbedder whose cosines against the check's query are set exactly."""
+    import math
+
+    import sps
+
+    def at(cosine_to_query, axis=0):
+        other = math.sqrt(max(1 - cosine_to_query ** 2, 0.0))
+        return [cosine_to_query, other, 0.0] if axis == 0 else [0.0, other, cosine_to_query]
+
+    table = {
+        sps.PROBLEM: at(1.0), sps.PARAPHRASE: at(0.80), sps.NEAR: at(near),
+        sps.UNRELATED: at(unrelated),
+        sps.TIER2_QUERY: [0.0, 0.0, 1.0],
+        sps.STANDARD_RELEVANT: at(0.60, axis=2), sps.STANDARD_UNRELATED: at(0.20, axis=2),
+    }
+
+    class Fake:
+        def __init__(self, settings, client=None):
+            pass
+
+        def embed_batch(self, texts):
+            return [table[t] for t in texts]
+
+    monkeypatch.setattr(sps, "AzureEmbedder", Fake)
+    for name, value in (("AZURE_EMBEDDING_ENDPOINT", "https://x.openai.azure.com/"),
+                        ("AZURE_EMBEDDING_API_KEY", "k"),
+                        ("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")):
+        monkeypatch.setenv(name, value)
+
+
+def test_a_different_defect_above_the_recall_gate_is_reported_not_failed(monkeypatch, capsys):
+    """Porosity against cracking scoring above 0.30 is what a recall filter
+    should do; the intent scorer separates them. It used to fail the check and
+    tell the operator to tune the gate -- which would discard real precedent."""
+    import sps
+
+    _fake_deployment(monkeypatch, near=0.70)
+    checks = sps.Checks()
+    sps.verify_azure(checks, quiet=True)
+
+    out = capsys.readouterr().out
+    assert checks.failures == []
+    assert "[INFO] a different defect on the same part" in out
+    assert "Tier 1 between 0.1000 and 0.8000" in out
+
+
+def test_an_unrelated_record_over_the_gate_still_fails(monkeypatch, capsys):
+    """The one precision check a recall filter keeps: a gate that admits a
+    packaging defect for a weld ticket admits everything."""
+    import sps
+
+    _fake_deployment(monkeypatch, unrelated=0.50)
+    checks = sps.Checks()
+    sps.verify_azure(checks, quiet=True)
+    assert any("unrelated record is blocked" in f for f in checks.failures)

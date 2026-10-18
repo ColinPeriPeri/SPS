@@ -13,8 +13,7 @@ REM  Test files are named <id>_ticket.csv|xlsx, optionally paired with
 REM  <id>_history.csv|xlsx. Pass a third argument to use one shared history for
 REM  every case, which is the usual shape.
 REM
-REM  The whole batch runs in one process, so the local model is loaded once
-REM  rather than once per case.
+REM  The whole batch runs in one process, and one failing case never ends it.
 REM
 REM  Exit codes:
 REM    0  the batch ran. Individual cases may have legitimately failed.

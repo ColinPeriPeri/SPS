@@ -3,6 +3,7 @@
     python sps.py resolve --ticket-file T --history-file H --output-dir D
     python sps.py bulk    --tickets SHEET --history H [--output OUT]
     python sps.py eval    --test-dir DIR [--history-file H] [--output-dir D]
+    python sps.py ingest  --history H
     python sps.py check   [--probe [PAIRS]] [--out XLSX]
 
 Every prompt and message builder lives in sps_prompts.py, so the model's
@@ -27,6 +28,7 @@ Sections run in the order a ticket passes through them:
   Command: resolve
   Command: bulk
   Command: eval
+  Command: ingest
   Command: check
 """
 
@@ -42,6 +44,7 @@ import math
 import os
 import posixpath
 import re
+import sqlite3
 import sys
 import tempfile
 import time
@@ -79,9 +82,10 @@ PROJECT_DIR = Path(__file__).resolve().parent
 #
 # Input gatekeeping: canonical part numbers, and strict ticket validation.
 #
-# The retrieval engine filters history by exact part-number match, so a part
-# number that differs only by invisible characters is not a near miss -- it is a
-# total miss, and the ticket is refused as though no history existed. Enterprise
+# The retrieval engine selects history by exact part number, or by the exact
+# commodity code taken from it, so a part number that differs only by invisible
+# characters is not a near miss -- it is a total miss, and the ticket is
+# refused as though no history existed. Enterprise
 # extracts routinely carry non-breaking spaces from web forms and zero-width
 # characters from copy-paste, neither of which is visible to the person who
 # pasted them.
@@ -304,6 +308,10 @@ class Candidate:
     # solutions and a past problem statement is context they could quote from.
     # `tests/test_component_c_actor_critic.py` pins that boundary.
     problem_description: str = ""
+    # True when the record is the ticket's own part, False for a sibling part
+    # in its commodity family. A tiebreak between equal intent scores, and a
+    # line in the justification -- never a boost to any score.
+    exact_part: bool = True
 
     @property
     def confidence_percent(self) -> int:
@@ -607,10 +615,14 @@ def _env_list(key: str) -> tuple[str, ...]:
 # shows which it passed -- before treating 0.75 as settled.
 DEFAULT_INTENT_THRESHOLD = 0.75
 
-# How many candidates the intent scorer is meant to be shown. NOT YET READ:
-# what bounds the call today is the retriever's `max_context_records`, also 5,
-# so SPS_INTENT_TOP_K changes nothing until the two are wired together.
+# How many candidates the intent scorer is shown -- the retriever's shortlist.
+# It must be at least MAX_SOLUTIONS for that many to be possible.
 DEFAULT_INTENT_TOP_K = 5
+
+# How many solutions one ticket can receive: the best that clear the intent
+# gate, up to this many, each sent verbatim on its own row of output.xlsx.
+# Fewer clear it, fewer are sent; none, and the refusal is unchanged.
+MAX_SOLUTIONS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -995,6 +1007,15 @@ class AzureEmbeddingNotConfigured(AzureEmbeddingError):
     """
 
 
+# Azure's documented ceiling on inputs per embeddings request.
+AZURE_EMBEDDING_BATCH_LIMIT = 2048
+# Retries per request, made by the SDK with exponential backoff, on a connection
+# error, a timeout, a 429 or a 5xx. Stated rather than left to the SDK default
+# so a version bump cannot change it unnoticed. Our own loop around it would
+# multiply the waits for nothing.
+AZURE_EMBEDDING_RETRIES = 2
+
+
 class AzureEmbedder:
     """Azure OpenAI embeddings, the only encoder.
 
@@ -1033,11 +1054,18 @@ class AzureEmbedder:
                 api_key=self.settings.api_key,
                 api_version=self.settings.api_version,
                 timeout=self.settings.request_timeout,
+                max_retries=AZURE_EMBEDDING_RETRIES,
             )
         return self._client
 
     def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
-        """Embed every text in one request, in the order given.
+        """Embed every text, in the order given, in as few requests as allowed.
+
+        Azure takes at most AZURE_EMBEDDING_BATCH_LIMIT inputs per request, so
+        a longer list -- an ingest of a large export -- goes in consecutive
+        chunks and comes back as one list in the original order. Each request
+        is retried by the SDK on a connection error, timeout, throttle or
+        server error, with backoff (`max_retries`).
 
         Any failure raises AzureEmbeddingError and the whole batch is discarded.
         Partial results are never returned: a half-embedded batch would leave
@@ -1046,6 +1074,15 @@ class AzureEmbedder:
         """
         if not texts:
             return []
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), AZURE_EMBEDDING_BATCH_LIMIT):
+            chunk = list(texts[start:start + AZURE_EMBEDDING_BATCH_LIMIT])
+            vectors.extend(self._embed_request(chunk))
+            if len(texts) > AZURE_EMBEDDING_BATCH_LIMIT:
+                logger.info("Embedded %d of %d text(s)", len(vectors), len(texts))
+        return vectors
+
+    def _embed_request(self, texts: list[str]) -> list[list[float]]:
         try:
             response = self.client.embeddings.create(
                 model=self.settings.deployment,
@@ -1178,20 +1215,24 @@ def _clean_doc_text(text: str) -> str:
 # to go through python-docx, whose lxml dependency ships a native DLL that
 # Windows Application Control blocks on the deployment machines.
 #
-# The rules below are python-docx 1.1.2's, reproduced exactly rather than
-# improved on, because every cached chunk and the golden master were built
-# with them. Consequences worth knowing -- text Word shows that Tier 2 does
-# not see:
+# It began as python-docx 1.1.2's rules reproduced exactly, proven document by
+# document against python-docx before that was dropped. It now reads what Word
+# itself shows, which python-docx did not:
 #
-#   * Only a paragraph's DIRECT runs and hyperlinks count. Runs wrapped in
-#     anything else are skipped: a tracked insertion not yet accepted (w:ins),
-#     a field (w:fldSimple), a content control (w:sdt), a smart tag.
-#   * Only paragraphs and tables directly in the body are read. A section
-#     inside a content control -- which documents built from a template often
-#     use -- is skipped whole, and a table nested in a cell contributes nothing
-#     to that cell's text.
+#   * Text inside a content control (w:sdt) -- including whole sections, which
+#     documents built from a template are often wrapped in -- inside a smart
+#     tag, custom XML markup or a simple field, and at every depth.
+#   * A tracked insertion not yet accepted, and not a tracked deletion: the
+#     document as Word's default view shows it. A document carrying either is
+#     named in a warning, because its text is not settled.
+#   * A table nested in a cell, flattened into that cell's text.
 #
-# Differences arise only where python-docx raised instead of reading:
+# Text boxes and headers and footers are still not read.
+#
+# A change to these rules changes chunk text, so DOC_READER_VERSION is part of
+# the Tier-2 cache's key: bump it, and every cache rebuilds.
+#
+# Where python-docx raised instead of reading:
 #
 #   * A vertically merged cell with no cell above it to continue. python-docx
 #     raised mid-document, past the guard that skips one unreadable file, and
@@ -1232,14 +1273,36 @@ def _run_text(run) -> str:
     return "".join(_RUN_TEXT[child.tag](child) for child in run if child.tag in _RUN_TEXT)
 
 
-def _paragraph_text(paragraph) -> str:
-    parts = []
-    for child in paragraph:
+# Containers whose runs are part of the paragraph as Word shows it. Anything
+# else is skipped, which is what keeps out deleted text (w:del), the old
+# position of moved text (w:moveFrom) and a content control's properties.
+_TRANSPARENT = {_W + tag for tag in (
+    "hyperlink", "smartTag", "customXml", "fldSimple", "ins", "moveTo", "dir", "bdo",
+    "sdt", "sdtContent",
+)}
+
+
+def _runs(element):
+    """Every run in document order, through containers Word shows."""
+    for child in element:
         if child.tag == _W + "r":
-            parts.append(_run_text(child))
-        elif child.tag == _W + "hyperlink":
-            parts.extend(_run_text(run) for run in child if run.tag == _W + "r")
-    return "".join(parts)
+            yield child
+        elif child.tag in _TRANSPARENT:
+            yield from _runs(child)
+
+
+def _paragraph_text(paragraph) -> str:
+    return "".join(_run_text(run) for run in _runs(paragraph))
+
+
+def _blocks(element):
+    """Paragraphs and tables in document order, through content controls and
+    custom XML, at any depth. Nothing else in a body or a cell holds text."""
+    for child in element:
+        if child.tag in (_W + "p", _W + "tbl"):
+            yield child
+        elif child.tag in (_W + "sdt", _W + "sdtContent", _W + "customXml"):
+            yield from _blocks(child)
 
 
 def _paragraph_style_id(paragraph) -> str | None:
@@ -1300,7 +1363,31 @@ def _grid_before(row) -> int:
 
 
 def _cell_text(cell) -> str:
-    return "\n".join(_paragraph_text(p) for p in cell if p.tag == _W + "p")
+    """The cell's paragraphs, and any table nested in it, one row per line."""
+    lines = []
+    for block in _blocks(cell):
+        if block.tag == _W + "p":
+            lines.append(_paragraph_text(block))
+        else:
+            lines.append(_table_text(_table_rows(block)))
+    return "\n".join(lines)
+
+
+def _row_cells(row):
+    """A row's cells, including those a content control wraps."""
+    for child in row:
+        if child.tag == _W + "tc":
+            yield child
+        elif child.tag in (_W + "sdt", _W + "sdtContent", _W + "customXml"):
+            yield from _row_cells(child)
+
+
+def _table_rows_of(table):
+    for child in table:
+        if child.tag == _W + "tr":
+            yield child
+        elif child.tag in (_W + "sdt", _W + "sdtContent", _W + "customXml"):
+            yield from _table_rows_of(child)
 
 
 def _table_rows(table) -> list[list[str]]:
@@ -1316,11 +1403,11 @@ def _table_rows(table) -> list[list[str]]:
     """
     rows: list[list[str]] = []
     above: dict[int, list[str]] = {}  # grid column -> what the cell starting there read as
-    for row in (r for r in table if r.tag == _W + "tr"):
+    for row in _table_rows_of(table):
         texts_here: list[str] = []
         starts: dict[int, list[str]] = {}
         at = _grid_before(row)
-        for cell in (c for c in row if c.tag == _W + "tc"):
+        for cell in _row_cells(row):
             span = _grid_span(cell)
             if _vertical_merge(cell) == "continue":
                 texts = above.get(at, [""] * span)
@@ -1342,10 +1429,10 @@ def _iter_blocks(body, styles: _Styles) -> Iterator[tuple[str, object]]:
     limits, torque values, acceptance criteria. Walking the body in order is
     the only way to get both, in the order a reader would meet them.
     """
-    for child in body:
+    for child in _blocks(body):
         if child.tag == _W + "p":
             yield "paragraph", (_paragraph_text(child), styles.resolve(_paragraph_style_id(child)))
-        elif child.tag == _W + "tbl":
+        else:
             yield "table", _table_rows(child)
 
 
@@ -1396,6 +1483,12 @@ def _read_docx(path: Path):
     body = document.find(_W + "body")
     if body is None:
         raise ValueError("the document has no body")
+    if next(body.iter(_W + "ins"), None) is not None or next(body.iter(_W + "del"), None) is not None:
+        logger.warning(
+            "%s has tracked changes not yet accepted; read as Word shows them, "
+            "insertions in and deletions out. Accept or reject them to settle the text.",
+            path.name,
+        )
     return body, styles
 
 
@@ -1467,6 +1560,23 @@ class _Accumulator:
             if self.words >= TARGET_CHUNK_WORDS:
                 self.flush()
 
+    def add_table(self, lines: Sequence[str]) -> None:
+        """A table, one row per line, never split inside a row.
+
+        Each row is added as its own part, so it keeps its own line in the
+        chunk -- run together, "2 percent max" and the next row's "Porosity"
+        read as one claim. A table too long for one chunk continues in the
+        next with its first row repeated, so the columns still have names.
+        """
+        rows = [line for line in (_clean_doc_text(x) for x in lines) if line]
+        for position, line in enumerate(rows):
+            if position:
+                if self.words and self.words + len(line.split()) > MAX_CHUNK_WORDS:
+                    self.flush()
+                if not self.buffer:
+                    self.add(rows[0])
+            self.add(line)
+
     def flush(self) -> None:
         if not self.buffer:
             return
@@ -1499,7 +1609,7 @@ def parse_docx(path: Path | str) -> list[DocChunk]:
 
     for kind, block in blocks:
         if kind == "table":
-            accumulator.add(_table_text(block))
+            accumulator.add_table(_table_text(block).split("\n"))
             continue
 
         text, style = block
@@ -1563,10 +1673,10 @@ def iter_doc_files(directory: Path | str) -> list[Path]:
 #
 # Tier 2 -- the 0250 standards corpus: cache, then search.
 #
-# Tier 1 searches one part's history, which is small and different every run, so
-# it is embedded on demand. Tier 2 searches the *same* standards corpus on every
-# ticket, so embedding it per ticket would pay the same cost forever. It is
-# embedded once and cached on disk, keyed by a hash of the documents themselves:
+# Tier 1's history lives in its own store (see "The history store"). Tier 2
+# searches the *same* standards corpus on every ticket, so embedding it per
+# ticket would pay the same cost forever. It is embedded once and cached on
+# disk, keyed by a hash of the documents themselves:
 # edit a document and the next run rebuilds, touch nothing and the next run loads
 # vectors in milliseconds.
 #
@@ -1614,6 +1724,10 @@ TIER2_TOP_K = 5
 TIER2_AZURE_THRESHOLD = 0.35
 
 CACHE_FORMAT = 2
+# The .docx reading rules the cached chunks were made with. Bump it whenever
+# `parse_docx` or what it calls would produce different chunk text: a cache from
+# older rules is then rebuilt rather than served.
+DOC_READER_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -1715,6 +1829,9 @@ def load_cache(path: Path, expected_hash: str, expected_model: str):
             meta = json.loads(str(archive["meta"]))
             if meta.get("format") != CACHE_FORMAT:
                 logger.info("%s is an older cache format; rebuilding", path.name)
+                return None
+            if meta.get("reader") != DOC_READER_VERSION:
+                logger.info("%s was read under older .docx rules; rebuilding", path.name)
                 return None
             if meta.get("corpus_hash") != expected_hash:
                 logger.info("%s is stale (documents changed); rebuilding", path.name)
@@ -1924,6 +2041,7 @@ class DocRetriever:
                 matrix,
                 {
                     "format": CACHE_FORMAT,
+                    "reader": DOC_READER_VERSION,
                     "corpus_hash": digest,
                     "backend": backend,
                     "model": model,
@@ -2010,22 +2128,21 @@ class DocRetriever:
 # Tier 1: history retrieval
 # =============================================================================
 #
-# In-memory retrieval: filter history by part number, then embed and rank.
+# A ticket is matched against the history of its part's COMMODITY FAMILY:
+# every part whose commodity code -- the part number up to its first hyphen --
+# shares a group with the ticket's, per the commodity groups file. With no
+# groups file, an unmapped code, or a part number with no hyphen, it falls back
+# to the part's own history, exactly as before families existed, and the Reason
+# says which and why.
 #
-# No vector database. The part-number filter means semantic search only ever runs
-# against one part's history, which is small enough to embed on demand -- so the
-# index, the indexer schedule, the embedded-storage lock and payload drift all
-# stop existing.
+# A family can hold 30,000 records or more, so history lives in a local store
+# (below) rather than being re-read and re-embedded per ticket. The store
+# mirrors the history file: an unchanged file is not read at all, a changed one
+# is read once, and a record's problem text is embedded once and kept. Ranking
+# is still exact -- every record in scope is scored, in NumPy; nothing is
+# approximated, so the true best match is never missed.
 #
-# The cost moves to load time: the history file is scanned once per ticket.
-# Measured on this hardware at 300k rows, that is about 1.5 s for CSV and about
-# 40 s for XLSX, because openpyxl must inflate and parse XML per row while a CSV
-# is a linear read. Prefer CSV for a large history; the engine reads both.
-#
-# Order of operations is deliberate -- each step is cheaper than the next, so the
-# expensive ones only run on tickets that survive:
-#
-#     validate -> filter by part -> cap to the newest N -> embed -> rank -> gate
+#     validate -> sync store -> fetch scope -> embed what is new -> rank -> gate -> shortlist
 
 # Columns the engine needs, and the spellings it accepts for each.
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -2040,11 +2157,6 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "last_modified_date": ("Last_Modified_Date", "Last Modified Date", "Modified"),
 }
 REQUIRED = ("sps_id", "part_number", "problem_description", "actual_solution")
-
-# Latency cap. Encoding is roughly linear in candidate count; at ~1 s per 300
-# short texts with bge-small on CPU, this keeps the embedding step near a
-# second even for a part with thousands of records.
-MAX_CANDIDATES = 300
 
 # How many records the reviewer is shown when there is no recommendation.
 # Three is a judgement, not a measurement: enough that a near-miss is not
@@ -2099,6 +2211,9 @@ class HistoryRow:
     part_description: str = ""
     item_status: str = ""
     last_modified_date: datetime | None = None
+    # Derived from part_number when the history is read, so the store can
+    # select a whole family by an index rather than by parsing every row.
+    commodity_code: str = ""
 
     def sort_key(self) -> tuple[datetime, str]:
         """Recency ordering; undated rows sort oldest but stay comparable."""
@@ -2123,15 +2238,27 @@ class RetrievalStats:
     rows_scanned: int = 0
     part_matches: int = 0
     usable: int = 0
-    capped_to: int = 0
+    # Every usable record in scope is ranked: there is no cap. The cap that was
+    # here dropped by recency to bound encoding cost, which the store removed,
+    # and at family scale it would silently have discarded the oldest record
+    # even when it was the one that matched.
+    considered: int = 0
     load_seconds: float = 0.0
     embed_seconds: float = 0.0
+    # Problem texts embedded during this run because the store had not seen
+    # them. Zero once `ingest` has run against the current export.
+    embedded_now: int = 0
     qualified: int = 0
     top_score: float = 0.0
     # Which encoder produced the vectors.
     backend: str = ""
     backend_detail: str = ""
     threshold_used: float = 0.0
+    # Which history was searched -- a commodity family or the part alone -- in
+    # one sentence for the Reason, and where the store lives.
+    scope_note: str = ""
+    family: str = ""
+    store: str = ""
     # The best-scoring candidates, whether or not they cleared the gate.
     #
     # `retrieve()` returns only what qualified, so on a gated run the near-miss
@@ -2148,14 +2275,17 @@ class RetrievalStats:
             "rows_scanned": self.rows_scanned,
             "part_matches": self.part_matches,
             "usable": self.usable,
-            "capped_to": self.capped_to,
+            "considered": self.considered,
             "load_seconds": round(self.load_seconds, 3),
             "embed_seconds": round(self.embed_seconds, 3),
+            "embedded_now": self.embedded_now,
             "qualified": self.qualified,
             "top_score": round(self.top_score, 4),
             "backend": self.backend,
             "backend_detail": self.backend_detail,
             "threshold_used": self.threshold_used,
+            "family": self.family,
+            "store": self.store,
         }
 
 
@@ -2163,7 +2293,12 @@ def _norm_header(value: Any) -> str:
     return str(value or "").strip().casefold().replace(" ", "_").replace("-", "_")
 
 
-def build_header_map(headers: Sequence[Any]) -> dict[str, int]:
+def _map_columns(
+    headers: Sequence[Any],
+    aliases: dict[str, tuple[str, ...]],
+    required: Sequence[str],
+    what: str,
+) -> dict[str, int]:
     """Resolve column positions, tolerating spelling and case."""
     lookup: dict[str, int] = {}
     for index, header in enumerate(headers):
@@ -2172,19 +2307,24 @@ def build_header_map(headers: Sequence[Any]) -> dict[str, int]:
             lookup[key] = index
 
     mapping: dict[str, int] = {}
-    for field_name, aliases in COLUMN_ALIASES.items():
-        for alias in aliases:
+    for field_name, spellings in aliases.items():
+        for alias in spellings:
             index = lookup.get(_norm_header(alias))
             if index is not None:
                 mapping[field_name] = index
                 break
 
-    missing = [f for f in REQUIRED if f not in mapping]
+    missing = [f for f in required if f not in mapping]
     if missing:
-        wanted = ", ".join(f"{f} (e.g. {COLUMN_ALIASES[f][0]!r})" for f in missing)
+        wanted = ", ".join(f"{f} (e.g. {aliases[f][0]!r})" for f in missing)
         found = ", ".join(repr(str(h)) for h in headers if str(h).strip())
-        raise HistoryError(f"History file is missing required column(s): {wanted}. Found: {found}")
+        raise HistoryError(f"{what} is missing required column(s): {wanted}. Found: {found}")
     return mapping
+
+
+def build_header_map(headers: Sequence[Any]) -> dict[str, int]:
+    """Resolve the history file's column positions."""
+    return _map_columns(headers, COLUMN_ALIASES, REQUIRED, "History file")
 
 
 def _cell(row: Sequence[Any], mapping: dict[str, int], field_name: str) -> Any:
@@ -2217,111 +2357,754 @@ def _parse_date(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def load_matching_history(
-    path: Path | str,
-    part_number: str,
-    min_text_length: int = 15,
-    stats: RetrievalStats | None = None,
-) -> list[HistoryRow]:
-    """Scan the history once, keeping only usable rows for this part.
+# ---- Commodity families ------------------------------------------------------
+#
+# The groups file is two columns, one row per commodity code:
+#
+#     Commodity_Code,Group
+#     0011,FASTENERS
+#     0022,FASTENERS
+#
+# Groups are symmetric -- every code in a group reaches every other -- and a
+# group name is matched ignoring case, so "Fasteners" and "FASTENERS" are one
+# family rather than two. A code listed under two groups is reported and
+# treated as unmapped: guessing which family it belongs to would decide which
+# history a ticket is answered from, and that is not ours to guess.
 
-    Filtering happens during the scan rather than after it, so memory stays flat
-    regardless of how large the file is: only the matching rows are retained.
+COMMODITY_GROUPS_ENV = "SPS_COMMODITY_GROUPS"
+COMMODITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "commodity_code": ("Commodity_Code", "Commodity Code", "Commodity"),
+    "group": ("Group", "Commodity_Group", "Family"),
+}
+
+
+def commodity_code(part_number: object) -> str:
+    """The part number up to its first hyphen, or '' if it has none.
+
+    `0022-43951` -> `0022`. Taken from the canonical form, so it comes out the
+    same whatever spacing or case the part arrived in. The part number itself
+    is still compared whole wherever it is compared: the code is derived from
+    it, not substituted for it.
+    """
+    head, hyphen, _ = normalize_part_number(part_number).partition("-")
+    return head if hyphen else ""
+
+
+class CommodityGroupsError(ValueError):
+    """The commodity groups file cannot be used."""
+
+
+@dataclass(frozen=True)
+class CommodityGroups:
+    """Which commodity codes are searched together."""
+
+    source: str
+    # group key (the name casefolded) -> its codes, conflicted ones excluded
+    members: dict[str, tuple[str, ...]]
+    names: dict[str, str]
+    code_group: dict[str, str]
+    # code -> every group name it appears under, for codes listed in more than one
+    conflicts: dict[str, tuple[str, ...]]
+
+    def family(self, code: str) -> tuple[str, tuple[str, ...]] | None:
+        """(group name, every code in the group), or None if the code is unmapped."""
+        key = self.code_group.get(code)
+        if key is None:
+            return None
+        return self.names[key], self.members[key]
+
+
+_GROUPS_CACHE: dict[tuple[str, int, int], CommodityGroups] = {}
+
+
+def load_commodity_groups(path: Path | str) -> CommodityGroups:
+    """Read a groups file, .csv or .xlsx. Cached for as long as the file is unchanged."""
+    path = Path(path)
+    if not path.is_file():
+        raise CommodityGroupsError(f"{path} not found")
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    if key in _GROUPS_CACHE:
+        return _GROUPS_CACHE[key]
+
+    mapping: dict[str, int] | None = None
+    names: dict[str, str] = {}
+    codes_of: dict[str, set[str]] = {}
+    groups_of: dict[str, set[str]] = {}
+    numeric: list[int] = []
+    try:
+        for number, row in enumerate(iter_rows(path, "Commodity groups file"), 1):
+            if mapping is None:
+                mapping = _map_columns(row, COMMODITY_ALIASES, ("commodity_code", "group"),
+                                       "Commodity groups file")
+                continue
+            if is_blank(row):
+                continue
+            raw = _cell(row, mapping, "commodity_code")
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                numeric.append(number)
+            code = normalize_part_number(_text(raw))
+            name = _text(_cell(row, mapping, "group"))
+            if not code or not name:
+                continue
+            group = name.casefold()
+            names.setdefault(group, name)
+            codes_of.setdefault(group, set()).add(code)
+            groups_of.setdefault(code, set()).add(group)
+    except (FileReadError, HistoryError) as exc:
+        raise CommodityGroupsError(str(exc)) from exc
+    if mapping is None:
+        raise CommodityGroupsError(f"{path.name} is empty")
+
+    if numeric:
+        # Excel keeps a number, not the text typed: 0011 entered into a General
+        # cell is stored as 11, and nothing here can know it ever had zeros.
+        logger.warning(
+            "%s: the commodity code on row(s) %s is stored as a number, so any "
+            "leading zeros are already gone. Format the column as Text, or use CSV.",
+            path.name, ", ".join(map(str, numeric[:10])),
+        )
+    conflicts = {
+        code: tuple(sorted(names[g] for g in groups))
+        for code, groups in groups_of.items() if len(groups) > 1
+    }
+    for code, listed in sorted(conflicts.items()):
+        logger.error(
+            "%s: commodity code %s is listed under %s; it is treated as unmapped "
+            "until the file gives it one group.", path.name, code, " and ".join(listed),
+        )
+    code_group = {code: next(iter(gs)) for code, gs in groups_of.items() if len(gs) == 1}
+    members = {
+        group: tuple(sorted(c for c in codes if c in code_group))
+        for group, codes in codes_of.items()
+    }
+    groups = CommodityGroups(path.name, members, names, code_group, conflicts)
+    _GROUPS_CACHE[key] = groups
+    return groups
+
+
+@dataclass(frozen=True)
+class MatchScope:
+    """Which history a ticket is matched against, and why, in one sentence."""
+
+    part_number: str
+    # Empty means the part's own history only.
+    codes: tuple[str, ...] = ()
+    group: str = ""
+    note: str = ""
+
+    @property
+    def is_family(self) -> bool:
+        return bool(self.codes)
+
+
+def match_scope(part_number: str, groups_file: str | Path | None) -> MatchScope:
+    """The family to search, or the part alone with the reason it is alone."""
+    part_number = normalize_part_number(part_number)
+
+    def alone(why: str) -> MatchScope:
+        return MatchScope(part_number, note=f"Matched on the part number only: {why}.")
+
+    if not groups_file:
+        return alone(f"no commodity groups file is configured ({COMMODITY_GROUPS_ENV})")
+    code = commodity_code(part_number)
+    if not code:
+        return alone(f"{part_number} has no hyphen, so no commodity code")
+    try:
+        groups = load_commodity_groups(groups_file)
+    except CommodityGroupsError as exc:
+        logger.error("Commodity groups unusable: %s", exc)
+        return alone(f"the commodity groups file could not be used ({exc})")
+    if code in groups.conflicts:
+        listed = " and ".join(groups.conflicts[code])
+        return alone(f"commodity code {code} is listed under {listed} in {groups.source}")
+    family = groups.family(code)
+    if family is None:
+        return alone(f"commodity code {code} is not in {groups.source}")
+    name, codes = family
+    return MatchScope(
+        part_number, codes=codes, group=name,
+        note=f"Matched across commodity family {name} ({', '.join(codes)}).",
+    )
+
+
+# ---- Reading the history file ------------------------------------------------
+
+
+def read_history(path: Path | str) -> list[HistoryRow]:
+    """Every non-blank row of the history file, canonicalised, in file order.
+
+    Nothing is filtered here except blank rows: whether a record is usable is
+    decided when it is fetched (see `is_usable`), so the store holds the file as
+    it is and the Reason can say how many records a part has before saying how
+    many could be used.
     """
     path = Path(path)
-    stats = stats or RetrievalStats()
-    wanted = normalize_part_number(part_number)
-    started = time.time()
-
-    # The reader's own failures are re-raised as HistoryError so callers of this
-    # module have one exception to catch for "the history is unusable".
-    # UnsupportedFileType is deliberately not caught: the caller reports a wrong
-    # file type differently, and the resolver rejects it before reaching here.
+    # The reader's own failures are re-raised as HistoryError so callers have
+    # one exception to catch for "the history is unusable". UnsupportedFileType
+    # is deliberately not caught: the caller reports a wrong file type
+    # differently, and the resolver rejects it before reaching here.
     try:
-        saw_header, kept = _scan(path, wanted, min_text_length, stats)
+        rows = _scan(path)
     except FileReadError as exc:
         raise HistoryError(str(exc)) from exc
-    if not saw_header:
+    if rows is None:
         raise HistoryError(f"History file is empty: {path}")
-
-    stats.usable = len(kept)
-    stats.load_seconds = time.time() - started
-    logger.info(
-        "Scanned %d row(s) in %.2fs; %d matched part %r, %d usable",
-        stats.rows_scanned,
-        stats.load_seconds,
-        stats.part_matches,
-        wanted,
-        stats.usable,
-    )
-    return kept
+    return rows
 
 
-def _scan(
-    path: Path, wanted: str, min_text_length: int, stats: RetrievalStats
-) -> tuple[bool, list[HistoryRow]]:
-    """Return (a header was seen, the usable rows for this part).
-
-    Split out so the read can be wrapped in one try without also catching the
-    caller's own error handling.
-    """
+def _scan(path: Path) -> list[HistoryRow] | None:
+    """The rows, or None if not even a header was found."""
     mapping: dict[str, int] | None = None
     kept: list[HistoryRow] = []
-
     for row in iter_rows(path, "History file"):
         if mapping is None:
             mapping = build_header_map(list(row))
             continue
         if is_blank(row):
             continue
-        stats.rows_scanned += 1
-
-        # Dual check: the stored part number is canonicalised the same way the
-        # ticket's was, so drift in the file cannot hide a genuine match.
-        if normalize_part_number(_cell(row, mapping, "part_number")) != wanted:
-            continue
-        stats.part_matches += 1
-
-        problem = _text(_cell(row, mapping, "problem_description"))
-        solution = _text(_cell(row, mapping, "actual_solution"))
-        sps_id = _text(_cell(row, mapping, "sps_id"))
-        if not sps_id or len(problem) < min_text_length or len(solution) < min_text_length:
-            continue
-
+        # Canonicalised the same way the ticket's part number is, so drift in
+        # the file -- a stray space, a zero-width character -- cannot hide a
+        # genuine match.
+        part = normalize_part_number(_cell(row, mapping, "part_number"))
         kept.append(
             HistoryRow(
-                sps_id=sps_id,
-                part_number=wanted,
-                problem_description=problem,
-                actual_solution=solution,
+                sps_id=_text(_cell(row, mapping, "sps_id")),
+                part_number=part,
+                problem_description=_text(_cell(row, mapping, "problem_description")),
+                actual_solution=_text(_cell(row, mapping, "actual_solution")),
                 issue_type=_text(_cell(row, mapping, "issue_type")),
                 problem_reason_code=_text(_cell(row, mapping, "problem_reason_code")),
                 part_description=_text(_cell(row, mapping, "part_description")),
                 item_status=_text(_cell(row, mapping, "item_status")),
                 last_modified_date=_parse_date(_cell(row, mapping, "last_modified_date")),
+                commodity_code=commodity_code(part),
             )
         )
+    return kept if mapping is not None else None
 
-    return (mapping is not None), kept
+
+def is_usable(row: HistoryRow, min_text_length: int = 15) -> bool:
+    """A record with an id and enough problem and solution text to be worth ranking."""
+    return bool(row.sps_id) and (
+        len(row.problem_description) >= min_text_length
+        and len(row.actual_solution) >= min_text_length
+    )
 
 
-def cap_to_newest(rows: list[HistoryRow], limit: int = MAX_CANDIDATES) -> list[HistoryRow]:
-    """Keep the newest `limit` rows.
+# ---- The history store -------------------------------------------------------
+#
+# SQLite, from the standard library: no server, no extra package, nothing native
+# beyond what Python ships. One database per history file, holding the file's
+# rows and one vector per distinct problem text, keyed by the text's hash and
+# the embedding deployment that produced it -- so an edited solution costs no
+# embedding, a repeated problem text is embedded once, and vectors from two
+# deployments can never be compared.
+#
+#   * An unchanged file -- same path, size and modification time -- is not read
+#     at all. A changed one is read once and its rows replaced wholesale, so a
+#     record deleted from the export leaves the store with it.
+#   * A record is embedded the first time a ticket needs it, or ahead of time
+#     by `python sps.py ingest`. Either way, once.
+#   * Vectors are float32, which is what the API returns: storing anything
+#     narrower would change scores, and at 30k records the top few are often
+#     within a ten-thousandth of each other.
+#   * WAL mode, so robots reading the store never wait for one writing it.
+#     LOCAL DISK ONLY: SQLite's locking is unreliable over a network share, so a
+#     store that would land on one is put under %LOCALAPPDATA% instead.
+#
+# `HistoryStore` is the seam: a Qdrant server, say, would implement the same two
+# methods. Ranking stays in the retriever, identical whichever store answers.
 
-    Recency is the right thing to drop on: an old fix for a part is more likely
-    to have been superseded than a recent one, and encoding cost is linear in
-    what survives.
-    """
-    if len(rows) <= limit:
-        return rows
-    ordered = sorted(rows, key=HistoryRow.sort_key, reverse=True)[:limit]
-    logger.info("Capped %d candidate(s) to the %d most recent", len(rows), limit)
-    return ordered
+HISTORY_STORE_ENV = "SPS_HISTORY_STORE"
+HISTORY_STORE_DIR_ENV = "SPS_HISTORY_STORE_DIR"
+# Bump when what a stored row holds, or how it is derived, changes: an existing
+# store is then rebuilt rather than read under rules it was not written with.
+HISTORY_STORE_SCHEMA = 1
+STORE_SUFFIX = ".sps-store.sqlite"
+# A writer can hold the store while it embeds a family's new records; a second
+# robot waits this long for it before reporting a transient failure.
+STORE_BUSY_SECONDS = 600
+
+
+class HistoryStoreError(RuntimeError):
+    """The history store could not be read or written."""
+
+
+class HistoryStoreConfigError(HistoryStoreError):
+    """The store is configured wrongly: a person has to change a setting."""
+
+
+@dataclass(frozen=True)
+class SyncResult:
+    rows: int
+    reread: bool
+    seconds: float
 
 
 @dataclass
-class InMemoryRetriever:
-    """Filter, embed and rank one part's history per ticket.
+class Fetched:
+    """One scope's usable records, their vectors, and the query's."""
+
+    rows: list[HistoryRow]
+    matrix: Any  # (len(rows), dims) float32
+    query: Any   # (dims,) float32, or None when nothing needed encoding
+    matched: int
+    embedded: int
+    embed_seconds: float
+
+
+@dataclass(frozen=True)
+class Encoder:
+    """One embedding space: what to call it, and how to enter it.
+
+    `identity` keys the stored vectors. `both` encodes a query and passages
+    together -- one request to Azure, where it was one request before the
+    store existed -- and `passages` encodes passages alone, for ingest.
+    """
+
+    identity: str
+    backend: str
+    detail: str
+    both: Callable[[str, list[str]], tuple[Sequence[float], list[Sequence[float]]]]
+    passages: Callable[[list[str]], list[Sequence[float]]]
+
+
+def azure_encoder(settings: "AzureEmbeddingSettings") -> Encoder:
+    def both(query: str, passages: list[str]):
+        if not settings.configured:
+            raise AzureEmbeddingNotConfigured(
+                "Azure embeddings are not configured: " + ", ".join(settings.missing())
+            )
+        vectors = AzureEmbedder(settings).embed_batch([query] + passages)
+        return vectors[0], vectors[1:]
+
+    def passages_only(passages: list[str]):
+        if not settings.configured:
+            raise AzureEmbeddingNotConfigured(
+                "Azure embeddings are not configured: " + ", ".join(settings.missing())
+            )
+        return AzureEmbedder(settings).embed_batch(passages)
+
+    return Encoder(f"azure:{settings.deployment}", AZURE_BACKEND, settings.deployment,
+                   both, passages_only)
+
+
+def injected_encoder(embedder: "Embedder") -> Encoder:
+    """The test seam: the Embedder protocol, query and passages encoded apart."""
+    name = type(embedder).__name__
+
+    def both(query: str, passages: list[str]):
+        vectors = embedder.embed_passages(passages) if passages else []
+        return embedder.embed_query(query), vectors
+
+    return Encoder(f"injected:{name}", INJECTED_BACKEND, name, both,
+                   lambda passages: embedder.embed_passages(passages))
+
+
+def text_key(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
+@runtime_checkable
+class HistoryStore(Protocol):
+    location: str
+
+    def sync(self, history_path: Path) -> SyncResult: ...
+
+    def fetch(self, scope: MatchScope, encoder: Encoder, query: str,
+              min_text_length: int = 15) -> Fetched: ...
+
+
+class _VectorStoreBase:
+    """What both stores share: turning a scope's rows into a ranked-ready matrix."""
+
+    location = ""
+
+    def _rows_in(self, scope: MatchScope) -> list[HistoryRow]:
+        raise NotImplementedError
+
+    def _rows_and_vectors(self, scope: MatchScope, model: str) -> list[tuple[HistoryRow, bytes | None]]:
+        """The scope's rows in file order, each with its stored vector or None."""
+        raise NotImplementedError
+
+    def all_rows(self) -> list[HistoryRow]:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        """Release the store. A no-op unless it holds a connection."""
+
+    def _known(self, model: str, keys: set[str]) -> dict[str, bytes]:
+        raise NotImplementedError
+
+    def _remember(self, model: str, items: list[tuple[str, bytes]]) -> None:
+        raise NotImplementedError
+
+    def fetch(self, scope: MatchScope, encoder: Encoder, query: str,
+              min_text_length: int = 15) -> Fetched:
+        import numpy as np
+
+        in_scope = self._rows_and_vectors(scope, encoder.identity)
+        usable = [(r, blob) for r, blob in in_scope if is_usable(r, min_text_length)]
+        if not usable:
+            return Fetched([], np.zeros((0, 0), np.float32), None, len(in_scope), 0, 0.0)
+
+        rows = [r for r, _ in usable]
+        keys = [text_key(r.problem_description) for r in rows]
+        known: dict[str, bytes] = {}
+        missing: dict[str, str] = {}
+        for key, (row, blob) in zip(keys, usable):
+            if blob is not None:
+                known[key] = blob
+            elif key not in known:
+                missing.setdefault(key, row.problem_description)
+        for key in [k for k in missing if k in known]:
+            del missing[key]
+
+        started = time.time()
+        query_vector, new = encoder.both(query, list(missing.values()))
+        seconds = time.time() - started
+        query_vector = np.asarray(query_vector, dtype=np.float32)
+        dims = query_vector.shape[0]
+
+        fresh = [(key, np.asarray(v, dtype=np.float32).tobytes()) for key, v in zip(missing, new)]
+        if fresh:
+            self._remember(encoder.identity, fresh)
+            known.update(fresh)
+
+        matrix = np.empty((len(rows), dims), dtype=np.float32)
+        for i, key in enumerate(keys):
+            vector = np.frombuffer(known[key], dtype=np.float32)
+            if vector.shape[0] != dims:
+                raise HistoryStoreError(
+                    f"A stored vector has {vector.shape[0]} dimensions and the query "
+                    f"{dims}: the deployment {encoder.detail!r} has changed shape. "
+                    f"Delete {self.location} and run ingest again."
+                )
+            matrix[i] = vector
+        return Fetched(rows, matrix, query_vector, len(in_scope), len(fresh), seconds)
+
+    def missing_texts(self, encoder: Encoder,
+                      min_text_length: int = 15) -> tuple[dict[str, str], int]:
+        """(every usable problem text not yet embedded in this space, how many
+        distinct usable texts there are in all), for ingest."""
+        rows = [r for r in self.all_rows() if is_usable(r, min_text_length)]
+        texts = {text_key(r.problem_description): r.problem_description for r in rows}
+        known = self._known(encoder.identity, set(texts))
+        return {k: t for k, t in texts.items() if k not in known}, len(texts)
+
+    def remember(self, encoder: Encoder, keys: list[str], vectors) -> None:
+        import numpy as np
+
+        self._remember(encoder.identity, [
+            (k, np.asarray(v, dtype=np.float32).tobytes()) for k, v in zip(keys, vectors)
+        ])
+
+
+class MemoryHistoryStore(_VectorStoreBase):
+    """No persistence: the file is read and records are embedded every run.
+
+    What `SPS_HISTORY_STORE=memory` selects, and what the resolver falls back to
+    when the SQLite store cannot be created -- a read-only folder, say. It
+    answers exactly as the SQLite store does, only without remembering.
+    """
+
+    def __init__(self, location: str = "memory") -> None:
+        self.location = location
+        self.rows: list[HistoryRow] = []
+        self.vectors: dict[tuple[str, str], bytes] = {}
+
+    def sync(self, history_path: Path) -> SyncResult:
+        started = time.time()
+        self.rows = read_history(history_path)
+        return SyncResult(len(self.rows), True, time.time() - started)
+
+    def all_rows(self) -> list[HistoryRow]:
+        return list(self.rows)
+
+    def _rows_in(self, scope: MatchScope) -> list[HistoryRow]:
+        if scope.is_family:
+            codes = set(scope.codes)
+            return [r for r in self.rows if r.commodity_code in codes]
+        return [r for r in self.rows if r.part_number == scope.part_number]
+
+    def _rows_and_vectors(self, scope: MatchScope, model: str):
+        return [(r, self.vectors.get((model, text_key(r.problem_description))))
+                for r in self._rows_in(scope)]
+
+    def _known(self, model: str, keys: set[str]) -> dict[str, bytes]:
+        return {k: self.vectors[(model, k)] for k in keys if (model, k) in self.vectors}
+
+    def _remember(self, model: str, items: list[tuple[str, bytes]]) -> None:
+        for key, blob in items:
+            self.vectors[(model, key)] = blob
+
+
+_ROW_FIELDS = (
+    "sps_id", "part_number", "commodity_code", "problem_description", "actual_solution",
+    "issue_type", "problem_reason_code", "part_description", "item_status",
+)
+
+
+class SqliteHistoryStore(_VectorStoreBase):
+    """The persistent store. See the section comment for what it keeps and why."""
+
+    def __init__(self, location: Path) -> None:
+        self.location = str(location)
+        Path(location).parent.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(self.location, timeout=STORE_BUSY_SECONDS,
+                                   isolation_level=None)
+        # 64 KB pages, set before anything is written: a 3,072-dimension vector
+        # is 12 KB, and at the default 4 KB every one spans a chain of
+        # overflow pages. Measured at 30k vectors, reads were several times
+        # faster this way.
+        self._db.execute("PRAGMA page_size=65536")
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
+        self._prepare()
+
+    def close(self) -> None:
+        self._db.close()
+
+    def _prepare(self) -> None:
+        db = self._db
+        db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        if self._meta("schema") not in (None, str(HISTORY_STORE_SCHEMA)):
+            # Written under other rules: rebuilt rather than misread.
+            logger.warning("History store %s is schema %s; rebuilding as %s",
+                           self.location, self._meta("schema"), HISTORY_STORE_SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DROP TABLE IF EXISTS rows")
+            db.execute("DROP TABLE IF EXISTS vectors")
+            db.execute("DELETE FROM meta")
+            db.execute("COMMIT")
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS rows (ordinal INTEGER PRIMARY KEY, "
+            + ", ".join(f"{f} TEXT NOT NULL" for f in _ROW_FIELDS)
+            + ", last_modified TEXT, text_key TEXT NOT NULL)"
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS rows_by_code ON rows (commodity_code)")
+        db.execute("CREATE INDEX IF NOT EXISTS rows_by_part ON rows (part_number)")
+        # A rowid table with a separate index, not a WITHOUT ROWID one keyed on
+        # the hash: keyed that way, vectors are stored in hash order -- which
+        # is random -- and reading a family touched pages all over the file.
+        # Stored in the order they were written, they are read nearly in
+        # sequence.
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS vectors (model TEXT NOT NULL, text_key TEXT NOT NULL, "
+            "vec BLOB NOT NULL)"
+        )
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS vectors_by_key ON vectors (model, text_key)")
+        db.execute("INSERT OR IGNORE INTO meta VALUES ('schema', ?)", (str(HISTORY_STORE_SCHEMA),))
+
+    def _meta(self, key: str) -> str | None:
+        found = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return found[0] if found else None
+
+    @staticmethod
+    def _signature(history_path: Path) -> str:
+        stat = history_path.stat()
+        return json.dumps([str(history_path.resolve()), stat.st_size, stat.st_mtime_ns])
+
+    def rows_count(self) -> int:
+        return self._db.execute("SELECT COUNT(*) FROM rows").fetchone()[0]
+
+    def sync(self, history_path: Path) -> SyncResult:
+        started = time.time()
+        history_path = Path(history_path)
+        if not history_path.is_file():
+            raise HistoryError(f"History file not found: {history_path}")
+        signature = self._signature(history_path)
+        if self._meta("source") == signature:
+            return SyncResult(self.rows_count(), False, time.time() - started)
+
+        # Read outside the write lock: a large .xlsx takes long enough that
+        # holding the store for it would stall every other robot.
+        rows = read_history(history_path)
+        db = self._db
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if self._meta("source") == signature:
+                # Another process synced the same export while this one read it.
+                db.execute("COMMIT")
+                return SyncResult(self.rows_count(), False, time.time() - started)
+            db.execute("DELETE FROM rows")
+            db.executemany(
+                "INSERT INTO rows VALUES (?" + ", ?" * (len(_ROW_FIELDS) + 2) + ")",
+                (
+                    (i, *(getattr(r, f) for f in _ROW_FIELDS),
+                     r.last_modified_date.isoformat() if r.last_modified_date else None,
+                     text_key(r.problem_description))
+                    for i, r in enumerate(rows)
+                ),
+            )
+            # Vectors whose text no record carries any more.
+            db.execute("DELETE FROM vectors WHERE text_key NOT IN (SELECT text_key FROM rows)")
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('source', ?)", (signature,))
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        logger.info("History store %s synced: %d row(s) in %.2fs",
+                    self.location, len(rows), time.time() - started)
+        return SyncResult(len(rows), True, time.time() - started)
+
+    _COLUMNS = ", ".join(_ROW_FIELDS) + ", last_modified"
+
+    def all_rows(self) -> list[HistoryRow]:
+        return self._materialise(
+            self._db.execute(f"SELECT {self._COLUMNS} FROM rows ORDER BY ordinal")
+        )
+
+    def _scope_sql(self, scope: MatchScope) -> tuple[str, tuple]:
+        if scope.is_family:
+            return f"r.commodity_code IN ({', '.join('?' * len(scope.codes))})", tuple(scope.codes)
+        return "r.part_number = ?", (scope.part_number,)
+
+    def _rows_and_vectors(self, scope: MatchScope, model: str):
+        where, params = self._scope_sql(scope)
+        columns = ", ".join(f"r.{c}" for c in (*_ROW_FIELDS, "last_modified"))
+        # Ordered here rather than in SQL: ORDER BY made SQLite sort every
+        # result row, 12 KB vector and all, where this sorts references.
+        found = self._db.execute(
+            f"SELECT r.ordinal, {columns}, v.vec FROM rows r LEFT JOIN vectors v "
+            f"ON v.model = ? AND v.text_key = r.text_key WHERE {where}",
+            (model, *params),
+        ).fetchall()
+        found.sort(key=lambda r: r[0])
+        rows = self._materialise(r[1:-1] for r in found)
+        return [(row, r[-1]) for row, r in zip(rows, found)]
+
+    def _rows_in(self, scope: MatchScope) -> list[HistoryRow]:
+        columns = self._COLUMNS
+        if scope.is_family:
+            marks = ", ".join("?" * len(scope.codes))
+            cursor = self._db.execute(
+                f"SELECT {columns} FROM rows WHERE commodity_code IN ({marks}) ORDER BY ordinal",
+                scope.codes,
+            )
+        else:
+            cursor = self._db.execute(
+                f"SELECT {columns} FROM rows WHERE part_number = ? ORDER BY ordinal",
+                (scope.part_number,),
+            )
+        return self._materialise(cursor)
+
+    @staticmethod
+    def _materialise(cursor) -> list[HistoryRow]:
+        return [
+            HistoryRow(
+                sps_id=r[0], part_number=r[1], commodity_code=r[2],
+                problem_description=r[3], actual_solution=r[4], issue_type=r[5],
+                problem_reason_code=r[6], part_description=r[7], item_status=r[8],
+                last_modified_date=_parse_date(r[9]),
+            )
+            for r in cursor
+        ]
+
+    def _known(self, model: str, keys: set[str]) -> dict[str, bytes]:
+        found: dict[str, bytes] = {}
+        ordered = list(keys)
+        # Batched below SQLite's bound-parameter limit.
+        for start in range(0, len(ordered), 900):
+            batch = ordered[start:start + 900]
+            marks = ", ".join("?" * len(batch))
+            for key, blob in self._db.execute(
+                f"SELECT text_key, vec FROM vectors WHERE model = ? AND text_key IN ({marks})",
+                (model, *batch),
+            ):
+                found[key] = blob
+        return found
+
+    def _remember(self, model: str, items: list[tuple[str, bytes]]) -> None:
+        db = self._db
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.executemany(
+                "INSERT OR REPLACE INTO vectors (model, text_key, vec) VALUES (?, ?, ?)",
+                ((model, key, blob) for key, blob in items),
+            )
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+
+    def drop_other_models(self, keep: str) -> int:
+        """Vectors from any other deployment, removed by ingest."""
+        cursor = self._db.execute("DELETE FROM vectors WHERE model != ?", (keep,))
+        return cursor.rowcount
+
+
+def _is_network_path(path: Path) -> bool:
+    """A UNC path, or a drive letter Windows reports as remote."""
+    text = str(path)
+    if text.startswith(("\\\\", "//")):
+        return True
+    if sys.platform != "win32" or not path.drive:
+        return False
+    try:
+        import ctypes
+
+        return ctypes.windll.kernel32.GetDriveTypeW(path.drive + "\\") == 4  # DRIVE_REMOTE
+    except Exception:  # pragma: no cover - platform dependent
+        return False
+
+
+def _local_store_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "SPS" / "history-store"
+
+
+def history_store_path(history_path: Path | str) -> Path:
+    """Where the store for this history file lives.
+
+    Beside the file unless SPS_HISTORY_STORE_DIR says otherwise -- so `ingest`
+    and every robot reading the same export share one store -- and never on a
+    network share.
+    """
+    history_path = Path(history_path).resolve()
+    folder = Path(os.environ.get(HISTORY_STORE_DIR_ENV, "").strip() or history_path.parent)
+    if _is_network_path(folder.resolve() if folder.exists() else folder):
+        local = _local_store_dir()
+        logger.warning(
+            "%s is on a network share, where SQLite's locking cannot be trusted; "
+            "keeping the history store in %s instead. Set %s to a local folder "
+            "to choose where.", folder, local, HISTORY_STORE_DIR_ENV,
+        )
+        folder = local
+    tag = hashlib.sha1(str(history_path).casefold().encode("utf-8")).hexdigest()[:8]
+    return folder / f"{history_path.name}.{tag}{STORE_SUFFIX}"
+
+
+def open_history_store(history_path: Path | str) -> HistoryStore:
+    """The store the environment selects, falling back to memory if SQLite cannot be used."""
+    kind = os.environ.get(HISTORY_STORE_ENV, "").strip().casefold() or "sqlite"
+    if kind == "memory":
+        return MemoryHistoryStore()
+    if kind != "sqlite":
+        raise HistoryStoreConfigError(
+            f"{HISTORY_STORE_ENV} must be 'sqlite' or 'memory', not {kind!r}"
+        )
+    location = history_store_path(history_path)
+    try:
+        return SqliteHistoryStore(location)
+    except Exception as exc:
+        # A read-only folder, a locked file, a disk that is full. Still
+        # answerable -- just without remembering anything.
+        logger.warning(
+            "History store %s cannot be used (%s: %s); reading the history without one "
+            "this run. Set %s to a writable local folder.",
+            location, type(exc).__name__, exc, HISTORY_STORE_DIR_ENV,
+        )
+        return MemoryHistoryStore(location=f"memory (could not open {location})")
+
+
+# ---- Retrieval ---------------------------------------------------------------
+
+
+@dataclass
+class HistoryRetriever:
+    """Rank a ticket's family -- or its part alone -- and shortlist for the scorer.
 
     Azure embeddings are the only encoder, and an Azure failure ends the run
     rather than falling back to anything. A silent fallback would change which
@@ -2336,44 +3119,68 @@ class InMemoryRetriever:
     # deliberate operator instruction and should not be second-guessed by the
     # backend that happened to answer.
     confidence_threshold: float | None = None
-    max_candidates: int = MAX_CANDIDATES
-    # How many candidates leave the retriever. Was 15, when they were context
-    # for an Actor writing prose and more of it was more grounding. They are
-    # now a shortlist for the intent scorer, which reads every one of them in a
-    # single prompt and has to tell them apart -- so a shorter list is a
-    # sharper judgement, not a weaker one. Overridden from IntentSettings.
+    # How many candidates leave the retriever: the intent scorer's shortlist,
+    # set from SPS_INTENT_TOP_K. The scorer reads every one of them in a single
+    # prompt and has to tell them apart, so a shorter list is a sharper
+    # judgement -- and it must hold at least as many as the solutions wanted.
     max_context_records: int = 5
     min_text_length: int = 15
+    # The groups file; None matches on the part number alone.
+    commodity_file: str | Path | None = None
     stats: RetrievalStats = field(default_factory=RetrievalStats)
-    # Injection seam for tests. The pipeline never sets it.
+    # Injection seams for tests. The pipeline sets neither.
     embedder: Embedder | None = None
+    store: HistoryStore | None = None
+
+    def encoder(self) -> Encoder:
+        if self.embedder is not None:
+            return injected_encoder(self.embedder)
+        settings = self.azure_settings or AzureEmbeddingSettings.from_env()
+        return azure_encoder(settings)
 
     def retrieve(self, ticket: IncomingTicket) -> list[Candidate]:
         """Return qualified candidates, best first. Empty if none qualify.
 
         Raises HistoryError if the file is unusable. The caller separates
-        NO_MATCHES (nothing indexed for this part) from
-        BELOW_CONFIDENCE_THRESHOLD (matches found, none similar enough) by
-        reading `stats`.
+        NO_MATCHES (nothing in scope) from BELOW_CONFIDENCE_THRESHOLD (records
+        found, none similar enough) by reading `stats`.
         """
-        rows = load_matching_history(
-            self.history_path,
-            ticket.part_number,
-            min_text_length=self.min_text_length,
-            stats=self.stats,
-        )
-        if not rows:
-            return []
+        if self.store is not None:
+            return self._retrieve(ticket, self.store)
+        store = open_history_store(self.history_path)
+        try:
+            return self._retrieve(ticket, store)
+        finally:
+            store.close()
 
-        rows = cap_to_newest(rows, self.max_candidates)
-        self.stats.capped_to = len(rows)
-
-        query_text = ticket.problem_description.strip()
-        passages = [r.problem_description for r in rows]
-
+    def _retrieve(self, ticket: IncomingTicket, store) -> list[Candidate]:
         started = time.time()
-        candidates_matrix, query_vector = self._embed(query_text, passages)
-        self.stats.embed_seconds = time.time() - started
+        part = normalize_part_number(ticket.part_number)
+        scope = match_scope(part, self.commodity_file)
+        self.stats.scope_note = scope.note
+        self.stats.family = scope.group
+
+        self.stats.store = store.location
+        synced = store.sync(Path(self.history_path))
+        self.stats.rows_scanned = synced.rows
+
+        encoder = self.encoder()
+        fetched = store.fetch(scope, encoder, ticket.problem_description.strip(),
+                              self.min_text_length)
+        self.stats.part_matches = fetched.matched
+        self.stats.usable = len(fetched.rows)
+        self.stats.considered = len(fetched.rows)
+        self.stats.embedded_now = fetched.embedded
+        self.stats.embed_seconds = fetched.embed_seconds
+        self.stats.load_seconds = time.time() - started - fetched.embed_seconds
+        logger.info(
+            "%s %d of %d stored row(s) in scope, %d usable; %d newly embedded",
+            scope.note, fetched.matched, synced.rows, len(fetched.rows), fetched.embedded,
+        )
+        if not fetched.rows:
+            return []
+        self.stats.backend = encoder.backend
+        self.stats.backend_detail = encoder.detail
 
         threshold = self.confidence_threshold
         if threshold is None:
@@ -2385,86 +3192,50 @@ class InMemoryRetriever:
 
         # Both sides are L2-normalised, so the dot product is the cosine and the
         # whole ranking is one matrix multiply.
-        similarities = candidates_matrix @ query_vector
+        import numpy as np
 
-        scored = [_to_candidate(row, float(sim)) for row, sim in zip(rows, similarities)]
-        scored.sort(key=lambda c: (c.composite_score, c.cosine_similarity, c.sps_id), reverse=True)
+        scores = np.clip(fetched.matrix @ fetched.query, 0.0, 1.0)
+        exact = [r.part_number == part for r in fetched.rows]
+        # Best first; at an equal score the ticket's own part ahead of a
+        # sibling's, then by SPS ID so the order never depends on the file's.
+        order = sorted(
+            range(len(fetched.rows)),
+            key=lambda i: (float(scores[i]), exact[i], fetched.rows[i].sps_id),
+            reverse=True,
+        )
+        # One entry per SPS ID. A family can carry the same record under two
+        # part numbers, and the scorer's answers are matched back by SPS ID --
+        # two entries with one id would make that match ambiguous.
+        seen: set[str] = set()
+        ranked: list[int] = []
+        for i in order:
+            if fetched.rows[i].sps_id not in seen:
+                seen.add(fetched.rows[i].sps_id)
+                ranked.append(i)
 
-        self.stats.top_score = scored[0].composite_score if scored else 0.0
+        def candidate(i: int) -> Candidate:
+            return _to_candidate(fetched.rows[i], float(scores[i]), exact[i])
+
+        self.stats.top_score = float(scores[ranked[0]])
         # Captured before the gate, for the same reason top_score is: the rows
         # we rejected are exactly the ones a reviewer wants to see.
-        self.stats.top_candidates = tuple(scored[:CASCADE_LIMIT])
-        qualified = [c for c in scored if c.composite_score >= threshold]
+        self.stats.top_candidates = tuple(candidate(i) for i in ranked[:CASCADE_LIMIT])
+        qualified = [i for i in ranked if scores[i] >= threshold]
         self.stats.qualified = len(qualified)
 
         logger.info(
-            "Embedded %d candidate(s) via %s in %.2fs; top %.4f, %d at or above %.2f",
-            len(rows),
-            self.stats.backend,
-            self.stats.embed_seconds,
-            self.stats.top_score,
-            len(qualified),
-            threshold,
+            "Ranked %d candidate(s) via %s; top %.4f, %d at or above %.2f",
+            len(ranked), self.stats.backend, self.stats.top_score, len(qualified), threshold,
         )
-        return qualified[: self.max_context_records]
-
-    # -- encoding ----------------------------------------------------------
-
-    def _embed(self, query_text: str, passages: list[str]):
-        """Encode query and candidates with one model. Never a mixture.
-
-        Returns (candidate_matrix, query_vector) as NumPy arrays.
-        Raises AzureEmbeddingError if the encoder is unavailable.
-        """
-        import numpy as np
-
-        if self.embedder is not None:
-            # An explicitly supplied encoder: the seam tests use. The pipeline
-            # never sets it.
-            self.stats.backend = INJECTED_BACKEND
-            self.stats.backend_detail = type(self.embedder).__name__
-            matrix, query = self._encode_injected(self.embedder, query_text, passages)
-            return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
-
-        matrix, query = self._embed_azure(query_text, passages)
-        return np.asarray(matrix, dtype=np.float32), np.asarray(query, dtype=np.float32)
-
-    def _embed_azure(self, query_text: str, passages: list[str]):
-        """The only encoder in the pipeline. Raises rather than falling back.
-
-        Missing credentials raise AzureEmbeddingNotConfigured, which the caller
-        turns into a "fix the configuration" exit rather than a retry: no
-        number of retries produces an API key.
-        """
-
-        settings = self.azure_settings
-        if settings is None:
-            settings = AzureEmbeddingSettings.from_env()
-        if not settings.configured:
-            raise AzureEmbeddingNotConfigured(
-                "Azure embeddings are not configured: " + ", ".join(settings.missing())
-            )
-
-        # One request for the whole batch. The query goes first so its position
-        # is known without searching the response.
-        vectors = AzureEmbedder(settings).embed_batch([query_text] + passages)
-
-        self.stats.backend = AZURE_BACKEND
-        self.stats.backend_detail = settings.deployment
-        return vectors[1:], vectors[0]
-
-    @staticmethod
-    def _encode_injected(embedder: Embedder, query_text: str, passages: list[str]):
-        """The Embedder protocol: passages and the query encoded separately."""
-        return embedder.embed_passages(passages), embedder.embed_query(query_text)
+        return [candidate(i) for i in qualified[: max(self.max_context_records, 1)]]
 
 
-def _to_candidate(row: HistoryRow, similarity: float) -> Candidate:
+def _to_candidate(row: HistoryRow, similarity: float, exact_part: bool = True) -> Candidate:
     """Score is the cosine alone.
 
-    No metadata boosting: part number is already an exact filter, and the other
-    boosts existed to discriminate within a mixed-part result set that no longer
-    occurs.
+    No metadata boosting. Whether the record is the ticket's own part or a
+    sibling in its family is carried alongside -- it breaks a tie between equal
+    intent scores, and is never added to a score.
     """
     bounded = min(max(similarity, 0.0), 1.0)
     return Candidate(
@@ -2478,8 +3249,8 @@ def _to_candidate(row: HistoryRow, similarity: float) -> Candidate:
         issue_type=row.issue_type,
         cosine_similarity=bounded,
         composite_score=bounded,
+        exact_part=exact_part,
     )
-
 
 # =============================================================================
 # The Azure OpenAI chat client
@@ -3009,12 +3780,17 @@ async def score_intent(
             failure_reason="Intent scoring returned no usable scores.",
         )
 
-    # Ties broken by the retrieval score, then by SPS ID. The scorer works in
-    # whole percents, so ties are common -- five candidates and a coarse scale
-    # -- and without a tiebreak the cascaded solution would depend on dict
-    # ordering. Which record gets sent to a supplier should not.
+    # Ties broken by whether the record is the ticket's own part, then by the
+    # retrieval score, then by SPS ID. The scorer works in whole percents, so
+    # ties are common -- five candidates and a coarse scale -- and without a
+    # tiebreak the cascaded solution would depend on dict ordering. The own
+    # part wins only a tie: a sibling part that scores higher is still sent
+    # first.
     scored.sort(
-        key=lambda s: (s.intent_match, s.candidate.composite_score, s.candidate.sps_id),
+        key=lambda s: (
+            s.intent_match, s.candidate.exact_part, s.candidate.composite_score,
+            s.candidate.sps_id,
+        ),
         reverse=True,
     )
 
@@ -3392,8 +4168,12 @@ def cascade(
         ai_recommendation=solution,
         justification=(
             f"Confidence is {score_to_percent(intent_match)}% against {candidate.sps_id}, "
-            f"whose recorded solution is sent unchanged. {reason}".strip()
-        ),
+            f"whose recorded solution is sent unchanged."
+            + ("" if candidate.exact_part else
+               f" It was recorded for {candidate.part_number}, another part in the same "
+               f"commodity family.")
+            + f" {reason}"
+        ).strip(),
         confidence=f"{score_to_percent(intent_match)}%",
         # One record, because one record's solution was sent. Naming the other
         # four would say the answer came from all of them.
@@ -3518,6 +4298,11 @@ RESULT_COLUMNS = (
     # Blank unless the recommendation is archive text passed through unchanged
     # and that text carries something the reviewer should see first.
     "Cascade_Warnings",
+    # 1 to MAX_SOLUTIONS, one row each, best first; blank on the single row
+    # written when there is no recommendation. Appended last, like the columns
+    # above, so a caller reading the first ones positionally is unaffected --
+    # but a caller that read only the first ROW now sees only the best answer.
+    "Solution_Rank",
 )
 
 
@@ -3611,9 +4396,10 @@ def _text_cell(sheet, row: int, column: int, text: str):
 # Resolution_Source.
 #
 # Order of work is cheapest-first, so nothing expensive runs for a ticket that
-# cannot succeed: validate, then filter history by part, then cap, then embed,
-# then gate, then the LLM. Tier 2 only runs after all of that has failed, which is
-# why it can afford to parse and embed a document corpus.
+# cannot succeed: validate, then sync the history store, fetch the family (or the
+# part), embed what is new, rank, gate, then the LLM. Tier 2 only runs after all
+# of that has failed, which is why it can afford to parse and embed a document
+# corpus.
 
 
 
@@ -3706,6 +4492,12 @@ def resolve_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Answer from history only, as before the 0250 fallback existed.",
     )
+    parser.add_argument(
+        "--commodity-file",
+        default=None,
+        help=f"Commodity groups .csv/.xlsx (Commodity_Code, Group), or {COMMODITY_GROUPS_ENV}. "
+        "Without one, a ticket is matched on its part number alone.",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args(argv)
 
@@ -3762,9 +4554,10 @@ class ResolveOutcome:
     # produced in one place. Blank part number means the run stopped before the
     # ticket could be read.
     part_number: str = ""
-    # The PipelineResult on a success; None when there is no recommendation, in
-    # which case main() builds the "Solution not found." row.
-    result: Any = None
+    # One PipelineResult per solution, best first; empty when there is no
+    # recommendation, in which case main() builds the "Solution not found."
+    # row. Tier 1 can send up to MAX_SOLUTIONS; Tier 2 writes one.
+    results: tuple = ()
     # The shortlisted records' solutions (Tier 1) or the sections the Tier-2
     # Actor was given. Operational only -- it never reaches output.xlsx, which
     # is supplier-facing -- but it is what lets a reviewer see WHY a
@@ -3792,6 +4585,13 @@ class ResolveOutcome:
     # Which check ran out of road, as a value rather than as prose, so a batch
     # can be tallied by cause instead of read one row at a time.
     stop_reason: str = ""
+    # The intent gate the run applied, beside the score it was applied to.
+    intent_threshold: float = 0.0
+
+    @property
+    def result(self):
+        """The best solution, or None."""
+        return self.results[0] if self.results else None
 
 
 def _reason_with_marker(reason: str, embedding_model: str) -> str:
@@ -3889,7 +4689,7 @@ def _closest_match(records: Sequence[tuple[str, str, float]], gated: bool) -> st
     return header + "\n\n" + "\n\n".join(blocks)
 
 
-def _source_list(records: Sequence[tuple[str, float]]) -> str:
+def _source_list(records: Sequence[tuple[str, float]], label: str = "Synthesized from") -> str:
     """Where a recommendation came from, without reproducing it.
 
     On a success the answer is already written; repeating the archive text
@@ -3906,8 +4706,13 @@ def _source_list(records: Sequence[tuple[str, float]]) -> str:
     if not records:
         return ""
 
-    listed = ", ".join(f"{label} ({score_to_percent(score)}%)" for label, score in records)
-    return f"Synthesized from {len(records)} record(s): {listed}"
+    listed = ", ".join(f"{name} ({score_to_percent(score)}%)" for name, score in records)
+    return f"{label} {len(records)} record(s): {listed}"
+
+
+# Tier 1 sends records as they are rather than combining them, so its list
+# says what was scored, not what was synthesized.
+TIER1_SOURCE_LABEL = "Intent scores across"
 
 
 # Resolver-level stops, alongside the loop's own STOP_* values. These happen
@@ -4026,8 +4831,13 @@ def unresolved_result(outcome: "ResolveOutcome"):
     )
 
 
-def write_output(output_dir: Path, part_number: str, result) -> None:
+def solution_rank(result, position: int) -> str:
+    """1, 2, 3 for a recommendation; blank for the no-recommendation row."""
+    return "" if result.resolution_source == SOURCE_NONE else str(position)
 
+
+def write_output(output_dir: Path, part_number: str, results: Sequence) -> None:
+    """One row per solution, best first -- or the one no-recommendation row."""
     write_rows(
         output_dir / OUTPUT_FILE,
         RESULT_COLUMNS,
@@ -4043,9 +4853,35 @@ def write_output(output_dir: Path, part_number: str, result) -> None:
                 "Resolution_Source": result.resolution_source,
                 "Closest_Matching_Solution": result.closest_matching_solution,
                 "Cascade_Warnings": result.cascade_warnings,
+                "Solution_Rank": solution_rank(result, position),
             }
+            for position, result in enumerate(results, 1)
         ],
     )
+
+
+def commodity_file(args: argparse.Namespace) -> str | None:
+    """The groups file: --commodity-file, else SPS_COMMODITY_GROUPS, else none."""
+    chosen = getattr(args, "commodity_file", None) or os.environ.get(COMMODITY_GROUPS_ENV, "")
+    return chosen.strip() or None
+
+
+def _matched_reason(winners, assessment, threshold: float, scope_note: str) -> str:
+    """The Reason line for a Tier-1 answer of one or more solutions."""
+    read = len(assessment.scored)
+    if len(winners) == 1:
+        best = winners[0]
+        found = (
+            f"Intent matched {best.candidate.sps_id} at {best.percent}% across {read} "
+            f"record(s); its solution was sent unchanged."
+        )
+    else:
+        listed = ", ".join(f"{s.candidate.sps_id} ({s.percent}%)" for s in winners)
+        found = (
+            f"Intent matched {len(winners)} record(s) at or above {int(threshold * 100)}% "
+            f"across {read}: {listed}; their solutions were sent unchanged, best first."
+        )
+    return f"{found} {scope_note} Ticket intent: {assessment.ticket_intent}"
 
 
 def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
@@ -4140,16 +4976,21 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
             measured=dict(part_number=part_number),
         )
 
-    retriever = InMemoryRetriever(
+    intent_settings = IntentSettings.from_env()
+    retriever = HistoryRetriever(
         history_path=history_path,
         confidence_threshold=threshold_override,
         azure_threshold=_threshold("AZURE_EMBEDDING_THRESHOLD", AZURE_EMBEDDING_THRESHOLD),
+        max_context_records=intent_settings.top_k,
+        commodity_file=commodity_file(args),
     )
 
     try:
         candidates = retriever.retrieve(ticket)
     except HistoryError as exc:
         return ResolveOutcome(CODE_INVALID_INPUT, str(exc), EXIT_BAD_INPUT)
+    except HistoryStoreConfigError as exc:
+        return ResolveOutcome(CODE_INFRASTRUCTURE, str(exc), EXIT_BAD_INPUT)
     except AzureEmbeddingNotConfigured as exc:
         # Exit 2, not 1. No number of retries produces an API key, and a robot
         # cycling through fifty of them only delays the human who has to go and
@@ -4161,10 +5002,18 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         # retry, and there is no longer a local encoder to absorb it.
         logger.error("embedding failed: %s", exc)
         return ResolveOutcome(CODE_INFRASTRUCTURE, str(exc), EXIT_INFRASTRUCTURE)
+    except (HistoryStoreError, sqlite3.Error) as exc:
+        # Another robot holding the store past the wait, a full disk. Worth a
+        # retry; the history file itself is fine.
+        logger.error("history store failed: %s", exc)
+        return ResolveOutcome(
+            CODE_INFRASTRUCTURE, f"History store failed: {exc}", EXIT_INFRASTRUCTURE
+        )
 
     stats = retriever.stats
     logger.info("retrieval stats: %s", stats.as_dict())
     model = _describe_backend(stats)
+    scope_note = stats.scope_note
 
     measured = dict(
         part_number=part_number,
@@ -4184,32 +5033,35 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         # Every shortlisted record with its cosine. Replaced by the intent-
         # ordered list once the scorer has run; this is what a run that stops
         # before it reports.
-        source_list=_source_list([(c.sps_id, c.composite_score) for c in candidates]),
+        source_list=_source_list(
+            [(c.sps_id, c.composite_score) for c in candidates], TIER1_SOURCE_LABEL
+        ),
         embedding_model=model,
         top_score=stats.top_score,
         threshold_used=stats.threshold_used,
-        candidates_considered=stats.capped_to,
+        candidates_considered=stats.considered,
+        intent_threshold=intent_settings.threshold,
     )
 
-    # -- Tier 1: the part's own history ------------------------------------
+    # -- Tier 1: the family's history, or the part's own -------------------
 
+    where = f"commodity family {stats.family}" if stats.family else f"part {part_number}"
     if stats.usable == 0:
         tier1_stage = STAGE_NOTHING
         tier1_stop = STOP_NO_HISTORY
         tier1_detail = (
-            f"No usable history for part {part_number}: {stats.part_matches} row(s) "
-            f"matched the part out of {stats.rows_scanned} scanned."
+            f"No usable history for {where}: {stats.part_matches} row(s) "
+            f"in scope out of {stats.rows_scanned} stored. {scope_note}"
         )
     elif not candidates:
         tier1_stage = STAGE_GATED
         tier1_stop = STOP_BELOW_THRESHOLD
         tier1_detail = (
             f"Best historical match {stats.top_score:.4f} is below the "
-            f"{stats.threshold_used:.2f} threshold across {stats.capped_to} candidate(s)."
+            f"{stats.threshold_used:.2f} threshold across {stats.considered} candidate(s). "
+            f"{scope_note}"
         )
     else:
-
-        intent_settings = IntentSettings.from_env()
         assessment = asyncio.run(score_intent(chat_client, ticket, candidates))
 
         if assessment.failed:
@@ -4229,7 +5081,8 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         # which is precisely the ordering this design stopped trusting, so what
         # the reviewer is shown has to be the order that decided the outcome.
         measured["source_list"] = _source_list(
-            [(s.candidate.sps_id, s.intent_match) for s in assessment.scored]
+            [(s.candidate.sps_id, s.intent_match) for s in assessment.scored],
+            TIER1_SOURCE_LABEL,
         )
         measured["closest_match"] = _closest_match(
             [
@@ -4239,32 +5092,37 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
             gated=True,
         )
 
-        if best is not None and best.intent_match >= intent_settings.threshold:
-
-            # Sent exactly as recorded. No strip, no renumbering, no
-            # normalisation -- a reviewer can diff this cell against the source
+        # Every record that clears the gate, best first, up to MAX_SOLUTIONS.
+        winners = [
+            s for s in assessment.scored if s.intent_match >= intent_settings.threshold
+        ][:MAX_SOLUTIONS]
+        if winners:
+            # Each sent exactly as recorded. No strip, no renumbering, no
+            # normalisation -- a reviewer can diff each cell against its source
             # record and expect a character-for-character match, and anything
             # tidier would break that.
-            result = cascade(
-                solution=best.candidate.actual_solution,
-                candidate=best.candidate,
-                intent_match=best.intent_match,
-                reason=best.reason,
-                source_list=measured["source_list"],
-            )
-            if result.cascade_warnings:
-                logger.warning(
-                    "Ticket %r cascading %s unchanged, and it %s",
-                    ticket.sps_id, best.candidate.sps_id, result.cascade_warnings,
+            results = tuple(
+                cascade(
+                    solution=s.candidate.actual_solution,
+                    candidate=s.candidate,
+                    intent_match=s.intent_match,
+                    reason=s.reason,
+                    source_list=measured["source_list"],
                 )
+                for s in winners
+            )
+            for s, result in zip(winners, results):
+                if result.cascade_warnings:
+                    logger.warning(
+                        "Ticket %r cascading %s unchanged, and it %s",
+                        ticket.sps_id, s.candidate.sps_id, result.cascade_warnings,
+                    )
             return ResolveOutcome(
                 CODE_SUCCESS_HISTORICAL,
-                f"Intent matched {best.candidate.sps_id} at {best.percent}% "
-                f"across {len(assessment.scored)} record(s); its solution was "
-                f"sent unchanged. Ticket intent: {assessment.ticket_intent}",
+                _matched_reason(winners, assessment, intent_settings.threshold, scope_note),
                 EXIT_OK,
-                resolution_source=result.resolution_source,
-                result=result,
+                resolution_source=results[0].resolution_source,
+                results=results,
                 **measured,
             )
 
@@ -4278,7 +5136,7 @@ def resolve(args: argparse.Namespace, output_dir: Path) -> ResolveOutcome:
         tier1_detail = (
             f"Best intent match {best_pct}% is below the "
             f"{int(intent_settings.threshold * 100)}% threshold across "
-            f"{len(assessment.scored)} record(s). "
+            f"{len(assessment.scored)} record(s). {scope_note} "
             f"Ticket intent: {assessment.ticket_intent}"
         )
 
@@ -4516,7 +5374,7 @@ def _resolve_from_docs(
         f"{result.confidence} confidence: {', '.join(result.referenced_sources)}.",
         EXIT_OK,
         resolution_source=result.resolution_source,
-        result=result,
+        results=(result,),
         # Merged for the same reason as the infrastructure path above. A part
         # with no history whose standards lookup SUCCEEDED crashed here with
         # "got multiple values for keyword argument 'closest_match'" -- and
@@ -4572,7 +5430,7 @@ def resolve_main(argv: list[str] | None = None) -> int:
             write_output(
                 output_dir,
                 outcome.part_number,
-                outcome.result if outcome.result is not None else unresolved_result(outcome),
+                outcome.results or (unresolved_result(outcome),),
             )
         except Exception:
             logger.error("Could not write %s:\n%s", OUTPUT_FILE, traceback.format_exc())
@@ -4615,10 +5473,9 @@ def resolve_main(argv: list[str] | None = None) -> int:
 # `resolve()` the UiPath wrapper calls, so a result in this sheet is the result
 # production would have produced for that ticket.
 #
-# **The history file is re-scanned for every ticket**, because that is what
-# `resolve()` does per invocation and this deliberately does not work around it.
-# At 300k rows that is ~1.5 s per ticket as CSV and ~40 s as .xlsx -- so prefer a
-# CSV history here, and expect a large bulk run to be dominated by it.
+# Each row goes through `resolve()` exactly as production does, history store
+# included: the first row syncs the store if the export changed (or `ingest`
+# already has), and every later row reads only its family from it.
 
 # The same cell renderer the ticket contracts use. Shared rather than copied:
 # it is what stops an Excel-sourced part number of 1243951.0 reaching the
@@ -4635,6 +5492,10 @@ BULK_RESULT_COLUMNS = (
     "Status",
     "Status_Code",
     "Reason",
+    # A ticket gets one row per solution, up to MAX_SOLUTIONS, each repeating
+    # the ticket's own columns so the sheet still filters and sorts as one
+    # table. 1 is the best; blank on a ticket with no recommendation.
+    "Solution_Rank",
     "AI_Recommendation",
     "Justification",
     "Confidence_Score",
@@ -4720,11 +5581,11 @@ def write_ticket_file(row: dict[str, Any], columns: Sequence[str], path: Path) -
     return path
 
 
-def result_for(outcome, duration: float) -> dict[str, str]:
-    """Flatten one ResolveOutcome into the appended columns."""
+def result_for(outcome, duration: float) -> list[dict[str, str]]:
+    """Flatten one ResolveOutcome into the appended columns: a row per solution."""
 
-    result = outcome.result
-    if result is None and outcome.exit_code == EXIT_OK:
+    results: tuple = outcome.results
+    if not results and outcome.exit_code == EXIT_OK:
         # The run concluded without a recommendation. This is the same row
         # main() writes into output.xlsx for that case, reused rather than
         # rebuilt so the bulk sheet and the per-ticket workbook cannot
@@ -4732,21 +5593,15 @@ def result_for(outcome, duration: float) -> dict[str, str]:
         #
         # Deliberately not done for exit 1 or 2: no verdict was formed there,
         # and "Solution not found." would record one that never existed.
-        result = unresolved_result(outcome)
+        results = (unresolved_result(outcome),)
 
     passed = outcome.code in SUCCESS_CODES
-    return {
+    shared = {
         "Status": "PASS" if passed else "FAIL",
         "Status_Code": outcome.code,
         "No_Recommendation_Reason": "" if passed else (outcome.stop_reason or outcome.code),
         "Closest_Matching_Solution": outcome.closest_match,
-        "Cascade_Warnings": result.cascade_warnings if result is not None else "",
         "Reason": " ".join(str(outcome.reason).split()),
-        "AI_Recommendation": result.ai_recommendation if result else "",
-        "Justification": result.justification if result else "",
-        "Confidence_Score": result.confidence if result else "",
-        "Referenced_Sources": ", ".join(result.referenced_sources) if result else "",
-        "Resolution_Source": result.resolution_source if result else "",
         # Blank rather than 0 when nothing was scored: an unknown part never
         # reaches the encoder, and 0 reads as a match that scored badly.
         "Tier1_Score": round(outcome.top_score, 4) if outcome.top_score else "",
@@ -4755,6 +5610,23 @@ def result_for(outcome, duration: float) -> dict[str, str]:
         "Embedding_Model": outcome.embedding_model,
         "Duration_Seconds": round(duration, 2),
     }
+    if not results:
+        return [{**shared, "Solution_Rank": "", "Cascade_Warnings": "", "AI_Recommendation": "",
+                 "Justification": "", "Confidence_Score": "", "Referenced_Sources": "",
+                 "Resolution_Source": ""}]
+    return [
+        {
+            **shared,
+            "Solution_Rank": solution_rank(result, position),
+            "Cascade_Warnings": result.cascade_warnings,
+            "AI_Recommendation": result.ai_recommendation,
+            "Justification": result.justification,
+            "Confidence_Score": result.confidence,
+            "Referenced_Sources": ", ".join(result.referenced_sources),
+            "Resolution_Source": result.resolution_source,
+        }
+        for position, result in enumerate(results, 1)
+    ]
 
 
 def blank_result(reason: str) -> dict[str, str]:
@@ -4765,8 +5637,8 @@ def blank_result(reason: str) -> dict[str, str]:
     return values
 
 
-def run_row(row: dict[str, Any], columns: Sequence[str], work: Path, args) -> dict[str, str]:
-    """Resolve one ticket through the real pipeline."""
+def run_row(row: dict[str, Any], columns: Sequence[str], work: Path, args) -> list[dict[str, str]]:
+    """Resolve one ticket through the real pipeline: its rows, one per solution."""
 
     started = time.time()
     ticket_file = write_ticket_file(row, columns, work / "ticket.csv")
@@ -4784,6 +5656,8 @@ def run_row(row: dict[str, Any], columns: Sequence[str], work: Path, args) -> di
         argv += ["--docs-dir", str(args.docs_dir)]
     if args.no_tier2:
         argv.append("--no-tier2")
+    if args.commodity_file:
+        argv += ["--commodity-file", str(args.commodity_file)]
 
     try:
         outcome = resolve(resolve_parse_args(argv), work / "run")
@@ -4794,12 +5668,13 @@ def run_row(row: dict[str, Any], columns: Sequence[str], work: Path, args) -> di
         values["Status"] = "FAIL"
         values["Status_Code"] = "INFRASTRUCTURE_ERROR"
         values["Duration_Seconds"] = round(time.time() - started, 2)
-        return values
+        return [values]
 
     return result_for(outcome, time.time() - started)
 
 
 def summarise_bulk(results: Sequence[dict[str, str]]) -> str:
+    """Counts per TICKET: pass each ticket's first row, not every solution row."""
     from collections import Counter
 
     lines = [f"\n{len(results)} row(s)"]
@@ -4865,6 +5740,10 @@ def bulk_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=None, help="Tier-1 gate override")
     parser.add_argument("--tier2-threshold", type=float, default=None, help="Tier-2 gate override")
     parser.add_argument(
+        "--commodity-file", default=None,
+        help=f"Commodity groups .csv/.xlsx, or {COMMODITY_GROUPS_ENV}",
+    )
+    parser.add_argument(
         "--limit", type=int, default=None,
         help="Resolve only the first N rows. The rest still appear, marked NOT RUN, "
         "so the sheet stays aligned with the input.",
@@ -4922,7 +5801,8 @@ def bulk_main(argv: list[str] | None = None) -> int:
 
     output_path = Path(args.output) if args.output else default_output(tickets_path)
     started = time.time()
-    results: list[dict[str, str]] = []
+    # Per ticket: its rows, one per solution.
+    results: list[list[dict[str, str]]] = []
     consecutive = 0
     stopped = ""
 
@@ -4930,17 +5810,17 @@ def bulk_main(argv: list[str] | None = None) -> int:
         work = Path(tmp)
         for position, row in enumerate(rows, 1):
             if stopped:
-                results.append(blank_result(stopped))
+                results.append([blank_result(stopped)])
                 continue
             if args.limit is not None and position > args.limit:
-                results.append(blank_result(f"Beyond --limit {args.limit}."))
+                results.append([blank_result(f"Beyond --limit {args.limit}.")])
                 continue
 
             print(f"[{position}/{len(rows)}]", file=sys.stderr, flush=True)
-            values = run_row(row, columns, work, args)
-            results.append(values)
+            ticket_rows = run_row(row, columns, work, args)
+            results.append(ticket_rows)
 
-            if values.get("Status_Code") == "INFRASTRUCTURE_ERROR":
+            if ticket_rows[0].get("Status_Code") == "INFRASTRUCTURE_ERROR":
                 consecutive += 1
                 if args.stop_after_errors and consecutive >= args.stop_after_errors:
                     stopped = (
@@ -4956,8 +5836,10 @@ def bulk_main(argv: list[str] | None = None) -> int:
     out_columns = list(columns) + [naming[n] for n in BULK_RESULT_COLUMNS]
     merged = [
         {**row, **{naming[n]: values.get(n, "") for n in BULK_RESULT_COLUMNS}}
-        for row, values in zip(rows, results)
+        for row, ticket_rows in zip(rows, results)
+        for values in ticket_rows
     ]
+    firsts = [ticket_rows[0] for ticket_rows in results]
 
 
     try:
@@ -4966,13 +5848,13 @@ def bulk_main(argv: list[str] | None = None) -> int:
         logger.error("Could not write %s:\n%s", output_path, traceback.format_exc())
         return EXIT_INFRASTRUCTURE
 
-    print(summarise_bulk(results), file=sys.stderr)
+    print(summarise_bulk(firsts), file=sys.stderr)
     print(
         f"\n{len(rows)} row(s) in {time.time() - started:.1f}s -> {output_path}",
         file=sys.stderr,
     )
 
-    broken = sum(1 for r in results if r.get("Status_Code") == "INFRASTRUCTURE_ERROR")
+    broken = sum(1 for r in firsts if r.get("Status_Code") == "INFRASTRUCTURE_ERROR")
     if broken:
         print(f"{broken} row(s) hit an infrastructure error.", file=sys.stderr)
         return EXIT_INFRASTRUCTURE
@@ -5022,6 +5904,12 @@ EVAL_RESULT_COLUMNS = (
     "Threshold_Applied",
     "Cleared_Threshold",
     "Candidates_Considered",
+    # The score that actually decides a Tier-1 answer, and its gate. The cosine
+    # above only shortlists; calibrating SPS_INTENT_THRESHOLD needs these, read
+    # against your own judgement of which cases should have matched.
+    "Intent_Score",
+    "Intent_Threshold",
+    "Solutions_Sent",
     # Tier 2 is calibrated the same way and needs the same columns. They are
     # kept separate from the Tier-1 ones rather than reusing them: the two
     # tiers score in different ranges, so one pooled column could not be
@@ -5063,6 +5951,9 @@ class Row:
     threshold_applied: float | str = ""
     cleared: str = ""
     candidates: int | str = ""
+    intent_score: float | str = ""
+    intent_threshold: float | str = ""
+    solutions: int | str = ""
     resolution_source: str = ""
     tier2_score: float | str = ""
     tier2_threshold: float | str = ""
@@ -5083,6 +5974,9 @@ class Row:
             "Threshold_Applied": self.threshold_applied,
             "Cleared_Threshold": self.cleared,
             "Candidates_Considered": self.candidates,
+            "Intent_Score": self.intent_score,
+            "Intent_Threshold": self.intent_threshold,
+            "Solutions_Sent": self.solutions,
             "Resolution_Source": self.resolution_source,
             "Tier2_Score": self.tier2_score,
             "Tier2_Threshold": self.tier2_threshold,
@@ -5176,7 +6070,8 @@ def discover_from_list(run_list: Path, shared_history: Path | None) -> list[Case
 # ------------------------------------------------------------------ running
 
 
-def run_case(case: Case, work_dir: Path, threshold: float | None) -> Row:
+def run_case(case: Case, work_dir: Path, threshold: float | None,
+             commodity_file: str | None = None) -> Row:
     """Run one ticket through the real resolver path."""
 
     row = Row(
@@ -5203,6 +6098,8 @@ def run_case(case: Case, work_dir: Path, threshold: float | None) -> Row:
     ]
     if threshold is not None:
         argv += ["--threshold", str(threshold)]
+    if commodity_file:
+        argv += ["--commodity-file", str(commodity_file)]
 
     try:
         outcome = resolve(resolve_parse_args(argv), work_dir / case.test_id)
@@ -5227,6 +6124,12 @@ def run_case(case: Case, work_dir: Path, threshold: float | None) -> Row:
         row.threshold_applied = round(outcome.threshold_used, 4)
         row.cleared = "YES" if outcome.top_score >= outcome.threshold_used else "NO"
         row.candidates = outcome.candidates_considered
+    # Blank unless the scorer ran: a case gated on its cosine was never judged.
+    if outcome.ticket_intent:
+        row.intent_score = round(outcome.intent_score, 4)
+        row.intent_threshold = round(outcome.intent_threshold, 4)
+    if outcome.code == CODE_SUCCESS_HISTORICAL:
+        row.solutions = len(outcome.results)
 
     row.resolution_source = outcome.resolution_source
     row.tier2_cache = outcome.tier2_cache_state
@@ -5304,6 +6207,10 @@ def eval_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override the gate for every case. Leave unset to use the per-encoder default; "
         "the raw score is reported either way, so the threshold does not affect calibration.",
     )
+    parser.add_argument(
+        "--commodity-file", default=None,
+        help=f"Commodity groups .csv/.xlsx, or {COMMODITY_GROUPS_ENV}",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args(argv)
 
@@ -5355,7 +6262,7 @@ def eval_main(argv: list[str] | None = None) -> int:
     started = time.time()
     for position, case in enumerate(cases, 1):
         print(f"[{position}/{len(cases)}] {case.test_id}", file=sys.stderr, flush=True)
-        rows.append(run_case(case, work_dir, args.threshold))
+        rows.append(run_case(case, work_dir, args.threshold, args.commodity_file))
 
 
     results_path = output_dir / RESULTS_FILE
@@ -5371,6 +6278,104 @@ def eval_main(argv: list[str] | None = None) -> int:
     if broken:
         print(f"{broken} case(s) hit an infrastructure error.", file=sys.stderr)
         return EXIT_INFRASTRUCTURE
+    return EXIT_OK
+
+
+# =============================================================================
+# Command: ingest
+# =============================================================================
+#
+# Bring the history store up to date ahead of the robots:
+#
+#     python sps.py ingest --history history.csv
+#
+# Reads the export once if it changed, then embeds every usable record the store
+# has not seen, in requests of up to 2,048, committing as it goes -- so an
+# interrupted ingest resumes where it stopped. Run it after each export.
+#
+# A ticket syncs the store and embeds its own family on demand anyway, so a
+# forgotten ingest is slow rather than broken. But at family scale the first
+# ticket after an export can then spend minutes embedding, past what a robot
+# is willing to wait.
+#
+# Exit 0 done, 1 Azure or the store failed (retry), 2 the file or the
+# configuration is wrong (a person has to fix it).
+
+
+def ingest_parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python sps.py ingest",
+        description="Bring the history store up to date with an export, ahead of the robots.",
+    )
+    parser.add_argument("--history", required=True, help="Historical records (.csv preferred)")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    return parser.parse_args(argv)
+
+
+def ingest_main(argv: list[str] | None = None) -> int:
+    args = ingest_parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    )
+    load_env_file()
+
+    path = Path(args.history)
+    try:
+        validate_file_type(path, "History file")
+    except UnsupportedFileType as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BAD_INPUT
+    if not path.is_file():
+        print(f"History file not found: {path}", file=sys.stderr)
+        return EXIT_BAD_INPUT
+    settings = AzureEmbeddingSettings.from_env()
+    if not settings.configured:
+        print("Azure embeddings are not configured: " + ", ".join(settings.missing()),
+              file=sys.stderr)
+        return EXIT_BAD_INPUT
+
+    try:
+        store = open_history_store(path)
+    except HistoryStoreConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BAD_INPUT
+    if not isinstance(store, SqliteHistoryStore):
+        print(f"Nothing to ingest into: the history store is {store.location}. "
+              f"Set {HISTORY_STORE_ENV}=sqlite and {HISTORY_STORE_DIR_ENV} to a writable "
+              "local folder.", file=sys.stderr)
+        return EXIT_BAD_INPUT
+
+    encoder = azure_encoder(settings)
+    started = time.time()
+    try:
+        synced = store.sync(path)
+        dropped = store.drop_other_models(encoder.identity)
+        missing, distinct = store.missing_texts(encoder)
+        keys = list(missing)
+        for start in range(0, len(keys), AZURE_EMBEDDING_BATCH_LIMIT):
+            chunk = keys[start:start + AZURE_EMBEDDING_BATCH_LIMIT]
+            store.remember(encoder, chunk, encoder.passages([missing[k] for k in chunk]))
+            print(f"  embedded {start + len(chunk)} of {len(keys)}", file=sys.stderr, flush=True)
+    except HistoryError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BAD_INPUT
+    except AzureEmbeddingNotConfigured as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BAD_INPUT
+    except (AzureEmbeddingError, HistoryStoreError, sqlite3.Error) as exc:
+        print(f"Ingest stopped, and will resume from here when re-run: {exc}", file=sys.stderr)
+        return EXIT_INFRASTRUCTURE
+    finally:
+        store.close()
+
+    print(f"History store: {store.location}")
+    print(f"  rows:     {synced.rows}" + (" (re-read)" if synced.reread else " (file unchanged)"))
+    print(f"  embedded: {len(keys)} new problem text(s); {distinct - len(keys)} already stored")
+    if dropped:
+        print(f"  removed:  {dropped} vector(s) from another embedding deployment")
+    print(f"  in {time.time() - started:.1f}s via {encoder.identity}")
     return EXIT_OK
 
 
@@ -5455,6 +6460,10 @@ class Checks:
         if not passed:
             self.failures.append(name)
         return passed
+
+    def note(self, name: str, detail: str = "") -> None:
+        """A reading worth seeing that passes or fails nothing."""
+        print(f"  [INFO] {name}" + (f"  --  {detail}" if detail else ""))
 
 
 def verify_azure(checks: "Checks", quiet: bool) -> None:
@@ -5569,17 +6578,18 @@ def verify_azure(checks: "Checks", quiet: bool) -> None:
         scored["unrelated"] < AZURE_EMBEDDING_THRESHOLD,
         f"{scored['unrelated']:.4f} -- if this FAILS the gate admits everything, raise it",
     )
-    # Precision, and the harder half of it. `unrelated` is a packaging defect
-    # against a weld defect -- any encoder separates those. `near` is weld
-    # porosity against weld cracking: same part, same inspection, same
-    # vocabulary, different fix. That is the shape of the near-miss that
-    # produced two wrong recommendations on real tickets, and it is the pair
-    # a gate has to get right to be worth having.
-    checks.check(
-        f"a different defect on the same part is blocked by the {AZURE_EMBEDDING_THRESHOLD} gate",
-        scored["near"] < AZURE_EMBEDDING_THRESHOLD,
-        f"{scored['near']:.4f} -- porosity vs cracking; if this FAILS the gate cannot "
-        f"tell two defects apart. Run --probe before changing the number.",
+    # Reported, not checked. `near` is weld porosity against weld cracking:
+    # same part, same inspection, same vocabulary, different fix -- the shape
+    # of the near-miss that produced two wrong recommendations on real
+    # tickets. This used to be a gate failure. The cosine is now a recall
+    # filter and the intent scorer is what tells these two apart, so a score
+    # above the gate here is expected; raising the gate to block it would
+    # discard real precedent worded differently, which is the failure the
+    # recall filter exists to prevent.
+    checks.note(
+        "a different defect on the same part",
+        f"{scored['near']:.4f} -- porosity vs cracking. Above {AZURE_EMBEDDING_THRESHOLD} "
+        f"is expected: telling these apart is the intent scorer's job, not the cosine's.",
     )
 
     # ------------------------------------------------- 5. Tier-2 calibration
@@ -5613,15 +6623,16 @@ def verify_azure(checks: "Checks", quiet: bool) -> None:
         f"{unrelated:.4f} -- set SPS_TIER2_THRESHOLD between the two numbers above",
     )
 
-    # The floor is the HIGHEST thing that must be blocked, not the lowest.
-    # `unrelated` alone would flatter the gate: a packaging defect scores far
-    # below a weld defect, so a gate that clears it may still admit `near`.
+    # A recall filter: it must admit everything that could be the answer --
+    # the paraphrase above all -- and need only keep out what plainly is not.
+    # `near` is not in the must-block set: the intent scorer rejects it.
     must_admit = min(scored["exact"], scored["paraphrase"])
-    must_block = max(scored["unrelated"], scored["near"])
+    must_block = scored["unrelated"]
     if must_block < must_admit:
         print(
             f"\n  Suggested gates from this run: Tier 1 between "
-            f"{must_block:.4f} and {must_admit:.4f}, "
+            f"{must_block:.4f} and {must_admit:.4f} (nearer the low end: it is a recall "
+            f"filter), "
             f"Tier 2 between {unrelated:.4f} and {relevant:.4f}."
         )
     else:
@@ -5749,16 +6760,17 @@ class Separation:
 
     @property
     def suggested(self) -> float:
-        """Just above the strongest thing that must be blocked.
+        """Just below the weakest pair called a match: the recall gate.
 
-        Deliberately not the midpoint. The midpoint treats a missed match and
-        a false match as equally bad; here they are not. A missed match costs
-        a refusal, which a reviewer sees and can act on. A false match costs a
-        wrong instruction sent to a supplier, which looks exactly like a right
-        one. Sitting just above the no-match ceiling buys precision with
-        whatever recall the margin can spare.
+        The Tier-1 cosine no longer decides; it chooses what the intent scorer
+        reads, and the scorer rejects. So the errors are no longer the ones
+        this used to weigh. A false match here costs a slightly longer prompt
+        the scorer turns down. A missed match is a record the scorer never
+        sees -- refused without anyone judging it, and indistinguishable
+        downstream from there being no precedent at all. The gate therefore
+        sits just under the weakest match, whatever that admits.
         """
-        return round(self.strongest_no_match.cosine + 0.01, 4)
+        return round(max(self.weakest_match.cosine - 0.01, 0.0), 4)
 
 
 def separation(scored: list[Scored]) -> Separation:
@@ -5781,7 +6793,9 @@ def report_probe(scored: list[Scored], gate: float, source: Path) -> None:
         admits = s.cosine >= gate
         wanted = s.pair.expect == MATCH
         verdict = "admits" if admits else "blocks"
-        flag = "" if admits == wanted else "   <-- WRONG"
+        # Only a blocked match is an error now: an admitted no-match goes on
+        # to the intent scorer, which is what turns it down.
+        flag = "   <-- MISSED" if wanted and not admits else ("   (scorer)" if admits and not wanted else "")
         print(f"  {s.pair.label:{width}s} {s.cosine:8.4f}  {s.pair.expect:<9s} {verdict:<10s}{flag}")
 
     sep = separation(scored)
@@ -5799,32 +6813,28 @@ def report_probe(scored: list[Scored], gate: float, source: Path) -> None:
         f"\n  separation margin  {sep.margin:+7.4f}   {'' if sep.separable else '<-- NEGATIVE'}"
     )
 
-    if sep.separable:
-        blocked = [s for s in scored if s.pair.expect == MATCH and s.cosine < sep.suggested]
-        print(f"\n  A gate exists. Suggested: {sep.suggested} (just above the no-match ceiling).")
-        if blocked:
-            print(f"  It would also block {len(blocked)} pair(s) you called a match:")
-            for s in blocked:
-                print(f"    {s.pair.label:20s} {s.cosine:.4f}")
-            print("  That is the recall this precision costs. Judge it before committing.")
-        else:
-            print("  It blocks nothing you called a match.")
-        return
+    admitted = [s for s in scored if s.pair.expect == NO_MATCH and s.cosine >= sep.suggested]
+    print(f"\n  Suggested recall gate: {sep.suggested} (just below the weakest match).")
+    if admitted:
+        print(f"  It admits {len(admitted)} pair(s) you called {NO_MATCH}; the intent scorer is")
+        print("  what has to turn these down, so they belong in its evaluation set:")
+        for s in sorted(admitted, key=lambda s: -s.cosine):
+            print(f"    {s.pair.label:20s} {s.cosine:.4f}")
+    else:
+        print(f"  It admits nothing you called {NO_MATCH}.")
 
+    if sep.separable:
+        print("  The cosine alone separates this set -- the scorer has an easy job here.")
+        return
     overlap = [
         s for s in scored
         if s.pair.expect == NO_MATCH and s.cosine >= sep.weakest_match.cosine
     ]
     print(
-        f"\n  No threshold can separate these pairs. {len(overlap)} pair(s) you called "
-        f"{NO_MATCH} score at or above the weakest {MATCH}:"
-    )
-    for s in sorted(overlap, key=lambda s: -s.cosine):
-        print(f"    {s.pair.label:20s} {s.cosine:.4f}  >=  {sep.weakest_match.cosine:.4f}")
-    print(
-        "\n  This is the evidence that retrieval itself has to change -- moving the\n"
-        "  number can only trade one error for the other. Check WHICH classes\n"
-        "  overlap before deciding what to change."
+        f"\n  No cosine threshold can separate these pairs: {len(overlap)} {NO_MATCH} pair(s)\n"
+        f"  score at or above the weakest {MATCH}. Expected for a changed request or a\n"
+        f"  negation -- wording alike, intent not -- and why the intent scorer decides.\n"
+        f"  If the overlap is in classes that differ in substance, check those first."
     )
 
 
@@ -5861,7 +6871,8 @@ def write_probe(scored: list[Scored], gate: float, path: Path) -> None:
                 "Cosine": f"{s.cosine:.6f}",
                 "Gate": f"{gate}",
                 "Gate_Admits": "yes" if s.cosine >= gate else "no",
-                "Gate_Agrees": "yes" if (s.cosine >= gate) == (s.pair.expect == MATCH) else "NO",
+                # A recall gate is wrong only when it blocks a match.
+                "Gate_Agrees": "NO" if s.pair.expect == MATCH and s.cosine < gate else "yes",
                 "Text_A": s.pair.text_a,
                 "Text_B": s.pair.text_b,
             }
@@ -5975,6 +6986,7 @@ COMMANDS = {
     "resolve": resolve_main,
     "bulk": bulk_main,
     "eval": eval_main,
+    "ingest": ingest_main,
     "check": check_main,
 }
 

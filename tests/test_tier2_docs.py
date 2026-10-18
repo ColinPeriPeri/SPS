@@ -142,9 +142,10 @@ def test_table_text_is_captured(tmp_path):
 
 # ---------------------------------------------------------------- the reader
 #
-# A .docx is read with the standard library, to python-docx 1.1.2's rules. Each
-# expected value below is what python-docx itself produced for the same file,
-# compared side by side before it left the install.
+# A .docx is read with the standard library. It began as python-docx 1.1.2's
+# rules, proven against python-docx before it left the install; it now also
+# reads what python-docx skipped and Word shows -- content controls, smart tags,
+# tracked insertions, nested tables -- and keeps a table's rows apart.
 
 FILLER = "Applies to every welded bracket supplied under this standard, whatever the alloy."
 
@@ -168,9 +169,10 @@ def test_run_content_is_read_as_word_shows_it(tmp_path):
     assert chunk.text == f"Grind out the seam-end per drawing 7.\n{FILLER}"
 
 
-def test_unaccepted_tracked_changes_are_not_read(tmp_path):
-    """Deleted text is gone, and -- as python-docx read it, so the cached
-    chunks did too -- an insertion not yet accepted is not read either."""
+def test_tracked_changes_read_as_word_shows_them(tmp_path, caplog):
+    """Insertions in, deletions out -- Word's default view -- and the document
+    named, because its text is not settled. python-docx dropped insertions and
+    deletions alike, so it read neither the old text nor the new."""
     path = write_docx(tmp_path / "d.docx", [
         ("heading", 2, "6.1 Torque"),
         ("xml", '<w:p><w:r><w:t xml:space="preserve">Torque the bracket fasteners to 12 Nm</w:t></w:r>'
@@ -180,8 +182,10 @@ def test_unaccepted_tracked_changes_are_not_read(tmp_path):
                 "<w:r><w:t>.</w:t></w:r></w:p>"),
         ("paragraph", FILLER),
     ])
-    (chunk,) = parse_docx(path)
-    assert chunk.text == f"Torque the bracket fasteners to 12 Nm.\n{FILLER}"
+    with caplog.at_level("WARNING"):
+        (chunk,) = parse_docx(path)
+    assert chunk.text == f"Torque the bracket fasteners to 12 Nm and then to 14 Nm.\n{FILLER}"
+    assert "d.docx has tracked changes" in caplog.text
 
 
 def test_a_heading_from_a_localized_word_is_still_a_heading(tmp_path):
@@ -214,11 +218,11 @@ def test_merged_cells_are_read_once(tmp_path):
                 + "</w:tr></w:tbl>"),
     ])
     (chunk,) = parse_docx(path)
-    # One line per row leaves `_table_text`; the rows run together here because
-    # the chunker collapses every newline in what it is given. Kept as is: it is
-    # what the cached chunks hold.
-    assert chunk.text == ("Porosity | Scattered | 2 percent by area max "
-                          "Porosity | Clustered | Rejectable at any level "
+    # One row per line. Run together, "2 percent by area max" and the next
+    # row's "Porosity" read as a single claim -- which is how they were cached
+    # until the rows were kept apart.
+    assert chunk.text == ("Porosity | Scattered | 2 percent by area max\n"
+                          "Porosity | Clustered | Rejectable at any level\n"
                           "Applies to every seam over 25 mm long")
 
 
@@ -231,10 +235,54 @@ def test_a_merge_down_a_long_table_is_read_in_full(tmp_path):
         ("heading", 2, "4.3 Porosity Limits"), ("xml", "<w:tbl>" + "".join(rows) + "</w:tbl>"),
     ])
 
-    text = " ".join(chunk.text for chunk in parse_docx(path))
-    # Counted over the joined text, because chunking cuts a long table mid-row.
-    assert text.count("Porosity | row") == 1500
-    assert text.endswith("Porosity | row 1499")
+    chunks = parse_docx(path)
+    lines = [line for chunk in chunks for line in chunk.text.split("\n")]
+    # Every row once, in order, each whole. A chunk that continues the table
+    # opens with its first row, so the first row recurs and nothing else does.
+    assert len(chunks) > 1
+    assert [l for l in lines if l != "Porosity | row 0"] == \
+        [f"Porosity | row {i}" for i in range(1, 1500)]
+    assert all(chunk.text.startswith("Porosity | row 0") for chunk in chunks)
+
+
+def test_text_in_content_controls_and_smart_tags_is_read(tmp_path):
+    """Word shows it; python-docx read none of it. A whole section wrapped in a
+    content control -- common in template-built standards -- was invisible."""
+    path = write_docx(tmp_path / "d.docx", [
+        ("xml", "<w:sdt><w:sdtPr><w:alias w:val='Section'/></w:sdtPr><w:sdtContent>"
+                '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>4.2 Cracking</w:t></w:r></w:p>'
+                "<w:p><w:r><w:t xml:space='preserve'>Grind out to </w:t></w:r>"
+                "<w:smartTag><w:r><w:t>sound metal</w:t></w:r></w:smartTag>"
+                "<w:sdt><w:sdtContent><w:r><w:t xml:space='preserve'> and re-weld.</w:t></w:r>"
+                "</w:sdtContent></w:sdt></w:p>"
+                "</w:sdtContent></w:sdt>"),
+        ("paragraph", FILLER),
+    ])
+    (chunk,) = parse_docx(path)
+    assert chunk.section == "4.2 Cracking"
+    assert chunk.text.startswith("Grind out to sound metal and re-weld.")
+
+
+def test_a_table_nested_in_a_cell_is_read(tmp_path):
+    nested = "<w:tbl><w:tr>" + _cell("Ra") + _cell("1.6 max") + "</w:tr></w:tbl>"
+    path = write_docx(tmp_path / "d.docx", [
+        ("heading", 2, "3.2 Surface Finish"),
+        ("xml", "<w:tbl><w:tr>" + _cell("Machined faces")
+                + "<w:tc>" + nested + "<w:p/></w:tc></w:tr></w:tbl>"),
+        ("paragraph", FILLER),
+    ])
+    (chunk,) = parse_docx(path)
+    assert chunk.text.startswith("Machined faces | Ra | 1.6 max")
+
+
+def test_changing_the_reading_rules_rebuilds_the_cache(tmp_path):
+    from sps import DOC_READER_VERSION
+
+    chunks = [DocChunk(document="d.docx", section="1", text="x")]
+    path = tmp_path / CACHE_FILENAMES["injected"]
+    save_cache(path, chunks, [[1.0]],
+               {"format": 2, "reader": DOC_READER_VERSION - 1, "corpus_hash": "h", "model": "m"})
+    assert load_cache(path, "h", "m") is None
 
 
 def test_a_merge_with_nothing_above_it_costs_one_cell_not_the_document(tmp_path):
@@ -435,7 +483,7 @@ def test_a_changed_model_invalidates_the_cache(tmp_path):
     chunks = [DocChunk("d.docx", "4.2", CRACKING)]
     path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, chunks, [[0.1, 0.2]], {
-        "format": 2, "corpus_hash": "abc", "model": "azure:text-embedding-3-large",
+        "format": 2, "reader": resolver.DOC_READER_VERSION, "corpus_hash": "abc", "model": "azure:text-embedding-3-large",
     })
 
     assert load_cache(path, "abc", "azure:text-embedding-3-large") is not None
@@ -445,7 +493,7 @@ def test_a_changed_model_invalidates_the_cache(tmp_path):
 def test_a_stale_hash_invalidates_the_cache(tmp_path):
     path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, [DocChunk("d.docx", "4.2", CRACKING)], [[0.1, 0.2]],
-               {"format": 2, "corpus_hash": "abc", "model": "m"})
+               {"format": 2, "reader": resolver.DOC_READER_VERSION, "corpus_hash": "abc", "model": "m"})
 
     assert load_cache(path, "different", "m") is None
 
@@ -467,7 +515,7 @@ def test_the_cache_round_trips_chunks_exactly(tmp_path):
     ]
     path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, chunks, [[1.0, 0.0], [0.0, 1.0]],
-               {"format": 2, "corpus_hash": "h", "model": "m"})
+               {"format": 2, "reader": resolver.DOC_READER_VERSION, "corpus_hash": "h", "model": "m"})
 
     loaded, vectors = load_cache(path, "h", "m")
     assert loaded == chunks
@@ -480,7 +528,7 @@ def test_the_cache_is_never_unpickled(tmp_path):
 
     path = tmp_path / CACHE_FILENAMES["injected"]
     save_cache(path, [DocChunk("d.docx", "s", CRACKING)], [[1.0]],
-               {"format": 2, "corpus_hash": "h", "model": "m"})
+               {"format": 2, "reader": resolver.DOC_READER_VERSION, "corpus_hash": "h", "model": "m"})
 
     with np.load(path, allow_pickle=False) as archive:
         assert set(archive.files) >= {"vectors", "documents", "sections", "texts", "meta"}

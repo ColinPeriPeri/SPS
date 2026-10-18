@@ -62,13 +62,18 @@ def test_a_gated_match_is_cascaded_and_marked_weak(tmp_path, passing_llm):
 
 
 def test_a_resolved_row_lists_its_sources_rather_than_quoting_them(tmp_path, passing_llm):
-    """Up to fifteen records reach the Actor and a recommendation may combine
-    several, so quoting one would read as THE source and invite a reviewer to
-    check a step against a record it did not come from."""
+    """The answer is already in AI_Recommendation; repeating archive text under
+    it adds length, not information. What the row adds is the per-record score.
+
+    Labelled for what Tier 1 did -- scored the records and sent one as
+    recorded. It used to read "Synthesized from", left over from when an Actor
+    combined records, beside a Justification saying the solution was sent
+    unchanged."""
     _, out = run_cli(tmp_path, threshold=0.5)
     cell = read_sheet(out / "output.xlsx")[0]["Closest_Matching_Solution"]
 
-    assert cell.startswith("Synthesized from")
+    assert cell.startswith("Intent scores across")
+    assert "Synthesized" not in cell
     assert "SPS-1001" in cell
     assert "%" in cell          # the per-record score Referenced_Sources cannot carry
     assert "[RAW HISTORY" not in cell
@@ -278,13 +283,13 @@ def scores_in(text):
 
 
 def test_a_resolved_row_names_every_record_it_drew_on(tmp_path, passing_llm):
-    """Not just the best. The Actor saw all of them and the answer may combine
-    several, so naming one would misreport where it came from."""
+    """Not just the best: every record the scorer read, with its score, so a
+    reviewer can see what was weighed against what was sent."""
     _, out = run_cli(tmp_path, rows=five_records(), threshold=0.1)
     result = read_sheet(out / "output.xlsx")[0]
 
     listed = result["Closest_Matching_Solution"]
-    assert listed.startswith("Synthesized from 5 record(s)")
+    assert listed.startswith("Intent scores across 5 record(s)")
     for i in range(5):
         assert f"SPS-{1001 + i}" in listed
     # Referenced_Sources carries the same ids; this adds the scores it cannot.

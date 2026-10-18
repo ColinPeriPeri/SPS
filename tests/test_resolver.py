@@ -1,4 +1,4 @@
-"""The in-memory resolver: validation, part filtering, capping, dual workbooks."""
+"""The resolver: validation, reading history, ranking, dual workbooks, the writer."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ import sps as resolver_contracts
 from sps import IncomingTicket
 from sps import (
     HistoryError,
-    InMemoryRetriever,
+    HistoryRetriever,
     build_header_map,
-    cap_to_newest,
-    load_matching_history,
+    is_usable,
+    read_history,
 )
 from sps import normalize_part_number, validate_ticket
 from tests.conftest import TokenOverlapEmbedder
@@ -172,8 +172,8 @@ def test_validation_runs_before_anything_expensive(tmp_path, monkeypatch):
     )
     import sps as engine
 
-    monkeypatch.setattr(engine, "load_matching_history",
-                        lambda *a, **k: called.append("scanned") or [])
+    monkeypatch.setattr(engine, "open_history_store",
+                        lambda *a, **k: called.append("opened") or engine.MemoryHistoryStore())
 
     write_history(tmp_path / "h.xlsx", [row("S1")])
     args = resolver.resolve_parse_args([
@@ -195,35 +195,52 @@ def test_validation_runs_before_anything_expensive(tmp_path, monkeypatch):
 # ------------------------------------------------------------ history loading
 
 
+def usable_for(path, part=PART):
+    """What the old per-part scan kept: the part's usable rows, in file order."""
+    wanted = normalize_part_number(part)
+    return [r for r in read_history(path) if r.part_number == wanted and is_usable(r)]
+
+
 def test_only_rows_for_the_requested_part_are_kept(tmp_path):
     path = write_history(tmp_path / "h.xlsx", [
         row("SAME-1"), row("SAME-2", minutes=1),
         row("OTHER", part="0034-11020"),
     ])
-    kept = load_matching_history(path, PART)
-    assert [r.sps_id for r in kept] == ["SAME-1", "SAME-2"]
+    assert [r.sps_id for r in usable_for(path)] == ["SAME-1", "SAME-2"]
 
 
 def test_the_dual_check_canonicalises_the_stored_value(tmp_path):
     """Drift in the file must not hide a genuine match."""
     path = write_history(tmp_path / "h.xlsx", [
-        row("A", part=" 0012-43951 "), row("B", part="0012​-43951", minutes=1),
+        row("A", part=" 0012-43951 "), row("B", part="0012\u200b-43951", minutes=1),
     ])
-    assert len(load_matching_history(path, "0012-43951")) == 2
+    assert len(usable_for(path, "0012-43951")) == 2
+
+
+def test_every_row_is_read_and_carries_its_commodity_code(tmp_path):
+    """Usability is judged at fetch time, so the reader keeps every row."""
+    path = write_history(tmp_path / "h.xlsx", [
+        row("GOOD"), row("SHORT", solution="TBD", minutes=1),
+        row("OTHER", part="0034-11020", minutes=2), row("NOHYPHEN", part="ABC123", minutes=3),
+    ])
+    rows = read_history(path)
+    assert [r.sps_id for r in rows] == ["GOOD", "SHORT", "OTHER", "NOHYPHEN"]
+    assert [r.commodity_code for r in rows] == ["0012", "0012", "0034", ""]
 
 
 def test_short_text_rows_are_dropped(tmp_path):
     path = write_history(tmp_path / "h.xlsx", [
         row("GOOD"), row("SHORT", solution="TBD", minutes=1), row("NOPROB", problem="x", minutes=2),
     ])
-    assert [r.sps_id for r in load_matching_history(path, PART)] == ["GOOD"]
+    assert [r.sps_id for r in usable_for(path)] == ["GOOD"]
 
 
 def test_csv_and_xlsx_history_agree(tmp_path):
     rows = [row("A"), row("B", minutes=1), row("C", part="0034-11020")]
-    from_xlsx = load_matching_history(write_history(tmp_path / "h.xlsx", rows), PART)
-    from_csv = load_matching_history(write_csv_history(tmp_path / "h.csv", rows), PART)
-    assert [r.sps_id for r in from_xlsx] == [r.sps_id for r in from_csv] == ["A", "B"]
+    from_xlsx = read_history(write_history(tmp_path / "h.xlsx", rows))
+    from_csv = read_history(write_csv_history(tmp_path / "h.csv", rows))
+    assert from_xlsx == from_csv
+    assert [r.sps_id for r in from_xlsx] == ["A", "B", "C"]
 
 
 def test_missing_required_column_is_reported(tmp_path):
@@ -233,12 +250,12 @@ def test_missing_required_column_is_reported(tmp_path):
         headers=["SPS_ID", "Part_Number", "Issue_Type"],
     )
     with pytest.raises(HistoryError, match="Problem_Description"):
-        load_matching_history(path, PART)
+        read_history(path)
 
 
 def test_missing_history_file_is_reported(tmp_path):
     with pytest.raises(HistoryError, match="not found"):
-        load_matching_history(tmp_path / "nope.csv", PART)
+        read_history(tmp_path / "nope.csv")
 
 
 def test_header_map_accepts_either_solution_spelling():
@@ -247,30 +264,20 @@ def test_header_map_accepts_either_solution_spelling():
         assert "actual_solution" in mapping
 
 
-# --------------------------------------------------------------------- cap
-
-
-def test_cap_keeps_the_most_recent(tmp_path):
-    rows = load_matching_history(
-        write_history(tmp_path / "h.xlsx", [row(f"S{i}", minutes=i) for i in range(10)]),
-        PART,
-    )
-    capped = cap_to_newest(rows, limit=3)
-    assert [r.sps_id for r in capped] == ["S9", "S8", "S7"]
-
-
-def test_cap_is_a_no_op_below_the_limit(tmp_path):
-    rows = load_matching_history(
-        write_history(tmp_path / "h.xlsx", [row(f"S{i}", minutes=i) for i in range(4)]), PART
-    )
-    assert cap_to_newest(rows, limit=300) is rows
+def test_there_is_no_candidate_cap():
+    """The 300-newest cap bounded encoding cost, which the store removed. At
+    family scale it would have dropped the oldest record even when it was the
+    one that matched -- see test_history_store.py for that case end to end."""
+    assert not hasattr(resolver, "MAX_CANDIDATES")
+    assert not hasattr(resolver, "cap_to_newest")
+    assert "max_candidates" not in HistoryRetriever.__dataclass_fields__
 
 
 # ----------------------------------------------------------------- ranking
 
 
 def _retriever(tmp_path, rows, threshold=0.5):
-    return InMemoryRetriever(
+    return HistoryRetriever(
         embedder=TokenOverlapEmbedder(),
         history_path=write_history(tmp_path / "h.xlsx", rows),
         confidence_threshold=threshold,
@@ -402,7 +409,7 @@ def test_success_writes_both_workbooks(tmp_path, passing_llm):
     assert read_columns(out / "output.xlsx") == [
         "Part_Number", "AI_Recommendation", "Justification",
         "Confidence_Score", "Referenced_Sources", "Resolution_Source",
-        "Closest_Matching_Solution", "Cascade_Warnings",
+        "Closest_Matching_Solution", "Cascade_Warnings", "Solution_Rank",
     ]
     assert result[0]["Part_Number"] == PART
     assert result[0]["Referenced_Sources"] == "SPS-1001"
@@ -645,9 +652,9 @@ def test_the_tier1_gate_is_one_number():
     """One embedding space in production, so one default gate. A threshold
     measured for one encoder means nothing for another, which is why bge-small's
     0.89 left with bge-small rather than lingering as a second default."""
-    from sps import AZURE_EMBEDDING_THRESHOLD, InMemoryRetriever
+    from sps import AZURE_EMBEDDING_THRESHOLD, HistoryRetriever
 
-    fields = InMemoryRetriever.__dataclass_fields__
+    fields = HistoryRetriever.__dataclass_fields__
     assert "local_threshold" not in fields
     assert fields["azure_threshold"].default == AZURE_EMBEDDING_THRESHOLD
     # No override by default: the operator's --threshold is the only thing above it.

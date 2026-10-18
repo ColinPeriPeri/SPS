@@ -98,6 +98,20 @@ def isolated_0250_corpus(tmp_path_factory, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def isolated_history_store(tmp_path_factory, monkeypatch):
+    """Every test gets its own history store folder, and no commodity groups.
+
+    The store defaults to living beside the history file, and several tests
+    read history straight from samples/ -- so without this a test run would
+    leave databases in the repository, and one test's store could answer
+    another's.
+    """
+    monkeypatch.setenv("SPS_HISTORY_STORE_DIR", str(tmp_path_factory.mktemp("store")))
+    for name in ("SPS_HISTORY_STORE", "SPS_COMMODITY_GROUPS", "SPS_INTENT_TOP_K"):
+        monkeypatch.delenv(name, raising=False)
+
+
 class FakeAzureEmbedder:
     """Offline stand-in for the Azure embedding deployment.
 

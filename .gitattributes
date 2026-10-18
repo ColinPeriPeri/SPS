@@ -1,0 +1,3 @@
+# cmd.exe needs CRLF line endings. Pinned here so a checkout gets them whatever
+# core.autocrlf says on that machine.
+*.cmd text eol=crlf
