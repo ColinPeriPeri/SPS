@@ -2,7 +2,12 @@
 REM ===========================================================================
 REM  SPS resolver wrapper for the UiPath Performer.
 REM
-REM    run_resolver.cmd <ticket-file> <history-file> <output-dir>
+REM    run_resolver.cmd <ticket-file> <history-file> <output-dir> [commodity-groups-file]
+REM
+REM  The fourth argument, optional, is the commodity groups .csv/.xlsx: the
+REM  ticket is then matched across its part's whole family. Without it,
+REM  SPS_COMMODITY_GROUPS from .env is used, and without that the ticket is
+REM  matched on its part number alone.
 REM
 REM  Exit codes (propagated verbatim, so the state machine can branch without
 REM  opening a workbook):
@@ -13,16 +18,19 @@ REM    2  the ticket or history file could not be read. Alert a human.
 REM
 REM  Writes into <output-dir>:
 REM    status.xlsx  ALWAYS, including an early abort or an unhandled exception.
-REM                 Execution_Timestamp, Status, Status_Code, Reason.
+REM                 Execution_Timestamp, Status, Status_Code, Reason,
+REM                 Embedding_Model. One row.
 REM    output.xlsx  whenever the run reached a conclusion, including "no
-REM                 solution" -- so there is one row per ticket to merge. NOT
+REM                 solution": one row per solution, up to three, numbered in
+REM                 Solution_Rank, or one row saying there is none. NOT
 REM                 written on exit 1 or 2, where no verdict was formed.
 REM
 REM  Both are cleared before work starts, so if this process is killed outright
 REM  the caller finds neither: "status.xlsx missing" is unambiguous.
 REM
 REM  Prefer a .csv history. The same 300k rows take ~1.5 s as CSV and ~40 s as
-REM  .xlsx, because openpyxl parses XML per row.
+REM  .xlsx, because openpyxl parses XML per row -- paid once per export, by
+REM  run_ingest.cmd or by the first ticket after the export changes.
 REM
 REM  Azure credentials come from the machine/user environment or the project's
 REM  .env. They are never passed as arguments -- command lines are visible in
@@ -41,7 +49,7 @@ if "%PYTHON_EXE%"=="" if exist "%PROJECT_DIR%\env\Scripts\python.exe" set "PYTHO
 if "%PYTHON_EXE%"=="" set "PYTHON_EXE=%PROJECT_DIR%\venv\Scripts\python.exe"
 
 if "%~3"=="" (
-    echo Usage: %~nx0 ^<ticket-file^> ^<history-file^> ^<output-dir^> 1>&2
+    echo Usage: %~nx0 ^<ticket-file^> ^<history-file^> ^<output-dir^> [commodity-groups-file] 1>&2
     endlocal & exit /b 2
 )
 
@@ -54,7 +62,9 @@ if not exist "%PYTHON_EXE%" (
 pushd "%PROJECT_DIR%"
 
 REM stderr stays attached so faults land in the UiPath job log.
-"%PYTHON_EXE%" sps.py resolve --ticket-file "%~1" --history-file "%~2" --output-dir "%~3"
+set "GROUPS="
+if not "%~4"=="" set GROUPS=--commodity-file "%~4"
+"%PYTHON_EXE%" sps.py resolve --ticket-file "%~1" --history-file "%~2" --output-dir "%~3" %GROUPS%
 set "RC=%ERRORLEVEL%"
 
 popd

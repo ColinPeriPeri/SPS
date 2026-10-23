@@ -2,7 +2,7 @@
 REM ===========================================================================
 REM  Batch evaluation runner.
 REM
-REM    run_eval.cmd <test-dir> [output-dir] [shared-history-file]
+REM    run_eval.cmd <test-dir> [output-dir] [shared-history-file] [commodity-groups-file]
 REM
 REM  Runs every ticket in <test-dir> and writes eval_results.xlsx, one row per
 REM  case, carrying the raw similarity score whether or not the case cleared the
@@ -11,7 +11,10 @@ REM  cases it rejected, not just the ones it passed.
 REM
 REM  Test files are named <id>_ticket.csv|xlsx, optionally paired with
 REM  <id>_history.csv|xlsx. Pass a third argument to use one shared history for
-REM  every case, which is the usual shape.
+REM  every case, which is the usual shape. The fourth, optional, is the
+REM  commodity groups .csv/.xlsx (else SPS_COMMODITY_GROUPS). From cmd.exe,
+REM  pass "" for any argument before it that you want left at its default;
+REM  Windows PowerShell drops a "", so from there give every argument before it.
 REM
 REM  The whole batch runs in one process, and one failing case never ends it.
 REM
@@ -33,7 +36,7 @@ if "%PYTHON_EXE%"=="" if exist "%PROJECT_DIR%\env\Scripts\python.exe" set "PYTHO
 if "%PYTHON_EXE%"=="" set "PYTHON_EXE=%PROJECT_DIR%\venv\Scripts\python.exe"
 
 if "%~1"=="" (
-    echo Usage: %~nx0 ^<test-dir^> [output-dir] [shared-history-file] 1>&2
+    echo Usage: %~nx0 ^<test-dir^> [output-dir] [shared-history-file] [commodity-groups-file] 1>&2
     endlocal & exit /b 2
 )
 
@@ -48,11 +51,11 @@ if "%OUT%"=="" set "OUT=."
 
 pushd "%PROJECT_DIR%"
 
-if "%~3"=="" (
-    "%PYTHON_EXE%" sps.py eval --test-dir "%~1" --output-dir "%OUT%"
-) else (
-    "%PYTHON_EXE%" sps.py eval --test-dir "%~1" --output-dir "%OUT%" --history-file "%~3"
-)
+set "HISTORY="
+if not "%~3"=="" set HISTORY=--history-file "%~3"
+set "GROUPS="
+if not "%~4"=="" set GROUPS=--commodity-file "%~4"
+"%PYTHON_EXE%" sps.py eval --test-dir "%~1" --output-dir "%OUT%" %HISTORY% %GROUPS%
 set "RC=%ERRORLEVEL%"
 
 popd

@@ -32,9 +32,13 @@ Commodity_Code,Group
 0034,PACKAGING
 ```
 
+`commodity_groups.xlsx` is the same three rows as an Excel workbook, its code
+column formatted as Text: in a General cell Excel stores `0012` as `12`.
+
 `sample_history.csv` has no records for any `0013` part. Copy
 `sample_ticket.csv`, change its `Part_Number` to `0013-11111`, and run it with
-`--commodity-file samples\commodity_groups.csv`: it is answered from
+`--commodity-file samples\commodity_groups.csv` (or give that path as the
+fourth argument of `scripts\run_resolver.cmd`): it is answered from
 `0012-43951`'s records, its `Justification` says the solution was recorded for
 another part in the same family, and its `Reason` says
 `Matched across commodity family BRACKETS (0012, 0013).` Without the flag the

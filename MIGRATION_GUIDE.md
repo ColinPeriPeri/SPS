@@ -459,6 +459,17 @@ in `.env`:
 SPS_COMMODITY_GROUPS=D:\SPS\data\commodity_groups.csv
 ```
 
+or pass it as the wrapper's optional fourth argument, which wins over `.env`:
+
+```bat
+scripts\run_resolver.cmd ticket.xlsx history.csv out D:\SPS\data\commodity_groups.csv
+```
+
+In UiPath that is one more argument on the Start Process activity; robots
+that leave it off behave exactly as before. Pick one place and use it
+everywhere: a robot that passes the file and one that relies on `.env` will
+disagree as soon as the two point at different files.
+
 **Check:** a ticket's `Reason` now says `Matched across commodity family …`.
 If it says `Matched on the part number only: …`, the rest of the sentence says
 why — no file configured, a part number with no hyphen, a code not in the file,
@@ -551,7 +562,7 @@ unambiguous.
 | Most tickets come back `LLM_AUDIT_REJECTED` | In Tier 1, the intent scorer found no record asking the same question (`No_Recommendation_Reason` `INTENT_BELOW_THRESHOLD`); in Tier 2, the gates or the Judge refused the drafts | Read `No_Recommendation_Reason` and `Matched_Solutions` in the bulk sheet. For Tier 2, extend `KNOWN_TRACKING_PREFIXES` in `sps.py` ("The deterministic gates") with your own systems |
 | `SETTING='value' is not a number`, exit **2** | A numeric setting in `.env` (a threshold, a timeout, `SPS_INTENT_TOP_K`) holds something that is not a number | Fix the value the message names. It used to surface as an unhandled error with exit 1, retried forever |
 | `pytest` reports anything skipped | A test skipped itself, which none should | Treat it as a failure and read the reason (`python -m pytest -rs`) |
-| `Reason` says `Matched on the part number only: …` | No groups file configured, or this ticket's code is not usable in it — the sentence says which | Set `SPS_COMMODITY_GROUPS`, or fix the file as the sentence describes |
+| `Reason` says `Matched on the part number only: …` | No groups file configured, or this ticket's code is not usable in it — the sentence says which | Set `SPS_COMMODITY_GROUPS` or pass the file as the wrapper's fourth argument, or fix the file as the sentence describes |
 | `… is on a network share … keeping the history store in …` | The history export is on a share, and SQLite cannot lock safely there | Set `SPS_HISTORY_STORE_DIR` to a local folder, and run `ingest` with the same setting |
 | `History store failed: database is locked`, exit 1 | A ticket needed to write new records' vectors while another robot or an ingest held the store for over ten minutes | Retry. Run `ingest` after each export so robots do not do the embedding themselves |
 | `History store … cannot be used …; using … instead` | The store folder is not writable, so the store moved to `%LOCALAPPDATA%` | Set `SPS_HISTORY_STORE_DIR` to a writable local folder, so the robots and `ingest` share one store |

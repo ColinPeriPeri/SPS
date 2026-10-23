@@ -81,9 +81,9 @@ python -m pytest -q
 | --- | --- |
 | `sps.py` | **Everything that runs.** `python sps.py resolve \| bulk \| eval \| ingest \| check` |
 | `sps_prompts.py` | **Everything the model reads** — the intent scorer, the Tier-2 Actor and Judge, and their message builders |
-| `scripts/run_resolver.cmd` | UiPath wrapper for `resolve`; propagates the exit code |
-| `scripts/run_bulk_test.cmd` | Wrapper for `bulk` |
-| `scripts/run_eval.cmd` | Wrapper for `eval` |
+| `scripts/run_resolver.cmd` | UiPath wrapper for `resolve`; propagates the exit code. `<ticket> <history> <output-dir> [groups-file]` |
+| `scripts/run_bulk_test.cmd` | Wrapper for `bulk`. `<tickets> <history> [output-file] [groups-file]` |
+| `scripts/run_eval.cmd` | Wrapper for `eval`. `<test-dir> [output-dir] [history] [groups-file]` |
 | `scripts/run_ingest.cmd` | Wrapper for `ingest` — schedule it after each history export |
 | `tests/` | The suite, run with `python -m pytest` |
 | `samples/` | A ticket + history for smoke tests, a commodity groups file, a bulk sheet, six eval cases, twelve similarity pairs, three demo standards |
@@ -156,8 +156,13 @@ Commodity_Code,Group
 ```
 
 Groups are symmetric (0011 reaches 0022 and 0022 reaches 0011), and a group
-name is matched ignoring case. The file is named by `--commodity-file` or
-`SPS_COMMODITY_GROUPS`; `samples/commodity_groups.csv` is a worked example.
+name is matched ignoring case. The file is named by `--commodity-file` (the
+optional last argument of each `.cmd` wrapper) or `SPS_COMMODITY_GROUPS`, the
+flag winning; `samples/commodity_groups.csv` is a worked example.
+
+```bat
+scripts\run_resolver.cmd ticket.xlsx history.csv .\out commodity_groups.csv
+```
 
 A ticket falls back to its own part's history — exactly the behaviour before
 families existed — when there is no groups file, the part number has no
@@ -901,7 +906,14 @@ copy carrying every original column plus the answers.
 ```bash
 python sps.py bulk --tickets tickets.xlsx --history history.csv
 scripts\run_bulk_test.cmd tickets.xlsx history.csv
+scripts\run_bulk_test.cmd tickets.xlsx history.csv results.xlsx commodity_groups.csv
 ```
+
+With a groups file, name the output too. From `cmd.exe` a `""` in its place
+keeps the default output path instead. **Windows PowerShell drops an empty `""` argument** before the
+wrapper sees it, which would make the groups file the output — so from
+PowerShell give the output path instead. A call that slips through is refused
+before any ticket runs (exit 2): see *Output file* below.
 
 The input is never modified. It stays a clean, re-runnable fixture, a crashed
 run cannot destroy the test set, and two runs can be diffed against each other.
@@ -964,7 +976,7 @@ its design decisions.
 ```bash
 python sps.py eval --test-dir cases --history-file master.csv \
     --output-dir eval_out
-scripts\run_eval.cmd cases eval_out master.csv
+scripts\run_eval.cmd cases eval_out master.csv commodity_groups.csv
 ```
 
 **Every row carries the raw top cosine, including the cases the gate rejected.**

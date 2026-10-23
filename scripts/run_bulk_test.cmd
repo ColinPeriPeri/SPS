@@ -2,17 +2,23 @@
 REM ===========================================================================
 REM  Bulk test runner.
 REM
-REM    run_bulk_test.cmd <tickets-file> <history-file> [output-file]
+REM    run_bulk_test.cmd <tickets-file> <history-file> [output-file] [commodity-groups-file]
 REM
 REM  Resolves every row of <tickets-file> through the same pipeline the UiPath
 REM  Performer calls, and writes a COPY carrying every original column plus the
 REM  result columns. The input workbook is never modified.
 REM
-REM  Default output is <tickets>_results.xlsx beside the input.
+REM  Default output is <tickets>_results.xlsx beside the input. The fourth
+REM  argument, optional, is the commodity groups .csv/.xlsx (else
+REM  SPS_COMMODITY_GROUPS); give the output file too when you pass it. From
+REM  cmd.exe, "" keeps the default output, but Windows PowerShell drops a ""
+REM  before this script sees it, making the groups file the output -- which
+REM  is refused before any ticket runs: only an earlier results sheet is
+REM  ever replaced.
 REM
-REM  Prefer a .csv history. resolve() re-scans it once per ticket, so a large
-REM  .xlsx history dominates the run: the same 300k rows take ~1.5 s as CSV and
-REM  ~40 s as .xlsx, per ticket.
+REM  The history store is synced once, by the first row if the export changed;
+REM  later rows read only their family from it. Run run_ingest.cmd first to
+REM  keep the embedding out of the run.
 REM
 REM  Exit codes:
 REM    0  the sheet ran. Individual rows may have legitimately failed.
@@ -32,7 +38,7 @@ if "%PYTHON_EXE%"=="" if exist "%PROJECT_DIR%\env\Scripts\python.exe" set "PYTHO
 if "%PYTHON_EXE%"=="" set "PYTHON_EXE=%PROJECT_DIR%\venv\Scripts\python.exe"
 
 if "%~2"=="" (
-    echo Usage: %~nx0 ^<tickets-file^> ^<history-file^> [output-file] 1>&2
+    echo Usage: %~nx0 ^<tickets-file^> ^<history-file^> [output-file] [commodity-groups-file] 1>&2
     endlocal & exit /b 2
 )
 
@@ -44,11 +50,11 @@ if not exist "%PYTHON_EXE%" (
 
 pushd "%PROJECT_DIR%"
 
-if "%~3"=="" (
-    "%PYTHON_EXE%" sps.py bulk --tickets "%~1" --history "%~2"
-) else (
-    "%PYTHON_EXE%" sps.py bulk --tickets "%~1" --history "%~2" --output "%~3"
-)
+set "OUTPUT="
+if not "%~3"=="" set OUTPUT=--output "%~3"
+set "GROUPS="
+if not "%~4"=="" set GROUPS=--commodity-file "%~4"
+"%PYTHON_EXE%" sps.py bulk --tickets "%~1" --history "%~2" %OUTPUT% %GROUPS%
 set "RC=%ERRORLEVEL%"
 
 popd
