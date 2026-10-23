@@ -129,7 +129,7 @@ python sps.py resolve --ticket-file ticket.xlsx \
 | Output | When | Columns |
 | --- | --- | --- |
 | `status.xlsx` | **Always**, one row, including early aborts and unhandled exceptions | `Execution_Timestamp`, `Status` (PASS/FAIL), `Status_Code`, `Reason`, `Embedding_Model` |
-| `output.xlsx` | Whenever the run **reached a conclusion** (exit 0), including "no recommendation". Never on exit 1 or 2. **One row per solution, up to three**, best first; one row when there is none | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Closest_Matching_Solution`, `Cascade_Warnings`, `Solution_Rank`, then the record columns below |
+| `output.xlsx` | Whenever the run **reached a conclusion** (exit 0), including "no recommendation". Never on exit 1 or 2. **One row per solution, up to three**, best first; one row when there is none | `Part_Number`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Closest_Matching_Solution`, `Cascade_Warnings`, `Solution_Rank`, then the source columns below |
 
 `Solution_Rank` is 1, 2 or 3 on a recommendation and blank on the
 no-recommendation row. It is appended last, so a caller reading the first
@@ -150,8 +150,30 @@ reviewer reads the record beside the answer rather than looking it up:
 
 All six are **blank** on the no-recommendation row, which took no record (its
 near misses are in `Closest_Matching_Solution`, under their banner), and on a
-Tier-2 answer, which cites standards rather than a record. Percentages are
-truncated, never rounded up.
+Tier-2 answer, which fills the four after them with the **0250 sections it was
+drawn from** instead:
+
+| Column | Holds |
+| --- | --- |
+| `Standard_Document` | each section's document |
+| `Standard_Section` | its heading — `(before the first heading)` for text that precedes one, and twice when a long section was split into parts |
+| `Standard_Section_Text` | its text |
+| `Standard_Match_Percent` | its similarity to the ticket; `[1]`'s is the `Confidence_Score` |
+
+Every section the Actor was given is listed, not only the best: a recommendation
+may combine several, and one shown alone would read as *the* source. They are
+numbered `[1]`, `[2]`… in the same order in all four columns, best match first,
+so a section is read across by its number:
+
+```
+Standard_Section        [1] 7.1 Re-inspection After Repair
+                        [2] 4.2 Weld Seam Cracking
+Standard_Match_Percent  [1] 28%
+                        [2] 24%
+```
+
+All four are blank on every other row. Percentages are truncated, never rounded
+up.
 
 Both are one sheet named `Sheet1`, every cell stored as text — so `0012-43951`
 never becomes a date, and archive text beginning with `=` never becomes a
@@ -358,6 +380,10 @@ did not come from.
 `Referenced_Sources` already lists the ids. What it cannot say is which scored
 100% and which 31%, and that is the one thing telling a reviewer where to look
 first.
+
+The source itself — the record, or the sections — has columns of its own
+(`Historical_*`, `Standard_*`), so it sits beside the answer rather than under
+it.
 
 On a refusal the limit is **3**, not all of them: enough that a near-miss is not
 hidden behind a marginally better one, few enough that the cell stays readable.
@@ -913,6 +939,7 @@ answer came from a standard rather than from precedent.
 Citations in `Referenced_Sources` are taken from the retrieved chunks, never from
 the model's prose — the same reason confidence and SPS IDs are supplied from
 measurement in Tier 1. A model asked to author its own citation can invent one.
+The same chunks fill the `Standard_*` columns of `output.xlsx`.
 
 ---
 
@@ -940,7 +967,7 @@ Output defaults to `<tickets>_results.xlsx` beside the input.
 | | |
 | --- | --- |
 | **Original columns** | Preserved verbatim, in order, including ones the pipeline never reads |
-| **Appended** | `Status`, `Status_Code`, `Reason`, `Solution_Rank`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, the six `output.xlsx` record columns (`Historical_SPS_ID` … `Historical_Solution`), `Tier1_Score`, `Tier2_Score`, `No_Recommendation_Reason`, `Closest_Matching_Solution`, `Cascade_Warnings`, `Matched_Solutions`, `Embedding_Model`, `Duration_Seconds` |
+| **Appended** | `Status`, `Status_Code`, `Reason`, `Solution_Rank`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, the ten `output.xlsx` source columns (`Historical_SPS_ID` … `Standard_Match_Percent`), `Tier1_Score`, `Tier2_Score`, `No_Recommendation_Reason`, `Closest_Matching_Solution`, `Cascade_Warnings`, `Matched_Solutions`, `Embedding_Model`, `Duration_Seconds` |
 | **Rows** | One per solution, up to three, in input order — each repeating the ticket's own columns so the sheet still filters as one table. A ticket that resolved nothing still has a row saying why |
 | **Output file** | An `.xlsx` that is none of the inputs. An existing file is replaced only if it is a results sheet already, as a re-run into the same `--output` is; anything else is refused, exit 2, before the first ticket |
 

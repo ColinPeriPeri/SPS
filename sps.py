@@ -375,6 +375,9 @@ class PipelineResult:
     # which no record backs, and on the no-recommendation row, which took none.
     record: Candidate | None = None
     intent_match: float = 0.0
+    # The 0250 sections a Tier-2 answer was drawn from, best first, as
+    # ScoredChunks; they fill the Standard_* columns. Empty on every other row.
+    sections: tuple = ()
     # Operational signals only, never written to output.xlsx. They let the
     # caller separate a dependency outage, which is worth retrying, from a
     # legitimate refusal, which is not.
@@ -4276,6 +4279,7 @@ def success_from_docs(
         referenced_sources=_dedupe([c.citation for c in chunks]),
         resolution_source=SOURCE_DOCUMENTATION,
         closest_matching_solution=closest_matching_solution,
+        sections=tuple(chunks),
     )
 
 
@@ -4345,6 +4349,13 @@ RECORD_COLUMNS = (
     "Similarity_Percent",
     "Historical_Solution",
 )
+# The same for a Tier-2 answer: the 0250 sections it was drawn from.
+STANDARD_COLUMNS = (
+    "Standard_Document",
+    "Standard_Section",
+    "Standard_Section_Text",
+    "Standard_Match_Percent",
+)
 # Referenced_Sources replaces the former Referenced_SPS_IDs: with two tiers the
 # column holds SPS IDs or document citations, and Resolution_Source says which.
 # Both are a BREAKING change for a caller that reads this sheet by column name.
@@ -4370,6 +4381,7 @@ RESULT_COLUMNS = (
     # but a caller that read only the first ROW now sees only the best answer.
     "Solution_Rank",
     *RECORD_COLUMNS,
+    *STANDARD_COLUMNS,
 )
 
 
@@ -4441,7 +4453,8 @@ def _text_cell(sheet, row: int, column: int, text: str):
 #                 concluding that neither tier had an answer. RESULT_COLUMNS,
 #                 one row per solution: the recommendation, its confidence and
 #                 sources, and the historical record it was taken from
-#                 (RECORD_COLUMNS). On a failure the
+#                 (RECORD_COLUMNS) or the 0250 sections it was drawn from
+#                 (STANDARD_COLUMNS). On a failure the
 #                 recommendation is "Solution not found." and Resolution_Source
 #                 is NONE -- a caller merging this into its own records needs one
 #                 row per ticket, and a missing row cannot be told apart from a
@@ -4909,7 +4922,8 @@ def record_columns(result) -> dict[str, str]:
 
     Blank on a row whose solution no record backs. The no-recommendation row
     took nothing -- its near misses are in Closest_Matching_Solution, under the
-    banner that stops them being pasted -- and a Tier-2 answer cites standards.
+    banner that stops them being pasted -- and a Tier-2 answer's sources are in
+    the Standard_* columns instead.
     """
     record = result.record
     if record is None:
@@ -4923,6 +4937,35 @@ def record_columns(result) -> dict[str, str]:
         # The same text as AI_Recommendation, which on this path is the
         # record's solution sent unchanged; repeated so the record reads whole.
         "Historical_Solution": record.actual_solution,
+    }
+
+
+def standard_columns(result) -> dict[str, str]:
+    """The Standard_* columns: every 0250 section a Tier-2 answer drew on.
+
+    Every section, not the best one: the Actor may combine several, and one
+    shown alone would read as THE source, inviting a reviewer to check a step
+    against a section it did not come from. Numbered [1], [2], ... in the same
+    order in all four columns, best match first, so a section's document,
+    heading, text and score are read across by its number.
+
+    Blank unless the row is a Tier-2 answer.
+    """
+    sections = result.sections
+    if not sections:
+        return dict.fromkeys(STANDARD_COLUMNS, "")
+
+    def numbered(values, between="\n"):
+        return between.join(f"[{n}] {value}" for n, value in enumerate(values, 1))
+
+    return {
+        "Standard_Document": numbered(s.chunk.document for s in sections),
+        # A long section is split into parts, so a heading can appear twice.
+        "Standard_Section": numbered(
+            s.chunk.section or "(before the first heading)" for s in sections
+        ),
+        "Standard_Section_Text": numbered((s.chunk.text for s in sections), "\n\n"),
+        "Standard_Match_Percent": numbered(f"{s.confidence_percent}%" for s in sections),
     }
 
 
@@ -4945,6 +4988,7 @@ def write_output(output_dir: Path, part_number: str, results: Sequence) -> None:
                 "Cascade_Warnings": result.cascade_warnings,
                 "Solution_Rank": solution_rank(result, position),
                 **record_columns(result),
+                **standard_columns(result),
             }
             for position, result in enumerate(results, 1)
         ],
@@ -5588,8 +5632,10 @@ BULK_RESULT_COLUMNS = (
     "Confidence_Score",
     "Referenced_Sources",
     "Resolution_Source",
-    # The record each solution came from, as output.xlsx gives it.
+    # The record or the 0250 sections each solution came from, as output.xlsx
+    # gives them.
     *RECORD_COLUMNS,
+    *STANDARD_COLUMNS,
     "Tier1_Score",
     "Tier2_Score",
     # Why this row produced nothing, as one of a fixed set of values rather
@@ -5702,7 +5748,8 @@ def result_for(outcome, duration: float) -> list[dict[str, str]]:
     if not results:
         return [{**shared, "Solution_Rank": "", "Cascade_Warnings": "", "AI_Recommendation": "",
                  "Justification": "", "Confidence_Score": "", "Referenced_Sources": "",
-                 "Resolution_Source": "", **dict.fromkeys(RECORD_COLUMNS, "")}]
+                 "Resolution_Source": "",
+                 **dict.fromkeys(RECORD_COLUMNS + STANDARD_COLUMNS, "")}]
     return [
         {
             **shared,
@@ -5714,6 +5761,7 @@ def result_for(outcome, duration: float) -> list[dict[str, str]]:
             "Referenced_Sources": ", ".join(result.referenced_sources),
             "Resolution_Source": result.resolution_source,
             **record_columns(result),
+            **standard_columns(result),
         }
         for position, result in enumerate(results, 1)
     ]

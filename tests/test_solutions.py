@@ -131,6 +131,8 @@ def test_each_row_carries_the_record_its_solution_came_from(tmp_path, intent_sco
     # The same problem text as the ticket: an exact cosine, float32 and all.
     assert {r["Similarity_Percent"] for r in rows} == {"100%"}
     assert [r["Historical_Solution"] for r in rows] == [r["AI_Recommendation"] for r in rows]
+    # The 0250 columns are for standards answers only.
+    assert all(r[c] == "" for r in rows for c in sps.STANDARD_COLUMNS)
 
 
 def test_fewer_over_the_gate_means_fewer_rows(tmp_path, intent_scores):
@@ -152,7 +154,7 @@ def test_none_over_the_gate_is_the_refusal_it_always_was(tmp_path, intent_scores
     assert rows[0]["Solution_Rank"] == ""
     # Nothing was taken, so there is no record to describe; the near misses
     # are in Closest_Matching_Solution, under their banner.
-    assert all(rows[0][c] == "" for c in sps.RECORD_COLUMNS)
+    assert all(rows[0][c] == "" for c in sps.RECORD_COLUMNS + sps.STANDARD_COLUMNS)
     assert "SPS-1" in rows[0]["Closest_Matching_Solution"]
 
 

@@ -847,8 +847,36 @@ def test_tier2_answers_when_tier1_finds_nothing(tmp_path, tiered_llm):
     assert result["Resolution_Source"] == "0250_DOCUMENTATION"
     assert "0250-Weld-Standards.docx" in result["Referenced_Sources"]
     assert "§" in result["Referenced_Sources"]
-    # No historical record backs a standards answer.
+    # No historical record backs a standards answer; its sections do.
     assert all(result[c] == "" for c in resolver.RECORD_COLUMNS)
+    assert result["Standard_Document"].startswith("[1] 0250-Weld-Standards.docx")
+    assert result["Standard_Section"].startswith("[1] 4.2 Weld Seam Cracking")
+    assert result["Standard_Section_Text"].startswith("[1] Cracking in a fillet")
+    # Best first, so [1] is the section the confidence was measured on.
+    assert result["Standard_Match_Percent"].split("\n")[0] == f"[1] {result['Confidence_Score']}"
+    # One entry per section, in the same order, in every column.
+    assert len({len(result[c].split("\n"))
+                for c in ("Standard_Document", "Standard_Section", "Standard_Match_Percent")}) == 1
+
+
+def test_the_standard_columns_list_every_section_by_number():
+    """Every section the answer drew on, not the best one: shown alone, one
+    would read as THE source when the Actor may have combined several."""
+    result = resolver.PipelineResult(
+        ai_recommendation="1. Grind out the seam.", justification="", confidence="42%",
+        resolution_source=resolver.SOURCE_DOCUMENTATION,
+        sections=(
+            ScoredChunk(DocChunk("0250-Weld.docx", "4.2 Cracking", "Grind it out."), 0.42),
+            ScoredChunk(DocChunk("0250-Weld.docx", "", "This standard covers welds."), 0.31),
+        ),
+    )
+
+    assert resolver.standard_columns(result) == {
+        "Standard_Document": "[1] 0250-Weld.docx\n[2] 0250-Weld.docx",
+        "Standard_Section": "[1] 4.2 Cracking\n[2] (before the first heading)",
+        "Standard_Section_Text": "[1] Grind it out.\n\n[2] This standard covers welds.",
+        "Standard_Match_Percent": "[1] 42%\n[2] 31%",
+    }
 
 
 def test_a_part_with_no_history_can_still_be_answered_from_the_standards(tmp_path, tiered_llm):
