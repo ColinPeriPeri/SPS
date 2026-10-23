@@ -324,8 +324,17 @@ def score_to_percent(score: float) -> int:
     Truncates rather than rounds: a system that gates at 89% must never report
     "89%" for a candidate it rejected at 0.8899, and understating confidence is
     the safe direction for a compliance-reviewed recommendation.
+
+    Truncates after adding a hair's breadth, so that float noise cannot cost a
+    point. The scorer's 57 arrives as 0.57, which times 100 is
+    56.99999999999999, and an identical text scores 0.99999988 against its own
+    float32-stored vector -- truncated outright, those read 56% and 99%. 1e-6
+    is above both and far below any difference a gate draws.
     """
-    return int(min(max(score, 0.0), 1.0) * 100)
+    return int((min(max(score, 0.0), 1.0) + PERCENT_NOISE) * 100)
+
+
+PERCENT_NOISE = 1e-6
 
 
 # Which evidence a recommendation was built from. Written verbatim into
@@ -361,6 +370,11 @@ class PipelineResult:
     # recommendation is archive text sent unchanged. Advisory: it names a risk
     # and blocks nothing, because on this path nothing is allowed to block.
     cascade_warnings: str = ""
+    # The historical record this solution was taken from, and the intent score
+    # that took it; they fill the Historical_* columns. None on a Tier-2 answer,
+    # which no record backs, and on the no-recommendation row, which took none.
+    record: Candidate | None = None
+    intent_match: float = 0.0
     # Operational signals only, never written to output.xlsx. They let the
     # caller separate a dependency outage, which is worth retrying, from a
     # legitimate refusal, which is not.
@@ -4218,6 +4232,8 @@ def cascade(
         resolution_source=SOURCE_HISTORICAL,
         closest_matching_solution=source_list,
         cascade_warnings=cascade_warnings(solution),
+        record=candidate,
+        intent_match=intent_match,
     )
 
 
@@ -4316,6 +4332,19 @@ STATUS_COLUMNS = (
     "Reason",
     "Embedding_Model",
 )
+# The historical record a row's solution was taken from, field by field, so a
+# reviewer reads the record beside the answer instead of looking it up -- and
+# sees, on a sibling part's solution, which part it was recorded for. Both
+# scores, because they measure different things: the intent match took the
+# record, and the similarity only shortlisted it.
+RECORD_COLUMNS = (
+    "Historical_SPS_ID",
+    "Historical_Part_Number",
+    "Historical_Problem_Description",
+    "Intent_Match_Percent",
+    "Similarity_Percent",
+    "Historical_Solution",
+)
 # Referenced_Sources replaces the former Referenced_SPS_IDs: with two tiers the
 # column holds SPS IDs or document citations, and Resolution_Source says which.
 # Both are a BREAKING change for a caller that reads this sheet by column name.
@@ -4340,6 +4369,7 @@ RESULT_COLUMNS = (
     # above, so a caller reading the first ones positionally is unaffected --
     # but a caller that read only the first ROW now sees only the best answer.
     "Solution_Rank",
+    *RECORD_COLUMNS,
 )
 
 
@@ -4408,9 +4438,10 @@ def _text_cell(sheet, row: int, column: int, text: str):
 #                 ran; it is blank when the run aborted before anything was
 #                 encoded.
 #   output.xlsx   Whenever the run REACHED A CONCLUSION, which includes
-#                 concluding that neither tier had an answer. Part_Number,
-#                 AI_Recommendation, Justification, Confidence_Score,
-#                 Referenced_Sources, Resolution_Source. On a failure the
+#                 concluding that neither tier had an answer. RESULT_COLUMNS,
+#                 one row per solution: the recommendation, its confidence and
+#                 sources, and the historical record it was taken from
+#                 (RECORD_COLUMNS). On a failure the
 #                 recommendation is "Solution not found." and Resolution_Source
 #                 is NONE -- a caller merging this into its own records needs one
 #                 row per ticket, and a missing row cannot be told apart from a
@@ -4873,6 +4904,28 @@ def solution_rank(result, position: int) -> str:
     return "" if result.resolution_source == SOURCE_NONE else str(position)
 
 
+def record_columns(result) -> dict[str, str]:
+    """The Historical_* columns: the record this row's solution came from.
+
+    Blank on a row whose solution no record backs. The no-recommendation row
+    took nothing -- its near misses are in Closest_Matching_Solution, under the
+    banner that stops them being pasted -- and a Tier-2 answer cites standards.
+    """
+    record = result.record
+    if record is None:
+        return dict.fromkeys(RECORD_COLUMNS, "")
+    return {
+        "Historical_SPS_ID": record.sps_id,
+        "Historical_Part_Number": record.part_number,
+        "Historical_Problem_Description": record.problem_description,
+        "Intent_Match_Percent": f"{score_to_percent(result.intent_match)}%",
+        "Similarity_Percent": f"{score_to_percent(record.cosine_similarity)}%",
+        # The same text as AI_Recommendation, which on this path is the
+        # record's solution sent unchanged; repeated so the record reads whole.
+        "Historical_Solution": record.actual_solution,
+    }
+
+
 def write_output(output_dir: Path, part_number: str, results: Sequence) -> None:
     """One row per solution, best first -- or the one no-recommendation row."""
     write_rows(
@@ -4891,6 +4944,7 @@ def write_output(output_dir: Path, part_number: str, results: Sequence) -> None:
                 "Closest_Matching_Solution": result.closest_matching_solution,
                 "Cascade_Warnings": result.cascade_warnings,
                 "Solution_Rank": solution_rank(result, position),
+                **record_columns(result),
             }
             for position, result in enumerate(results, 1)
         ],
@@ -5534,6 +5588,8 @@ BULK_RESULT_COLUMNS = (
     "Confidence_Score",
     "Referenced_Sources",
     "Resolution_Source",
+    # The record each solution came from, as output.xlsx gives it.
+    *RECORD_COLUMNS,
     "Tier1_Score",
     "Tier2_Score",
     # Why this row produced nothing, as one of a fixed set of values rather
@@ -5646,7 +5702,7 @@ def result_for(outcome, duration: float) -> list[dict[str, str]]:
     if not results:
         return [{**shared, "Solution_Rank": "", "Cascade_Warnings": "", "AI_Recommendation": "",
                  "Justification": "", "Confidence_Score": "", "Referenced_Sources": "",
-                 "Resolution_Source": ""}]
+                 "Resolution_Source": "", **dict.fromkeys(RECORD_COLUMNS, "")}]
     return [
         {
             **shared,
@@ -5657,6 +5713,7 @@ def result_for(outcome, duration: float) -> list[dict[str, str]]:
             "Confidence_Score": result.confidence,
             "Referenced_Sources": ", ".join(result.referenced_sources),
             "Resolution_Source": result.resolution_source,
+            **record_columns(result),
         }
         for position, result in enumerate(results, 1)
     ]

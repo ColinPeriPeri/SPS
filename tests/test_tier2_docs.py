@@ -847,6 +847,8 @@ def test_tier2_answers_when_tier1_finds_nothing(tmp_path, tiered_llm):
     assert result["Resolution_Source"] == "0250_DOCUMENTATION"
     assert "0250-Weld-Standards.docx" in result["Referenced_Sources"]
     assert "§" in result["Referenced_Sources"]
+    # No historical record backs a standards answer.
+    assert all(result[c] == "" for c in resolver.RECORD_COLUMNS)
 
 
 def test_a_part_with_no_history_can_still_be_answered_from_the_standards(tmp_path, tiered_llm):

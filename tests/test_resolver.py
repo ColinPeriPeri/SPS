@@ -410,6 +410,8 @@ def test_success_writes_both_workbooks(tmp_path, passing_llm):
         "Part_Number", "AI_Recommendation", "Justification",
         "Confidence_Score", "Referenced_Sources", "Resolution_Source",
         "Closest_Matching_Solution", "Cascade_Warnings", "Solution_Rank",
+        "Historical_SPS_ID", "Historical_Part_Number", "Historical_Problem_Description",
+        "Intent_Match_Percent", "Similarity_Percent", "Historical_Solution",
     ]
     assert result[0]["Part_Number"] == PART
     assert result[0]["Referenced_Sources"] == "SPS-1001"

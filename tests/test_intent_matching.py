@@ -85,6 +85,24 @@ def test_scores_come_back_scaled_to_the_same_range_as_everything_else():
     assert outcome.best.percent == 82
 
 
+def test_every_whole_percent_is_reported_as_scored():
+    """0.57 times 100 is 56.99999999999999, so truncating it outright reported
+    the scorer's 57 as 56% -- and 29 and 58 likewise."""
+    from sps import score_to_percent
+
+    assert [score_to_percent(n / 100.0) for n in range(101)] == list(range(101))
+
+
+def test_float_noise_cannot_cost_a_point_and_truncation_still_holds():
+    from sps import score_to_percent
+
+    # An identical text against its own float32-stored vector.
+    assert score_to_percent(0.99999988) == 100
+    # Rejected at a gate of 0.89, so never reported as 89%.
+    assert score_to_percent(0.8899) == 88
+    assert score_to_percent(1.3) == 100 and score_to_percent(-0.2) == 0
+
+
 def test_the_best_match_is_first_whatever_order_the_model_answered_in():
     outcome, _ = run(assessment(**{"SPS-101": 91, "SPS-100": 12}))
 

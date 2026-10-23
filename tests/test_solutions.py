@@ -117,6 +117,22 @@ def test_every_record_over_the_gate_is_sent_best_first(tmp_path, intent_scores):
     assert "SPS-2 (95%), SPS-3 (90%), SPS-1 (80%)" in status[0]["Reason"]
 
 
+def test_each_row_carries_the_record_its_solution_came_from(tmp_path, intent_scores):
+    scores, _ = intent_scores
+    scores.update({"SPS-1": 0.80, "SPS-2": 0.95, "SPS-3": 0.90, "SPS-4": 0.70})
+
+    _, out = resolve(tmp_path, records(4))
+
+    rows = read_sheet(out / "output.xlsx")
+    assert [r["Historical_SPS_ID"] for r in rows] == ["SPS-2", "SPS-3", "SPS-1"]
+    assert {r["Historical_Part_Number"] for r in rows} == {PART}
+    assert {r["Historical_Problem_Description"] for r in rows} == {PROBLEM}
+    assert [r["Intent_Match_Percent"] for r in rows] == ["95%", "90%", "80%"]
+    # The same problem text as the ticket: an exact cosine, float32 and all.
+    assert {r["Similarity_Percent"] for r in rows} == {"100%"}
+    assert [r["Historical_Solution"] for r in rows] == [r["AI_Recommendation"] for r in rows]
+
+
 def test_fewer_over_the_gate_means_fewer_rows(tmp_path, intent_scores):
     scores, _ = intent_scores
     scores.update({"SPS-1": 0.95})
@@ -134,6 +150,10 @@ def test_none_over_the_gate_is_the_refusal_it_always_was(tmp_path, intent_scores
     assert len(rows) == 1
     assert rows[0]["AI_Recommendation"] == NO_RECOMMENDATION
     assert rows[0]["Solution_Rank"] == ""
+    # Nothing was taken, so there is no record to describe; the near misses
+    # are in Closest_Matching_Solution, under their banner.
+    assert all(rows[0][c] == "" for c in sps.RECORD_COLUMNS)
+    assert "SPS-1" in rows[0]["Closest_Matching_Solution"]
 
 
 def test_never_more_than_three(tmp_path, intent_scores):
@@ -164,6 +184,8 @@ def test_a_solution_from_a_sibling_part_says_so(tmp_path, intent_scores):
     assert result["Referenced_Sources"] == "SPS-SIB"
     assert "recorded for 0022-77777, another part in the same commodity family" in \
         result["Justification"]
+    # The ticket's part, and beside it the part the solution was recorded for.
+    assert (result["Part_Number"], result["Historical_Part_Number"]) == (PART, "0022-77777")
     assert "commodity family FASTENERS" in read_sheet(out / "status.xlsx")[0]["Reason"]
 
 
@@ -187,6 +209,9 @@ def test_the_bulk_sheet_gives_each_solution_a_row(tmp_path, intent_scores, capsy
 
     sheet = read_sheet(out)
     assert [(r["SPS_ID"], r["Solution_Rank"]) for r in sheet] == [("T-1", "1"), ("T-1", "2"), ("T-2", "")]
+    assert [(r["Historical_SPS_ID"], r["Intent_Match_Percent"]) for r in sheet] == [
+        ("SPS-1", "95%"), ("SPS-2", "90%"), ("", "")]
+    assert sheet[0]["Historical_Problem_Description"] == PROBLEM
     # The summary counts tickets, not rows.
     err = capsys.readouterr().err
     assert "2 row(s)" in err and "1 of 2 produced a recommendation" in err
