@@ -194,6 +194,61 @@ def test_the_default_output_sits_beside_the_input():
     assert bulk.default_output(Path("d:/x/tickets.xlsx")).name == "tickets_results.xlsx"
 
 
+# ------------------------------------------------------- where it may write
+
+
+def _groups_workbook(path):
+    from openpyxl import Workbook
+
+    book = Workbook()
+    book.active.append(["Commodity_Code", "Group"])
+    book.active.append(["0012", "BRACKETS"])
+    book.save(path)
+    return path
+
+
+def test_a_groups_workbook_in_the_output_place_is_refused_before_any_ticket_runs(
+    tmp_path, passing_llm, capsys
+):
+    """From PowerShell `run_bulk_test.cmd t h "" groups.xlsx` arrives with the
+    "" dropped, so the groups file lands where the output belongs."""
+    groups = _groups_workbook(tmp_path / "groups.xlsx")
+    before = groups.read_bytes()
+
+    code, _ = run(tmp_path, [ticket_row()], extra=("--output", str(groups)))
+
+    assert code == bulk.EXIT_BAD_INPUT
+    assert groups.read_bytes() == before
+    err = capsys.readouterr().err
+    assert "is not a results sheet" in err and "[1/1]" not in err
+
+
+def test_an_output_that_is_not_a_workbook_is_refused(tmp_path, passing_llm):
+    groups = tmp_path / "groups.csv"
+    groups.write_text("Commodity_Code,Group\n0012,BRACKETS\n", encoding="utf-8")
+
+    code, _ = run(tmp_path, [ticket_row()], extra=("--output", str(groups)))
+
+    assert code == bulk.EXIT_BAD_INPUT
+    assert groups.read_text(encoding="utf-8") == "Commodity_Code,Group\n0012,BRACKETS\n"
+
+
+def test_an_input_is_never_the_output(tmp_path, passing_llm, capsys):
+    history = tmp_path / "h.xlsx"
+    code, _ = run(tmp_path, [ticket_row()], extra=("--output", str(history)))
+
+    assert code == bulk.EXIT_BAD_INPUT
+    assert "is the history file" in capsys.readouterr().err
+
+
+def test_a_rerun_replaces_its_own_results(tmp_path, passing_llm):
+    _, out = run(tmp_path, [ticket_row()])
+    code, out = run(tmp_path, [ticket_row(sps_id="T-2")])
+
+    assert code == bulk.EXIT_OK
+    assert [r["SPS_ID"] for r in read_sheet(out)] == ["T-2"]
+
+
 # ---------------------------------------------------------------- the answers
 
 

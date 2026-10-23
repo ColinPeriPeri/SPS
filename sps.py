@@ -5795,6 +5795,47 @@ def default_output(tickets: Path) -> Path:
     return tickets.with_name(f"{tickets.stem}_results.xlsx")
 
 
+def unsafe_output(output: Path, inputs: Sequence[tuple[str, Path | None]]) -> str:
+    """Why the results must not be written to `output`, or '' if they may.
+
+    Asked before the first ticket rather than after the last, because the
+    likeliest way to get here is an argument in the wrong place: Windows
+    PowerShell drops a "" passed to a .cmd wrapper, so `run_bulk_test.cmd t h ""
+    groups.xlsx` arrives as an --output of groups.xlsx. Unchecked, the run
+    spends its hour and then replaces the groups file with its results.
+
+    An existing file may be replaced only if it is a results sheet already --
+    which is what re-running into the same --output does.
+    """
+    if output.suffix.lower() != ".xlsx":
+        return f"--output {output.name!r} is not an .xlsx file; the results are always a workbook."
+    for label, path in inputs:
+        if path is not None and os.path.normcase(os.path.abspath(path)) == os.path.normcase(
+            os.path.abspath(output)
+        ):
+            return f"--output {output} is the {label}; an input is never written to."
+    if not output.exists():
+        return ""
+    try:
+        rows = iter_rows(output, "Existing output")
+        try:
+            header = next(rows, None) or ()
+        finally:
+            # Closes the workbook now: a handle left open would stop the
+            # results replacing this file at the end of the run.
+            rows.close()
+    except (FileReadError, OSError) as exc:
+        return f"--output {output} exists and could not be read: {exc}"
+    names = {str(h or "").strip().casefold().removesuffix("_ai") for h in header}
+    if {"status_code", "reason"} <= names:
+        return ""
+    return (
+        f"--output {output} exists and is not a results sheet from an earlier run, so it "
+        "is left alone. Choose another output file. (From PowerShell, a \"\" argument to "
+        "a .cmd wrapper is dropped, moving the next argument into its place.)"
+    )
+
+
 def bulk_main(argv: list[str] | None = None) -> int:
     args = bulk_parse_args(argv)
     logging.basicConfig(
@@ -5833,6 +5874,16 @@ def bulk_main(argv: list[str] | None = None) -> int:
         )
 
     output_path = Path(args.output) if args.output else default_output(tickets_path)
+    groups = commodity_file(args)
+    problem = unsafe_output(output_path, [
+        ("ticket workbook", tickets_path),
+        ("history file", history_path),
+        ("commodity groups file", Path(groups) if groups else None),
+    ])
+    if problem:
+        print(problem, file=sys.stderr)
+        return EXIT_BAD_INPUT
+
     started = time.time()
     # Per ticket: its rows, one per solution.
     results: list[list[dict[str, str]]] = []

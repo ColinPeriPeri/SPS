@@ -912,6 +912,7 @@ Output defaults to `<tickets>_results.xlsx` beside the input.
 | **Original columns** | Preserved verbatim, in order, including ones the pipeline never reads |
 | **Appended** | `Status`, `Status_Code`, `Reason`, `Solution_Rank`, `AI_Recommendation`, `Justification`, `Confidence_Score`, `Referenced_Sources`, `Resolution_Source`, `Tier1_Score`, `Tier2_Score`, `No_Recommendation_Reason`, `Closest_Matching_Solution`, `Cascade_Warnings`, `Matched_Solutions`, `Embedding_Model`, `Duration_Seconds` |
 | **Rows** | One per solution, up to three, in input order — each repeating the ticket's own columns so the sheet still filters as one table. A ticket that resolved nothing still has a row saying why |
+| **Output file** | An `.xlsx` that is none of the inputs. An existing file is replaced only if it is a results sheet already, as a re-run into the same `--output` is; anything else is refused, exit 2, before the first ticket |
 
 Nothing here reimplements the pipeline. Each row goes through the same
 `resolve()` the UiPath wrapper calls, so a result in this sheet is the result
